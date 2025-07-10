@@ -1,4 +1,6 @@
-# Axonvex  
+![AxonVex Banner](assets/banner.png)
+
+# AxonVex  
 **A Real-Time Framework Built for Scalable, Precise Execution**
 
 ---
