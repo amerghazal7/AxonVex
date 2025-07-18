@@ -1,0 +1,50 @@
+[requires]
+# JSON parsing library
+nlohmann_json/3.11.2
+
+# Networking library
+boost/1.82.0
+
+# Testing framework
+gtest/1.14.0
+
+# Benchmarking library
+benchmark/1.8.3
+
+# Logging library
+spdlog/1.12.0
+
+# Math library
+eigen/3.4.0
+
+# Concurrency library
+tbb/2021.10.0
+
+# WebSocket library
+websocketpp/0.8.2
+
+# Optional: Protocol buffers for serialization
+protobuf/3.21.12
+
+[generators]
+CMakeDeps
+CMakeToolchain
+
+[options]
+boost:shared=False
+boost:header_only=False
+boost:system=True
+boost:thread=True
+boost:chrono=True
+boost:atomic=True
+boost:filesystem=True
+gtest:shared=False
+spdlog:shared=False
+protobuf:shared=False
+tbb:shared=False
+
+[imports]
+# Copy shared libraries to bin folder (Windows)
+bin, *.dll -> ./bin @ folder=True
+lib, *.dylib* -> ./lib @ folder=True
+lib, *.so* -> ./lib @ folder=True 

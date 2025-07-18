@@ -1,0 +1,52 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Find dependencies
+find_dependency(Threads REQUIRED)
+
+# Include targets
+include("${CMAKE_CURRENT_LIST_DIR}/AxonVexTargets.cmake")
+
+# Version information
+set(AXONVEX_VERSION_MAJOR @PROJECT_VERSION_MAJOR@)
+set(AXONVEX_VERSION_MINOR @PROJECT_VERSION_MINOR@)
+set(AXONVEX_VERSION_PATCH @PROJECT_VERSION_PATCH@)
+set(AXONVEX_VERSION "@PROJECT_VERSION@")
+
+# Check if components are available
+set(AXONVEX_COMPONENTS_FOUND)
+if(AxonVex_FIND_COMPONENTS)
+    foreach(component ${AxonVex_FIND_COMPONENTS})
+        if(TARGET AxonVex::${component})
+            list(APPEND AXONVEX_COMPONENTS_FOUND ${component})
+        else()
+            if(AxonVex_FIND_REQUIRED_${component})
+                message(FATAL_ERROR "AxonVex component ${component} not found")
+            endif()
+        endif()
+    endforeach()
+endif()
+
+# Set found flag
+set(AxonVex_FOUND TRUE)
+
+# Provide information about the installation
+if(NOT TARGET AxonVex::axonvex)
+    message(FATAL_ERROR "AxonVex::axonvex target not found")
+endif()
+
+message(STATUS "Found AxonVex: ${AXONVEX_VERSION}")
+
+# Provide helper macros
+macro(axonvex_add_executable target)
+    add_executable(${target} ${ARGN})
+    target_link_libraries(${target} PRIVATE AxonVex::axonvex)
+endmacro()
+
+macro(axonvex_add_library target)
+    add_library(${target} ${ARGN})
+    target_link_libraries(${target} PRIVATE AxonVex::axonvex)
+endmacro()
+
+check_required_components(AxonVex) 
