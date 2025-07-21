@@ -163,3 +163,20 @@ add_custom_target(test_unit
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Running all unit tests"
 ) 
+
+add_executable(configuration_test core/configurationTest.cpp)
+target_link_libraries(configuration_test axonvex gtest)
+
+# Path class test
+add_executable(path_test core/pathTest.cpp)
+target_link_libraries(path_test axonvex gtest)
+
+# ProcessingUnit tests
+add_executable(processing_unit_test core/processingUnitTest.cpp)
+target_link_libraries(processing_unit_test axonvex gtest)
+add_test(NAME ProcessingUnitTest COMMAND processing_unit_test)
+
+# TimingController tests
+add_executable(timing_controller_test core/timingControllerTest.cpp)
+target_link_libraries(timing_controller_test axonvex gtest)
+add_test(NAME TimingControllerTest COMMAND timing_controller_test) 

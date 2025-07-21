@@ -14,7 +14,7 @@
  * - Error handling and edge cases
  */
 
-#include <axonvex/axonvex.hpp>
+#include "../include/axonvex/axonvex.hpp"
 #include <iostream>
 #include <thread>
 #include <vector>

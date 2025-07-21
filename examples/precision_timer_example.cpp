@@ -11,7 +11,7 @@
  * including timing measurements and statistics collection.
  */
 
-#include <axonvex/axonvex.hpp>
+#include "../include/axonvex/axonvex.hpp"
 #include <iostream>
 #include <thread>
 #include <chrono>
