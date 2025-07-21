@@ -176,7 +176,12 @@ add_executable(processing_unit_test core/processingUnitTest.cpp)
 target_link_libraries(processing_unit_test axonvex gtest)
 add_test(NAME ProcessingUnitTest COMMAND processing_unit_test)
 
-# TimingController tests
+# TimingController tests  
 add_executable(timing_controller_test core/timingControllerTest.cpp)
 target_link_libraries(timing_controller_test axonvex gtest)
-add_test(NAME TimingControllerTest COMMAND timing_controller_test) 
+add_test(NAME TimingControllerTest COMMAND timing_controller_test)
+
+# AxonVexSystem tests
+add_executable(system_test core/systemTest.cpp)
+target_link_libraries(system_test axonvex gtest)
+add_test(NAME SystemTest COMMAND system_test) 

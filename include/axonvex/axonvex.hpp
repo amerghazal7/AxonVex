@@ -51,6 +51,9 @@
 #include "core/processingUnit.hpp"
 #include "core/timingController.hpp"
 
+// System management and orchestration
+#include "core/system.hpp"
+
 /**
  * @namespace axonvex
  * @brief Main namespace for the AxonVex real-time framework
@@ -65,6 +68,7 @@
  * - High-performance async logging
  * - Comprehensive configuration management
  * - Thread-safe operations throughout
+ * - Centralized system orchestration and lifecycle management
  * 
  * All components are designed for minimal overhead and maximum performance
  * while maintaining ease of use and robust error handling.
@@ -77,7 +81,7 @@ namespace axonvex {
  * 
  * Contains the essential components that form the foundation of the
  * AxonVex framework, including timing, memory management, logging,
- * configuration, and high-performance data structures.
+ * configuration, system management, and high-performance data structures.
  */
 namespace core {
     // Core utilities are defined in their respective headers
@@ -111,6 +115,12 @@ using TimingConstraints = core::TimingConstraints;
 using SchedulerPriority = core::SchedulerPriority;
 using SchedulingPolicy = core::SchedulingPolicy;
 using SchedulerStatistics = core::SchedulerStatistics;
+using AxonVexSystem = core::AxonVexSystem;
+using SystemState = core::SystemState;
+using SystemConfiguration = core::SystemConfiguration;
+using SystemStatistics = core::SystemStatistics;
+using SystemHealth = core::SystemHealth;
+using SystemEvent = core::SystemEvent;
 
 /**
  * @brief Print welcome message with version information

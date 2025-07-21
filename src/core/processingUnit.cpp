@@ -66,8 +66,23 @@ void ProcessingUnit::resetPerformanceMetrics() {
 }
 
 void ProcessingUnit::setError(const std::string& error) {
+    std::lock_guard<std::mutex> lock(metricsMutex_);
     lastError_ = error;
     setState(ExecutionState::ERROR);
+}
+
+void ProcessingUnit::reset() {
+    // Reset execution state
+    setState(ExecutionState::STOPPED);
+    
+    // Reset performance metrics
+    resetPerformanceMetrics();
+    
+    // Clear last error
+    {
+        std::lock_guard<std::mutex> lock(metricsMutex_);
+        lastError_.clear();
+    }
 }
 
 void ProcessingUnit::updatePerformanceMetrics(std::chrono::microseconds executionTime) {

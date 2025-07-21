@@ -2,30 +2,23 @@
 
 # Core library sources (only include implemented files)
 set(AXONVEX_CORE_SOURCES
-    # Core utilities (implemented)
+    # Foundation layer (implemented)
     core/precisionTimer.cpp
     core/configuration.cpp
     core/path.cpp
-    # core/threadSafeQueue.cpp  # Header-only template
-    # core/circularBuffer.cpp   # Header-only template  
-    # core/memoryPool.cpp       # Header-only template
-    # core/logger.cpp           # Header-only template
-    
+    core/logger.cpp
     # Core runtime engine (implemented)
     core/processingUnit.cpp
     core/timingController.cpp
-    
-    # Core runtime engine (to be implemented)
-    # core/port_system.cpp
-    # core/timing_controller.cpp
-    # core/resource_manager.cpp
-    # core/system_manager.cpp
-    # core/performance_monitor.cpp
+    # System management (implemented)
+    core/system.cpp
+    # Plugins infrastructure (placeholder)
+    plugins/CMakeLists.txt
 )
 
 # Core library headers (only include implemented files)
 set(AXONVEX_CORE_HEADERS
-    # Core utilities (implemented)
+    # Foundation layer headers
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/precisionTimer.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/threadSafeQueue.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/circularBuffer.hpp
@@ -33,20 +26,13 @@ set(AXONVEX_CORE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/logger.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/configuration.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/path.hpp
-    
     # Core runtime engine (implemented)
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/processingUnit.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/timingController.hpp
-    
-    # Core runtime engine (to be implemented)
-    # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/port_system.hpp
-    # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/timing_controller.hpp
-    # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/resource_manager.hpp
-    # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/system_manager.hpp
-    # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/performance_monitor.hpp
-    
-    # Main header
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/axonvex.hpp
+    # System management (implemented)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/system.hpp
+    # Subsystems (pending)
+    # ... other subsystem headers will be added here
 )
 
 # Add sources to the main library
@@ -92,6 +78,7 @@ source_group("Core Utilities" FILES
     core/precisionTimer.cpp
     core/configuration.cpp
     core/path.cpp
+    core/logger.cpp
     # core/threadSafeQueue.cpp  # Header-only template
     # core/thread_safe_queue.cpp
     # core/circular_buffer.cpp
@@ -106,6 +93,10 @@ source_group("Core Runtime" FILES
     # core/resource_manager.cpp
     # core/system_manager.cpp
     # core/performance_monitor.cpp
+)
+
+source_group("System Management" FILES
+    core/system.cpp
 )
 
 source_group("Headers\\Core Utilities" FILES
