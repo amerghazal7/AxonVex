@@ -11,7 +11,7 @@
  * with nanosecond accuracy and minimal overhead.
  */
 
-#include <axonvex/core/precisionTimer.hpp>
+#include "axonvex/core/precisionTimer.hpp"
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
@@ -31,23 +31,28 @@ PrecisionTimer::PrecisionTimer(size_t max_samples)
 }
 
 void PrecisionTimer::start() noexcept {
-    start_time_ = ClockType::now();
+    // Store start time immediately, then set running flag
+    auto start_time = ClockType::now();
+    start_time_ = start_time;
     running_ = true;
 }
 
 void PrecisionTimer::stop() noexcept {
-    if (!running_) {
-        return;
+    // Capture stop time first to minimize measurement error
+    auto stop_time = ClockType::now();
+    
+    // Use compare_exchange to ensure atomic stop operation and prevent double-counting
+    bool expected = true;
+    if (!running_.compare_exchange_strong(expected, false)) {
+        return; // Not running, don't count this measurement
     }
     
-    auto stop_time = ClockType::now();
     stop_time_ = stop_time;
-    running_ = false;
     
     auto start_time = start_time_.load();
     auto elapsed = std::chrono::duration_cast<DurationType>(stop_time - start_time);
     last_measurement_ = elapsed;
-    total_measurements_++;
+    total_measurements_.fetch_add(1); // Use fetch_add for thread safety
     
     if (statistics_enabled_) {
         addSample(elapsed);

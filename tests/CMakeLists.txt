@@ -116,10 +116,11 @@ set_tests_properties(ThreadSafeQueueTest PROPERTIES LABELS "core;unit")
 set_tests_properties(MemoryPoolTest PROPERTIES LABELS "core;unit")
 
 # Enable parallel test execution
-if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.17)
-    set_tests_properties(PrecisionTimerTest CircularBufferTest ThreadSafeQueueTest MemoryPoolTest
-        PROPERTIES RESOURCE_GROUPS "CPU:2")
-endif()
+# Note: RESOURCE_GROUPS property disabled due to compatibility issues
+# if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.17)
+#     set_tests_properties(PrecisionTimerTest CircularBufferTest ThreadSafeQueueTest MemoryPoolTest
+#         PROPERTIES RESOURCE_GROUPS "CPU:2")
+# endif()
 
 # Add custom test target for running all core tests
 add_custom_target(test_core

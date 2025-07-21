@@ -6,34 +6,121 @@
 #include <optional>
 #include <algorithm>
 #include <cstring>
+#include "performanceStatistics.hpp"
+#include "coreUtilities.hpp"
 
 namespace axonvex::core {
 
 /**
- * @brief Statistics for circular buffer monitoring
+ * @brief Enhanced statistics for circular buffer with common interface
  */
-struct CircularBufferStatistics {
+class CircularBufferStatistics : public PerformanceStatisticsBase<CircularBufferStatistics> {
+public:
     std::atomic<uint64_t> write_count{0};
     std::atomic<uint64_t> read_count{0};
     std::atomic<uint64_t> write_failures{0};
     std::atomic<uint64_t> read_failures{0};
     std::atomic<uint64_t> overruns{0};
     std::atomic<uint64_t> underruns{0};
+    std::atomic<uint64_t> total_write_time_ns{0};
+    std::atomic<uint64_t> total_read_time_ns{0};
     
-    uint64_t getWriteCount() const noexcept { return write_count.load(); }
-    uint64_t getReadCount() const noexcept { return read_count.load(); }
-    uint64_t getWriteFailures() const noexcept { return write_failures.load(); }
-    uint64_t getReadFailures() const noexcept { return read_failures.load(); }
-    uint64_t getOverruns() const noexcept { return overruns.load(); }
-    uint64_t getUnderruns() const noexcept { return underruns.load(); }
+    uint64_t getWriteCount() const noexcept { return safeLoad(write_count); }
+    uint64_t getReadCount() const noexcept { return safeLoad(read_count); }
+    uint64_t getWriteFailures() const noexcept { return safeLoad(write_failures); }
+    uint64_t getReadFailures() const noexcept { return safeLoad(read_failures); }
+    uint64_t getOverruns() const noexcept { return safeLoad(overruns); }
+    uint64_t getUnderruns() const noexcept { return safeLoad(underruns); }
     
-    void reset() noexcept {
-        write_count.store(0);
-        read_count.store(0);
-        write_failures.store(0);
-        read_failures.store(0);
-        overruns.store(0);
-        underruns.store(0);
+    /**
+     * @brief Record a successful write operation
+     */
+    void recordWrite(std::chrono::nanoseconds duration = std::chrono::nanoseconds{0}) noexcept {
+        safeIncrement(write_count);
+        if (duration.count() > 0) {
+            safeIncrement(total_write_time_ns, static_cast<uint64_t>(duration.count()));
+        }
+        updateLastAccess();
+    }
+    
+    /**
+     * @brief Record a successful read operation
+     */
+    void recordRead(std::chrono::nanoseconds duration = std::chrono::nanoseconds{0}) noexcept {
+        safeIncrement(read_count);
+        if (duration.count() > 0) {
+            safeIncrement(total_read_time_ns, static_cast<uint64_t>(duration.count()));
+        }
+        updateLastAccess();
+    }
+    
+    /**
+     * @brief Record a write failure
+     */
+    void recordWriteFailure() noexcept {
+        safeIncrement(write_failures);
+        safeIncrement(overruns);
+        updateLastAccess();
+    }
+    
+    /**
+     * @brief Record a read failure
+     */
+    void recordReadFailure() noexcept {
+        safeIncrement(read_failures);
+        safeIncrement(underruns);
+        updateLastAccess();
+    }
+    
+    /**
+     * @brief Get average write time
+     */
+    std::chrono::nanoseconds getAverageWriteTime() const noexcept {
+        uint64_t writes = safeLoad(write_count);
+        uint64_t total_time = safeLoad(total_write_time_ns);
+        return writes > 0 ? std::chrono::nanoseconds{total_time / writes} : std::chrono::nanoseconds{0};
+    }
+    
+    /**
+     * @brief Get average read time
+     */
+    std::chrono::nanoseconds getAverageReadTime() const noexcept {
+        uint64_t reads = safeLoad(read_count);
+        uint64_t total_time = safeLoad(total_read_time_ns);
+        return reads > 0 ? std::chrono::nanoseconds{total_time / reads} : std::chrono::nanoseconds{0};
+    }
+    
+    void reset() noexcept override {
+        safeStore(write_count, 0UL);
+        safeStore(read_count, 0UL);
+        safeStore(write_failures, 0UL);
+        safeStore(read_failures, 0UL);
+        safeStore(overruns, 0UL);
+        safeStore(underruns, 0UL);
+        safeStore(total_write_time_ns, 0UL);
+        safeStore(total_read_time_ns, 0UL);
+    }
+    
+    std::string getReport() const override {
+        auto elapsed = getElapsedTime();
+        std::string report = getComponentName() + " Performance Statistics:\n";
+        report += "  Writes: " + std::to_string(getWriteCount()) + 
+                 " (avg: " + formatDuration(getAverageWriteTime()) + ")\n";
+        report += "  Reads: " + std::to_string(getReadCount()) +
+                 " (avg: " + formatDuration(getAverageReadTime()) + ")\n";
+        report += "  Write Failures: " + std::to_string(getWriteFailures()) + "\n";
+        report += "  Read Failures: " + std::to_string(getReadFailures()) + "\n";
+        report += "  Overruns: " + std::to_string(getOverruns()) + "\n";
+        report += "  Underruns: " + std::to_string(getUnderruns()) + "\n";
+        report += "  Success Rate: " + std::to_string(calculatePercentage(
+            getWriteCount() + getReadCount(), 
+            getWriteCount() + getReadCount() + getWriteFailures() + getReadFailures())) + "%\n";
+        report += "  Runtime: " + std::to_string(elapsed.count()) + " seconds\n";
+        return report;
+    }
+    
+    std::string getComponentName() const override {
+        return "CircularBuffer";
     }
 };
 
@@ -63,9 +150,9 @@ struct CircularBufferStatistics {
 template<typename T>
 class CircularBuffer {
 public:
-    static constexpr size_t DEFAULT_CAPACITY = 1024;
-    static constexpr size_t MIN_CAPACITY = 16;
-    static constexpr size_t MAX_CAPACITY = 1024 * 1024;
+    static constexpr size_t DEFAULT_CAPACITY = CapacityUtils::Defaults::DEFAULT_CAPACITY;
+    static constexpr size_t MIN_CAPACITY = CapacityUtils::Defaults::MIN_CAPACITY;
+    static constexpr size_t MAX_CAPACITY = CapacityUtils::Defaults::MAX_CAPACITY;
     
     /**
      * @brief Construct a new CircularBuffer
@@ -210,22 +297,15 @@ private:
     // Statistics
     mutable CircularBufferStatistics stats_;
     
-    // Helper methods
-    static size_t nextPowerOf2(size_t value) noexcept;
+    // Helper methods (using shared utilities)
     size_t getNextWriteIndex() const noexcept;
     size_t getNextReadIndex() const noexcept;
-    
-    // Memory ordering constants
-    static constexpr std::memory_order acquire_order = std::memory_order_acquire;
-    static constexpr std::memory_order release_order = std::memory_order_release;
-    static constexpr std::memory_order relaxed_order = std::memory_order_relaxed;
-    static constexpr std::memory_order acq_rel_order = std::memory_order_acq_rel;
 };
 
 // Implementation (header-only for templates)
 template<typename T>
 CircularBuffer<T>::CircularBuffer(size_t capacity)
-    : capacity_(std::max(MIN_CAPACITY, std::min(MAX_CAPACITY, nextPowerOf2(capacity))))
+    : capacity_(CapacityUtils::validateCapacity(capacity, MIN_CAPACITY, MAX_CAPACITY, true))
     , capacity_mask_(capacity_ - 1)
     , buffer_(std::make_unique<T[]>(capacity_)) {
     
@@ -237,13 +317,12 @@ CircularBuffer<T>::CircularBuffer(size_t capacity)
 
 template<typename T>
 bool CircularBuffer<T>::write(const T& item) noexcept {
-    const size_t current_write = write_index_.load(relaxed_order);
+    const size_t current_write = write_index_.load(MemoryOrdering::relaxed);
     const size_t next_write = (current_write + 1) & capacity_mask_;
     
     // Check if buffer is full
-    if (next_write == read_index_.load(acquire_order)) {
-        stats_.write_failures.fetch_add(1, relaxed_order);
-        stats_.overruns.fetch_add(1, relaxed_order);
+    if (next_write == read_index_.load(MemoryOrdering::acquire)) {
+        stats_.recordWriteFailure();
         return false;
     }
     
@@ -251,21 +330,20 @@ bool CircularBuffer<T>::write(const T& item) noexcept {
     buffer_[current_write] = item;
     
     // Update write index (release semantics to ensure write completes first)
-    write_index_.store(next_write, release_order);
+    write_index_.store(next_write, MemoryOrdering::release);
     
-    stats_.write_count.fetch_add(1, relaxed_order);
+    stats_.recordWrite();
     return true;
 }
 
 template<typename T>
 bool CircularBuffer<T>::write(T&& item) noexcept {
-    const size_t current_write = write_index_.load(relaxed_order);
+    const size_t current_write = write_index_.load(MemoryOrdering::relaxed);
     const size_t next_write = (current_write + 1) & capacity_mask_;
     
     // Check if buffer is full
-    if (next_write == read_index_.load(acquire_order)) {
-        stats_.write_failures.fetch_add(1, relaxed_order);
-        stats_.overruns.fetch_add(1, relaxed_order);
+    if (next_write == read_index_.load(MemoryOrdering::acquire)) {
+        stats_.recordWriteFailure();
         return false;
     }
     
@@ -273,20 +351,19 @@ bool CircularBuffer<T>::write(T&& item) noexcept {
     buffer_[current_write] = std::move(item);
     
     // Update write index (release semantics)
-    write_index_.store(next_write, release_order);
+    write_index_.store(next_write, MemoryOrdering::release);
     
-    stats_.write_count.fetch_add(1, relaxed_order);
+    stats_.recordWrite();
     return true;
 }
 
 template<typename T>
 std::optional<T> CircularBuffer<T>::read() noexcept {
-    const size_t current_read = read_index_.load(relaxed_order);
+    const size_t current_read = read_index_.load(MemoryOrdering::relaxed);
     
     // Check if buffer is empty
-    if (current_read == write_index_.load(acquire_order)) {
-        stats_.read_failures.fetch_add(1, relaxed_order);
-        stats_.underruns.fetch_add(1, relaxed_order);
+    if (current_read == write_index_.load(MemoryOrdering::acquire)) {
+        stats_.recordReadFailure();
         return std::nullopt;
     }
     
@@ -295,18 +372,18 @@ std::optional<T> CircularBuffer<T>::read() noexcept {
     
     // Update read index (release semantics)
     const size_t next_read = (current_read + 1) & capacity_mask_;
-    read_index_.store(next_read, release_order);
+    read_index_.store(next_read, MemoryOrdering::release);
     
-    stats_.read_count.fetch_add(1, relaxed_order);
+    stats_.recordRead();
     return item;
 }
 
 template<typename T>
 std::optional<T> CircularBuffer<T>::peek() const noexcept {
-    const size_t current_read = read_index_.load(relaxed_order);
+    const size_t current_read = read_index_.load(MemoryOrdering::relaxed);
     
     // Check if buffer is empty
-    if (current_read == write_index_.load(acquire_order)) {
+    if (current_read == write_index_.load(MemoryOrdering::acquire)) {
         return std::nullopt;
     }
     
@@ -352,20 +429,20 @@ size_t CircularBuffer<T>::readMany(T* items, size_t count) noexcept {
 
 template<typename T>
 bool CircularBuffer<T>::isEmpty() const noexcept {
-    return read_index_.load(acquire_order) == write_index_.load(acquire_order);
+    return read_index_.load(MemoryOrdering::acquire) == write_index_.load(MemoryOrdering::acquire);
 }
 
 template<typename T>
 bool CircularBuffer<T>::isFull() const noexcept {
-    const size_t current_write = write_index_.load(relaxed_order);
+    const size_t current_write = write_index_.load(MemoryOrdering::relaxed);
     const size_t next_write = (current_write + 1) & capacity_mask_;
-    return next_write == read_index_.load(acquire_order);
+    return next_write == read_index_.load(MemoryOrdering::acquire);
 }
 
 template<typename T>
 size_t CircularBuffer<T>::size() const noexcept {
-    const size_t write_idx = write_index_.load(acquire_order);
-    const size_t read_idx = read_index_.load(acquire_order);
+    const size_t write_idx = write_index_.load(MemoryOrdering::acquire);
+    const size_t read_idx = read_index_.load(MemoryOrdering::acquire);
     return (write_idx - read_idx) & capacity_mask_;
 }
 
@@ -391,8 +468,8 @@ void CircularBuffer<T>::resetStatistics() noexcept {
 
 template<typename T>
 void CircularBuffer<T>::clear() noexcept {
-    read_index_.store(0, relaxed_order);
-    write_index_.store(0, relaxed_order);
+    read_index_.store(0, MemoryOrdering::relaxed);
+    write_index_.store(0, MemoryOrdering::relaxed);
 }
 
 template<typename T>
@@ -401,26 +478,13 @@ double CircularBuffer<T>::getUtilization() const noexcept {
 }
 
 template<typename T>
-size_t CircularBuffer<T>::nextPowerOf2(size_t value) noexcept {
-    if (value == 0) return 1;
-    --value;
-    value |= value >> 1;
-    value |= value >> 2;
-    value |= value >> 4;
-    value |= value >> 8;
-    value |= value >> 16;
-    value |= value >> 32;
-    return ++value;
-}
-
-template<typename T>
 size_t CircularBuffer<T>::getNextWriteIndex() const noexcept {
-    return (write_index_.load(relaxed_order) + 1) & capacity_mask_;
+    return (write_index_.load(MemoryOrdering::relaxed) + 1) & capacity_mask_;
 }
 
 template<typename T>
 size_t CircularBuffer<T>::getNextReadIndex() const noexcept {
-    return (read_index_.load(relaxed_order) + 1) & capacity_mask_;
+    return (read_index_.load(MemoryOrdering::relaxed) + 1) & capacity_mask_;
 }
 
 } // namespace axonvex::core 

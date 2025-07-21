@@ -98,6 +98,11 @@ struct SchedulerTask {
     uint64_t missedDeadlines{0};
     std::chrono::microseconds totalExecutionTime{0};
     
+    // Failure tracking for error handling
+    uint64_t consecutiveFailures{0};
+    std::chrono::steady_clock::time_point lastFailureTime;
+    std::chrono::steady_clock::time_point reactivationTime;
+    
     // Custom constructors for atomic members
     SchedulerTask() = default;
     
@@ -112,7 +117,10 @@ struct SchedulerTask {
         , name(other.name)
         , executionCount(other.executionCount)
         , missedDeadlines(other.missedDeadlines)
-        , totalExecutionTime(other.totalExecutionTime) {}
+        , totalExecutionTime(other.totalExecutionTime)
+        , consecutiveFailures(other.consecutiveFailures)
+        , lastFailureTime(other.lastFailureTime)
+        , reactivationTime(other.reactivationTime) {}
     
     SchedulerTask& operator=(const SchedulerTask& other) {
         if (this != &other) {
@@ -127,6 +135,9 @@ struct SchedulerTask {
             executionCount = other.executionCount;
             missedDeadlines = other.missedDeadlines;
             totalExecutionTime = other.totalExecutionTime;
+            consecutiveFailures = other.consecutiveFailures;
+            lastFailureTime = other.lastFailureTime;
+            reactivationTime = other.reactivationTime;
         }
         return *this;
     }
@@ -142,7 +153,10 @@ struct SchedulerTask {
         , name(std::move(other.name))
         , executionCount(other.executionCount)
         , missedDeadlines(other.missedDeadlines)
-        , totalExecutionTime(other.totalExecutionTime) {}
+        , totalExecutionTime(other.totalExecutionTime)
+        , consecutiveFailures(other.consecutiveFailures)
+        , lastFailureTime(other.lastFailureTime)
+        , reactivationTime(other.reactivationTime) {}
     
     SchedulerTask& operator=(SchedulerTask&& other) noexcept {
         if (this != &other) {
@@ -157,6 +171,9 @@ struct SchedulerTask {
             executionCount = other.executionCount;
             missedDeadlines = other.missedDeadlines;
             totalExecutionTime = other.totalExecutionTime;
+            consecutiveFailures = other.consecutiveFailures;
+            lastFailureTime = other.lastFailureTime;
+            reactivationTime = other.reactivationTime;
         }
         return *this;
     }

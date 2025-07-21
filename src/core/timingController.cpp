@@ -258,6 +258,19 @@ void RealTimeScheduler::schedulerLoop() {
                 break;
         }
         
+        // Check for tasks that need reactivation
+        {
+            std::lock_guard<std::mutex> lock(tasksMutex_);
+            for (auto& [taskId, task] : tasks_) {
+                if (!task.active.load() && 
+                    task.consecutiveFailures > 0 && 
+                    now >= task.reactivationTime) {
+                    task.active.store(true);
+                    task.consecutiveFailures = 0; // Reset failure count on reactivation
+                }
+            }
+        }
+        
         // Execute selected task
         if (selectedTaskId != 0) {
             std::lock_guard<std::mutex> lock(tasksMutex_);
@@ -427,6 +440,7 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         // Update next execution time
         task.lastExecution = executionStart;
         task.nextExecution = calculateNextExecution(task);
+        task.consecutiveFailures = 0; // Reset failure count on successful execution
         
         // Update global statistics
         {
@@ -474,6 +488,25 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         // Update task statistics for failed execution
         task.executionCount++;
         task.totalExecutionTime += executionTime;
+        task.consecutiveFailures++;
+        task.lastFailureTime = executionEnd;
+        
+        // Temporarily deactivate task if too many consecutive failures
+        const uint64_t MAX_CONSECUTIVE_FAILURES = 10;
+        const auto FAILURE_BACKOFF_TIME = std::chrono::milliseconds(100);
+        
+        if (task.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            task.active.store(false);
+            task.reactivationTime = executionEnd + FAILURE_BACKOFF_TIME;
+            
+            // Log task deactivation
+            if (errorCallback_) {
+                std::string msg = "Task temporarily deactivated after " + 
+                                std::to_string(MAX_CONSECUTIVE_FAILURES) + 
+                                " consecutive failures: " + e.what();
+                errorCallback_(task.unit, msg.c_str());
+            }
+        }
         
         // Notify error callback if available
         if (errorCallback_) {
@@ -484,8 +517,10 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
             task.missedDeadlines++;
         }
         
-        // Log error if debugging is enabled
-        std::cerr << "Task execution failed: " << e.what() << std::endl;
+        // Log error if debugging is enabled (but throttled)
+        if (task.consecutiveFailures <= MAX_CONSECUTIVE_FAILURES) {
+            std::cerr << "Task execution failed: " << e.what() << std::endl;
+        }
     }
     
     task.executing.store(false);

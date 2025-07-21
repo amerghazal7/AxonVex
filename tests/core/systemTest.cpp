@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "axonvex/core/system.hpp"
+#include "../../include/axonvex/core/system.hpp"
 #include <thread>
 #include <chrono>
 #include <atomic>
@@ -93,7 +93,15 @@ protected:
     
     void TearDown() override {
         if (system_) {
+            // Clear any registered callbacks first
+            system_->registerEventCallback(nullptr);
+            
+            // Stop the system
             system_->stop();
+            
+            // Give time for cleanup
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            
             system_.reset();
         }
     }
@@ -368,13 +376,14 @@ TEST_F(AxonVexSystemTest, EventCallbacks) {
 }
 
 TEST_F(AxonVexSystemTest, ProcessingUnitEvents) {
-    std::vector<SystemEvent> receivedEvents;
-    std::mutex eventMutex;
+    // Use shared pointers to ensure lifetime management
+    auto receivedEvents = std::make_shared<std::vector<SystemEvent>>();
+    auto eventMutex = std::make_shared<std::mutex>();
     
-    // Register event callback
-    system_->registerEventCallback([&](const SystemEvent& event) {
-        std::lock_guard<std::mutex> lock(eventMutex);
-        receivedEvents.push_back(event);
+    // Register event callback with shared pointers to prevent dangling references
+    system_->registerEventCallback([receivedEvents, eventMutex](const SystemEvent& event) {
+        std::lock_guard<std::mutex> lock(*eventMutex);
+        receivedEvents->push_back(event);
     });
     
     EXPECT_TRUE(system_->initialize());
@@ -386,11 +395,11 @@ TEST_F(AxonVexSystemTest, ProcessingUnitEvents) {
     std::this_thread::sleep_for(50ms);
     
     {
-        std::lock_guard<std::mutex> lock(eventMutex);
+        std::lock_guard<std::mutex> lock(*eventMutex);
         
         // Check for processing unit added event
         bool foundUnitAddedEvent = false;
-        for (const auto& event : receivedEvents) {
+        for (const auto& event : *receivedEvents) {
             if (event.type == SystemEvent::Type::PROCESSING_UNIT_ADDED) {
                 foundUnitAddedEvent = true;
                 EXPECT_EQ(event.metadata.at("unit_name"), "TestUnit");
@@ -401,6 +410,12 @@ TEST_F(AxonVexSystemTest, ProcessingUnitEvents) {
     }
     
     system_->unregisterProcessingUnit(unitId);
+    
+    // Clear callbacks before test ends to prevent race conditions
+    system_->registerEventCallback(nullptr);
+    
+    // Give a moment for any pending callbacks to finish
+    std::this_thread::sleep_for(10ms);
 }
 
 // =================================================================
