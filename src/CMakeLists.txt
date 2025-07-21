@@ -4,16 +4,18 @@
 set(AXONVEX_CORE_SOURCES
     # Core utilities (implemented)
     core/precisionTimer.cpp
+    core/configuration.cpp
+    core/path.cpp
     # core/threadSafeQueue.cpp  # Header-only template
     # core/circularBuffer.cpp   # Header-only template  
     # core/memoryPool.cpp       # Header-only template
     # core/logger.cpp           # Header-only template
     
-    # Core utilities (to be implemented)
-    # core/configuration.cpp
+    # Core runtime engine (implemented)
+    core/processingUnit.cpp
+    core/timingController.cpp
     
     # Core runtime engine (to be implemented)
-    # core/processing_unit.cpp
     # core/port_system.cpp
     # core/timing_controller.cpp
     # core/resource_manager.cpp
@@ -29,12 +31,14 @@ set(AXONVEX_CORE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/circularBuffer.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/memoryPool.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/logger.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/configuration.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/path.hpp
     
-    # Core utilities (to be implemented)
-    # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/configuration.hpp
+    # Core runtime engine (implemented)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/processingUnit.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/timingController.hpp
     
     # Core runtime engine (to be implemented)
-    # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/processing_unit.hpp
     # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/port_system.hpp
     # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/timing_controller.hpp
     # ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/resource_manager.hpp
@@ -86,18 +90,19 @@ target_link_libraries(axonvex
 # Create source groups for IDE organization
 source_group("Core Utilities" FILES
     core/precisionTimer.cpp
+    core/configuration.cpp
+    core/path.cpp
     # core/threadSafeQueue.cpp  # Header-only template
     # core/thread_safe_queue.cpp
     # core/circular_buffer.cpp
     # core/memory_pool.cpp
     # core/logger.cpp
-    # core/configuration.cpp
 )
 
 source_group("Core Runtime" FILES
-    # core/processing_unit.cpp
+    core/processingUnit.cpp
+    core/timingController.cpp
     # core/port_system.cpp
-    # core/timing_controller.cpp
     # core/resource_manager.cpp
     # core/system_manager.cpp
     # core/performance_monitor.cpp

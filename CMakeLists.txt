@@ -55,7 +55,7 @@ if(AXONVEX_ENABLE_REAL_TIME)
             -finline-functions      # Inline functions
             -fomit-frame-pointer    # Omit frame pointer
             # -fno-exceptions         # Keep exceptions for error handling
-            -fno-rtti               # Disable RTTI for RT
+            # -fno-rtti               # Keep RTTI for type identification
         )
         
         # Additional flags for debug/release

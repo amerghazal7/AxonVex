@@ -1,0 +1,193 @@
+name: AxonVex CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        build_type: [Debug, Release]
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cpp_compiler: g++
+          - os: macos-latest
+            compiler: clang
+            cpp_compiler: clang++
+          - os: windows-latest
+            compiler: msvc
+            cpp_compiler: cl
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Install Conan
+      run: |
+        pip install conan
+        conan profile detect --force
+
+    - name: Cache Conan packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.conan2
+        key: ${{ runner.os }}-conan-${{ hashFiles('**/conanfile.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-conan-
+
+    - name: Configure CMake (Linux/macOS)
+      if: runner.os != 'Windows'
+      run: |
+        mkdir -p build
+        cd build
+        conan install .. --output-folder=. --build=missing --settings=build_type=${{ matrix.build_type }}
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        mkdir build
+        cd build
+        conan install .. --output-folder=. --build=missing --settings=build_type=${{ matrix.build_type }}
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+    - name: Build
+      run: |
+        cd build
+        cmake --build . --config ${{ matrix.build_type }} --parallel
+
+    - name: Run Tests
+      run: |
+        cd build
+        ctest --output-on-failure --parallel --build-config ${{ matrix.build_type }}
+
+    - name: Run Examples (Linux/macOS)
+      if: runner.os != 'Windows'
+      run: |
+        cd build/examples
+        echo "=== Testing PrecisionTimer Example ==="
+        ./precision_timer_example
+        echo "=== Testing ThreadSafeQueue Example ==="
+        ./threadSafeQueue_example
+        echo "=== Testing Configuration Example ==="
+        ./configuration_example
+        echo "=== Testing Path Example ==="
+        ./path_example
+
+    - name: Run Examples (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        cd build/examples/${{ matrix.build_type }}
+        echo "=== Testing PrecisionTimer Example ==="
+        ./precision_timer_example.exe
+        echo "=== Testing ThreadSafeQueue Example ==="
+        ./threadSafeQueue_example.exe
+        echo "=== Testing Configuration Example ==="
+        ./configuration_example.exe
+        echo "=== Testing Path Example ==="
+        ./path_example.exe
+
+  code-quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install clang-format and clang-tidy
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format clang-tidy
+
+    - name: Check code formatting
+      run: |
+        find include src tests examples -name "*.hpp" -o -name "*.cpp" | xargs clang-format --dry-run --Werror
+
+    - name: Setup Python for Conan
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Install Conan
+      run: |
+        pip install conan
+        conan profile detect --force
+
+    - name: Configure for clang-tidy
+      run: |
+        mkdir -p build
+        cd build
+        conan install .. --output-folder=. --build=missing
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+    - name: Run clang-tidy
+      run: |
+        cd build
+        find ../src ../include -name "*.cpp" -o -name "*.hpp" | xargs clang-tidy -p .
+
+  documentation:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check documentation files
+      run: |
+        echo "Checking for required documentation files..."
+        test -f README.md && echo "✓ README.md exists"
+        test -f LICENSE && echo "✓ LICENSE exists"
+        test -f AxonVex_Technical_Specification.md && echo "✓ Technical specification exists"
+        test -f AxonVex_Implementation_Plan.md && echo "✓ Implementation plan exists"
+        echo "Documentation check completed"
+
+  performance-benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Install Conan
+      run: |
+        pip install conan
+        conan profile detect --force
+
+    - name: Build Release version
+      run: |
+        mkdir -p build
+        cd build
+        conan install .. --output-folder=. --build=missing --settings=build_type=Release
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release
+        cmake --build . --config Release --parallel
+
+    - name: Run performance benchmarks
+      run: |
+        cd build/examples
+        echo "=== Performance Benchmarks ==="
+        echo "Running Path class performance benchmark..."
+        ./path_example | grep -A 20 "Performance Benchmark"
+        echo "Running PrecisionTimer benchmark..."
+        ./precision_timer_example | grep -A 10 "Performance" 
