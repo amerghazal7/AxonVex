@@ -16,10 +16,10 @@
 #include <random>
 
 // Include our optimized headers
-#include "../include/axonvex/core/performanceStatistics.hpp"
-#include "../include/axonvex/core/errorHandler.hpp"
-#include "../include/axonvex/core/coreUtilities.hpp"
-#include "../include/axonvex/core/memoryPool.hpp"
+#include <axonvex/core/performanceStatistics.hpp>
+#include <axonvex/core/errorHandler.hpp>
+#include <axonvex/core/coreUtilities.hpp>
+#include <axonvex/core/memoryPool.hpp>
 // Note: CircularBuffer and ThreadSafeQueue updates are in progress
 
 using namespace axonvex::core;

@@ -11,12 +11,14 @@
  * - Simple data processing pipeline
  */
 
-#include "../include/axonvex/axonvex.hpp"
+#include <axonvex/axonvex.hpp>
 #include <iostream>
 #include <chrono>
 #include <thread>
 #include <atomic>
 #include <random>
+
+using namespace axonvex::core;
 
 using namespace axonvex;
 

@@ -11,7 +11,7 @@
  * management with JSON/YAML parsing, schema validation, and runtime updates.
  */
 
-#include "axonvex/core/configuration.hpp"
+#include <axonvex/core/configuration.hpp>
 #include <fstream>
 #include <sstream>
 #include <algorithm>

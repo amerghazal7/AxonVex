@@ -17,7 +17,7 @@
  */
 
 #include <gtest/gtest.h>
-#include "../../include/axonvex/core/path.hpp"
+#include <axonvex/core/path.hpp>
 #include <fstream>
 #include <thread>
 #include <chrono>

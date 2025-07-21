@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../../include/axonvex/core/system.hpp"
+#include <axonvex/core/system.hpp>
 #include <thread>
 #include <chrono>
 #include <atomic>

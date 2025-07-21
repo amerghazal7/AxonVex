@@ -14,7 +14,7 @@ namespace axonvex::core {
  * @brief Error severity levels
  */
 enum class ErrorSeverity {
-    DEBUG = 0,      ///< Debug information
+    DEBUG_LEVEL = 0,///< Debug information
     INFO = 1,       ///< Informational
     WARNING = 2,    ///< Warning condition
     ERROR = 3,      ///< Error condition

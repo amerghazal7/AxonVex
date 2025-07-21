@@ -29,30 +29,30 @@
 #include <iostream>
 
 // Core timing utilities
-#include "core/precisionTimer.hpp"
+#include <axonvex/core/precisionTimer.hpp>
 
 // High-performance data structures
-#include "core/threadSafeQueue.hpp"
-#include "core/circularBuffer.hpp"
+#include <axonvex/core/threadSafeQueue.hpp>
+#include <axonvex/core/circularBuffer.hpp>
 
 // Memory management
-#include "core/memoryPool.hpp"
+#include <axonvex/core/memoryPool.hpp>
 
 // Logging system with dual interface
-#include "core/logger.hpp"
+#include <axonvex/core/logger.hpp>
 
 // Configuration management
-#include "core/configuration.hpp"
+#include <axonvex/core/configuration.hpp>
 
 // Cross-platform path management
-#include "core/path.hpp"
+#include <axonvex/core/path.hpp>
 
 // Core runtime engine
-#include "core/processingUnit.hpp"
-#include "core/timingController.hpp"
+#include <axonvex/core/processingUnit.hpp>
+#include <axonvex/core/timingController.hpp>
 
 // System management and orchestration
-#include "core/system.hpp"
+#include <axonvex/core/system.hpp>
 
 /**
  * @namespace axonvex
@@ -86,41 +86,6 @@ namespace axonvex {
 namespace core {
     // Core utilities are defined in their respective headers
 }
-
-// Convenience type aliases - bring core types to main namespace
-using PrecisionTimer = core::PrecisionTimer;
-using TimingStatistics = core::TimingStatistics;
-template<typename T> using ThreadSafeQueue = core::ThreadSafeQueue<T>;
-using QueueStatistics = core::QueueStatistics;
-template<typename T> using CircularBuffer = core::CircularBuffer<T>;
-using CircularBufferStatistics = core::CircularBufferStatistics;
-template<typename T> using MemoryPool = core::MemoryPool<T>;
-using MemoryPoolStatistics = core::MemoryPoolStatistics;
-using Logger = core::Logger;
-using LogLevel = core::LogLevel;
-using LogStatistics = core::LogStatistics;
-using Configuration = core::Configuration;
-using ConfigurationStatistics = core::ConfigurationStatistics;
-using ValidationError = core::ValidationError;
-using Path = core::Path;
-using ProcessingUnit = core::ProcessingUnit;
-using PerformanceMetrics = core::PerformanceMetrics;
-using ProcessPriority = core::ProcessPriority;
-using ExecutionState = core::ExecutionState;
-template<typename T> using InputPort = core::InputPort<T>;
-template<typename T> using OutputPort = core::OutputPort<T>;
-using BasePort = core::BasePort;
-using TimingController = core::TimingController;
-using TimingConstraints = core::TimingConstraints;
-using SchedulerPriority = core::SchedulerPriority;
-using SchedulingPolicy = core::SchedulingPolicy;
-using SchedulerStatistics = core::SchedulerStatistics;
-using AxonVexSystem = core::AxonVexSystem;
-using SystemState = core::SystemState;
-using SystemConfiguration = core::SystemConfiguration;
-using SystemStatistics = core::SystemStatistics;
-using SystemHealth = core::SystemHealth;
-using SystemEvent = core::SystemEvent;
 
 /**
  * @brief Print welcome message with version information

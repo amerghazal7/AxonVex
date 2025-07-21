@@ -9,7 +9,7 @@
  * These members are available in the AxonVexSystem base class for use in implementation and extensions.
  */
 
-#include "axonvex/core/system.hpp"
+#include <axonvex/core/system.hpp>
 #include <algorithm>
 #include <sstream>
 #include <fstream>

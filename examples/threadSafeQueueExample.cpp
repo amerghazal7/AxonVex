@@ -14,7 +14,7 @@
  * - Error handling and edge cases
  */
 
-#include "../include/axonvex/axonvex.hpp"
+#include <axonvex/axonvex.hpp>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -22,6 +22,8 @@
 #include <chrono>
 #include <atomic>
 #include <future>
+
+using namespace axonvex::core;
 
 // Test message structure
 struct TestMessage {
@@ -35,7 +37,7 @@ struct TestMessage {
 };
 
 // Producer function
-void producer(axonvex::ThreadSafeQueue<TestMessage>& queue, 
+void producer(ThreadSafeQueue<TestMessage>& queue, 
               int producer_id, int message_count, 
               std::atomic<int>& messages_produced) {
     
@@ -59,7 +61,7 @@ void producer(axonvex::ThreadSafeQueue<TestMessage>& queue,
 }
 
 // Consumer function
-void consumer(axonvex::ThreadSafeQueue<TestMessage>& queue,
+void consumer(ThreadSafeQueue<TestMessage>& queue,
               int consumer_id, int expected_messages,
               std::atomic<int>& messages_consumed,
               std::atomic<bool>& should_stop) {
@@ -92,12 +94,12 @@ void consumer(axonvex::ThreadSafeQueue<TestMessage>& queue,
 
 // Performance benchmark function
 template<typename T>
-void benchmarkQueue(axonvex::ThreadSafeQueue<T>& queue, 
+void benchmarkQueue(ThreadSafeQueue<T>& queue, 
                    int iterations, const std::string& type_name) {
     
     std::cout << "\n=== Performance Benchmark: " << type_name << " ===\n";
     
-    axonvex::PrecisionTimer timer;
+    PrecisionTimer timer;
     
     // Benchmark enqueue operations
     timer.start();
@@ -143,7 +145,7 @@ int main() {
         std::cout << "Test 1: Basic queue operations\n";
         std::cout << "-------------------------------\n";
         
-        axonvex::ThreadSafeQueue<int> basic_queue(64);
+        ThreadSafeQueue<int> basic_queue(64);
         
         // Test enqueue and dequeue
         std::cout << "Enqueuing numbers 1-10...\n";
@@ -175,7 +177,7 @@ int main() {
         constexpr int messages_per_producer = 200;
         constexpr int total_messages = num_producers * messages_per_producer;
         
-        axonvex::ThreadSafeQueue<TestMessage> mt_queue(1024);
+        ThreadSafeQueue<TestMessage> mt_queue(1024);
         
         std::atomic<int> messages_produced{0};
         std::atomic<int> messages_consumed{0};
@@ -246,10 +248,10 @@ int main() {
         std::cout << "------------------------------\n";
         
         // Benchmark different data types
-        axonvex::ThreadSafeQueue<int> int_queue(10000);
+        ThreadSafeQueue<int> int_queue(10000);
         benchmarkQueue(int_queue, 5000, "int");
         
-        axonvex::ThreadSafeQueue<std::string> string_queue(10000);
+        ThreadSafeQueue<std::string> string_queue(10000);
         benchmarkQueue(string_queue, 5000, "std::string");
         
         std::cout << "\n=== Example completed successfully! ===\n";
