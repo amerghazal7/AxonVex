@@ -11,9 +11,9 @@
 #include <unordered_map>
 #include <queue>
 #include <string>
-#include "precisionTimer.hpp"
-#include "threadSafeQueue.hpp"
-#include "memoryPool.hpp"
+#include <axonvex/core/precisionTimer.hpp>
+#include <axonvex/core/threadSafeQueue.hpp>
+#include <axonvex/core/memoryPool.hpp>
 
 namespace axonvex::core {
 

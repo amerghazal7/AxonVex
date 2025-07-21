@@ -7,7 +7,7 @@
 #include <thread>
 #include <algorithm>
 #include <new>
-#include "circularBuffer.hpp"
+#include <axonvex/core/circularBuffer.hpp>
 
 namespace axonvex::core {
 

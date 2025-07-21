@@ -16,8 +16,8 @@
 #include <ctime>
 #include <vector>
 #include <future>
-#include "threadSafeQueue.hpp"
-#include "memoryPool.hpp"
+#include <axonvex/core/threadSafeQueue.hpp>
+#include <axonvex/core/memoryPool.hpp>
 
 namespace axonvex::core {
 

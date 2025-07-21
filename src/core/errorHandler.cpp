@@ -1,4 +1,4 @@
-#include "../../include/axonvex/core/errorHandler.hpp"
+#include <axonvex/core/errorHandler.hpp>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -26,7 +26,7 @@ std::string ErrorInfo::getFormattedMessage() const {
 
 std::string ErrorInfo::getSeverityString() const {
     switch (severity) {
-        case ErrorSeverity::DEBUG: return "DEBUG";
+        case ErrorSeverity::DEBUG_LEVEL: return "DEBUG";
         case ErrorSeverity::INFO: return "INFO";
         case ErrorSeverity::WARNING: return "WARNING";
         case ErrorSeverity::ERROR: return "ERROR";

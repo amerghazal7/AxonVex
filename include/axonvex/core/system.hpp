@@ -25,14 +25,14 @@
 #include <functional>
 #include <future>
 
-#include "processingUnit.hpp"
-#include "timingController.hpp"
-#include "configuration.hpp"
-#include "logger.hpp"
-#include "path.hpp"
-#include "precisionTimer.hpp"
-#include "threadSafeQueue.hpp"
-#include "memoryPool.hpp"
+#include <axonvex/core/processingUnit.hpp>
+#include <axonvex/core/timingController.hpp>
+#include <axonvex/core/configuration.hpp>
+#include <axonvex/core/logger.hpp>
+#include <axonvex/core/path.hpp>
+#include <axonvex/core/precisionTimer.hpp>
+#include <axonvex/core/threadSafeQueue.hpp>
+#include <axonvex/core/memoryPool.hpp>
 
 namespace axonvex::core {
 

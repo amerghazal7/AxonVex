@@ -6,8 +6,8 @@
 #include <optional>
 #include <algorithm>
 #include <cstring>
-#include "performanceStatistics.hpp"
-#include "coreUtilities.hpp"
+#include <axonvex/core/performanceStatistics.hpp>
+#include <axonvex/core/coreUtilities.hpp>
 
 namespace axonvex::core {
 

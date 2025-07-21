@@ -12,7 +12,7 @@
  * integration with AxonVex framework components.
  */
 
-#include "axonvex/core/path.hpp"
+#include <axonvex/core/path.hpp>
 #include <algorithm>
 #include <random>
 #include <chrono>

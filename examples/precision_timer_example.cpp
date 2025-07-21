@@ -11,12 +11,14 @@
  * including timing measurements and statistics collection.
  */
 
-#include "../include/axonvex/axonvex.hpp"
+#include <axonvex/axonvex.hpp>
 #include <iostream>
 #include <thread>
 #include <chrono>
 #include <vector>
 #include <cmath>
+
+using namespace axonvex::core;
 
 // Simulate some work
 void simulateWork(int microseconds) {
@@ -42,7 +44,7 @@ int main() {
         std::cout << "Test 1: Basic timing measurement\n";
         std::cout << "-----------------------------------\n";
         
-        axonvex::PrecisionTimer timer;
+        PrecisionTimer timer;
         
         timer.start();
         simulateWork(1000); // 1ms work
@@ -57,16 +59,16 @@ int main() {
         std::cout << "Test 2: Clock information\n";
         std::cout << "-------------------------\n";
         
-        std::cout << "Clock is steady: " << (axonvex::PrecisionTimer::isClockSteady() ? "Yes" : "No") << "\n";
-        std::cout << "Clock resolution: " << axonvex::PrecisionTimer::getClockResolution().count() << " ns\n";
-        std::cout << "Timer overhead: " << axonvex::PrecisionTimer::estimateOverhead(1000).count() << " ns\n";
+        std::cout << "Clock is steady: " << (PrecisionTimer::isClockSteady() ? "Yes" : "No") << "\n";
+        std::cout << "Clock resolution: " << PrecisionTimer::getClockResolution().count() << " ns\n";
+        std::cout << "Timer overhead: " << PrecisionTimer::estimateOverhead(1000).count() << " ns\n";
         std::cout << "\n";
         
         // Test 3: Statistics collection
         std::cout << "Test 3: Statistics collection\n";
         std::cout << "-----------------------------\n";
         
-        axonvex::PrecisionTimer statsTimer;
+        PrecisionTimer statsTimer;
         statsTimer.enableStatistics(true);
         
         std::cout << "Performing 100 timing measurements...\n";
@@ -103,7 +105,7 @@ int main() {
         std::cout << "Test 5: Lap timing\n";
         std::cout << "------------------\n";
         
-        axonvex::PrecisionTimer lapTimer;
+        PrecisionTimer lapTimer;
         lapTimer.start();
         
         for (int i = 0; i < 5; ++i) {
@@ -123,7 +125,7 @@ int main() {
         // Test overhead of timer operations
         auto startTime = std::chrono::high_resolution_clock::now();
         
-        axonvex::PrecisionTimer perfTimer;
+        PrecisionTimer perfTimer;
         for (int i = 0; i < iterations; ++i) {
             perfTimer.start();
             perfTimer.stop();

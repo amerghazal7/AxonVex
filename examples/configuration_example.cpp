@@ -28,7 +28,7 @@
 #include <cstdlib>
 
 // Include the full AxonVex framework with Logger
-#include "../include/axonvex/axonvex.hpp"
+#include <axonvex/axonvex.hpp>
 
 using namespace axonvex::core;
 using namespace axonvex::Log;  // Use framework's Logger

@@ -6,7 +6,7 @@
  * @date 2025
  */
 
-#include "../include/axonvex/axonvex.hpp"
+#include <axonvex/axonvex.hpp>
 #include <vector>
 #include <array>
 #include <chrono>

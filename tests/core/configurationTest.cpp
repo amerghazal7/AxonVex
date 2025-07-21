@@ -18,7 +18,7 @@
  */
 
 #include <gtest/gtest.h>
-#include "../../include/axonvex/core/configuration.hpp"
+#include <axonvex/core/configuration.hpp>
 #include <thread>
 #include <chrono>
 #include <fstream>

@@ -18,7 +18,7 @@
  * - Configuration management
  */
 
-#include "../include/axonvex/axonvex.hpp"
+#include <axonvex/axonvex.hpp>
 #include <chrono>
 #include <thread>
 #include <atomic>
