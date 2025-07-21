@@ -7,6 +7,7 @@ set(AXONVEX_CORE_SOURCES
     core/configuration.cpp
     core/path.cpp
     core/logger.cpp
+    core/errorHandler.cpp
     # Core runtime engine (implemented)
     core/processingUnit.cpp
     core/timingController.cpp
@@ -26,6 +27,9 @@ set(AXONVEX_CORE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/logger.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/configuration.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/path.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/errorHandler.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/performanceStatistics.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/coreUtilities.hpp
     # Core runtime engine (implemented)
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/processingUnit.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/timingController.hpp
