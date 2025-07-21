@@ -120,4 +120,19 @@ void ProcessingUnit::updatePerformanceMetrics(std::chrono::microseconds executio
     }
 }
 
+// Example usage for derived classes:
+// In your derived ProcessingUnit, use executionTimer_ to time your processing:
+// void MyUnit::processSync() override {
+//     executionTimer_.start();
+//     // ... processing logic ...
+//     executionTimer_.stop();
+//     updatePerformanceMetrics(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+// }
+//
+// For ThreadSafeQueue and MemoryPool, instantiate as needed in your derived class:
+// ThreadSafeQueue<MyData> inputQueue_;
+// MemoryPool<MyBuffer> bufferPool_;
+//
+// Use inputQueue_ for thread-safe input buffering, and bufferPool_ for real-time safe temporary allocations.
+
 } // namespace axonvex::core 

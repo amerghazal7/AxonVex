@@ -92,18 +92,11 @@ protected:
     }
     
     void TearDown() override {
-        if (system_) {
-            // Clear any registered callbacks first
-            system_->registerEventCallback(nullptr);
-            
-            // Stop the system
-            system_->stop();
-            
-            // Give time for cleanup
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            
-            system_.reset();
-        }
+        // Reset the system immediately to prevent lingering threads
+        system_.reset();
+
+        // Give a moment for all threads to properly shut down
+        std::this_thread::sleep_for(100ms);
     }
     
     SystemConfiguration config_;
@@ -336,14 +329,15 @@ TEST_F(AxonVexSystemTest, FrameworkConfigurationAccess) {
 // =================================================================
 
 TEST_F(AxonVexSystemTest, EventCallbacks) {
-    std::vector<SystemEvent> receivedEvents;
-    std::mutex eventMutex;
+    auto receivedEvents = std::make_shared<std::vector<SystemEvent>>();
+    auto eventMutex = std::make_shared<std::mutex>();
     
-    // Register event callback
-    uint32_t callbackId = system_->registerEventCallback([&](const SystemEvent& event) {
-        std::lock_guard<std::mutex> lock(eventMutex);
-        receivedEvents.push_back(event);
-    });
+    // Register event callback using shared pointers to ensure lifetime
+    uint32_t callbackId = system_->registerEventCallback(
+        [receivedEvents, eventMutex](const SystemEvent& event) {
+            std::lock_guard<std::mutex> lock(*eventMutex);
+            receivedEvents->push_back(event);
+        });
     
     EXPECT_GT(callbackId, 0);
     
@@ -355,12 +349,12 @@ TEST_F(AxonVexSystemTest, EventCallbacks) {
     std::this_thread::sleep_for(50ms);
     
     {
-        std::lock_guard<std::mutex> lock(eventMutex);
-        EXPECT_GE(receivedEvents.size(), 2); // At least state change events
+        std::lock_guard<std::mutex> lock(*eventMutex);
+        EXPECT_GE(receivedEvents->size(), 2); // At least state change events
         
         // Check for state change events
         bool foundStateChangeEvent = false;
-        for (const auto& event : receivedEvents) {
+        for (const auto& event : *receivedEvents) {
             if (event.type == SystemEvent::Type::STATE_CHANGE) {
                 foundStateChangeEvent = true;
                 break;
@@ -373,6 +367,9 @@ TEST_F(AxonVexSystemTest, EventCallbacks) {
     system_->unregisterEventCallback(callbackId);
     
     EXPECT_TRUE(system_->stop());
+
+    // Allow a moment for the event processing thread to finish
+    std::this_thread::sleep_for(50ms);
 }
 
 TEST_F(AxonVexSystemTest, ProcessingUnitEvents) {
@@ -411,11 +408,12 @@ TEST_F(AxonVexSystemTest, ProcessingUnitEvents) {
     
     system_->unregisterProcessingUnit(unitId);
     
-    // Clear callbacks before test ends to prevent race conditions
+    // Unregister callbacks and stop the system before the test ends
     system_->registerEventCallback(nullptr);
+    system_->stop();
     
     // Give a moment for any pending callbacks to finish
-    std::this_thread::sleep_for(10ms);
+    std::this_thread::sleep_for(50ms);
 }
 
 // =================================================================

@@ -11,6 +11,9 @@
 #include <future>
 #include <mutex>
 #include <algorithm>
+#include "precisionTimer.hpp"
+#include "threadSafeQueue.hpp"
+#include "memoryPool.hpp"
 
 namespace axonvex::core {
 
@@ -218,6 +221,20 @@ public:
     bool isDebugMode() const { return debugMode_; }
     
 protected:
+    // Core utility members for real-time performance
+    // High-precision timer for profiling processing steps
+    mutable PrecisionTimer executionTimer_{PrecisionTimer::DEFAULT_MAX_SAMPLES};
+    // Thread-safe queue for input/output buffering (optional, can be used by derived classes or ports)
+    // Example: ThreadSafeQueue<std::vector<uint8_t>> inputQueue_;
+    // Example: ThreadSafeQueue<std::vector<uint8_t>> outputQueue_;
+    // For generic use, leave as void* or template in derived classes
+    // Memory pool for real-time safe temporary allocations
+    // Example: MemoryPool<std::vector<uint8_t>> tempBufferPool_;
+    // These can be initialized in derived classes as needed
+    // Usage hooks:
+    // - Use executionTimer_ to time processSync/processAsync
+    // - Use ThreadSafeQueue for port or internal buffering
+    // - Use MemoryPool for temporary object/buffer allocation
     // Helper methods for derived classes
     void setState(ExecutionState state) { state_ = state; }
     void setError(const std::string& error);
