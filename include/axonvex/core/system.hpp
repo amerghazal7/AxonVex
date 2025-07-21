@@ -30,6 +30,9 @@
 #include "configuration.hpp"
 #include "logger.hpp"
 #include "path.hpp"
+#include "precisionTimer.hpp"
+#include "threadSafeQueue.hpp"
+#include "memoryPool.hpp"
 
 namespace axonvex::core {
 
@@ -84,6 +87,10 @@ struct SystemConfiguration {
     std::string configFilePath{"config/system.json"};
     std::string logFilePath{"logs/axonvex_system.log"};
     bool enableFileLogging{true};
+    
+    // Event system configuration
+    size_t eventPoolSize{1024};
+    size_t eventQueueSize{256};
     
     void validate() const;
     std::string toString() const;
@@ -605,58 +612,72 @@ public:
      */
     std::string getSystemPortInfo() const;
     
+protected:
+    // Core utility members for system-level performance and diagnostics
+    // High-precision timer for system-level diagnostics (e.g., initialization, shutdown, health checks)
+    mutable PrecisionTimer systemTimer_{PrecisionTimer::DEFAULT_MAX_SAMPLES};
+    // Thread-safe queue for event publishing, system-level message passing, or deferred actions
+    // Example: ThreadSafeQueue<SystemEvent> eventQueue_;
+    // Memory pool for real-time safe allocation of system event objects
+    // Example: MemoryPool<SystemEvent> eventPool_;
+    // Usage hooks:
+    // - Use systemTimer_ for timing system operations
+    // - Use ThreadSafeQueue for event/message passing
+    // - Use MemoryPool for system event allocation
 private:
     // =================================================================
     // INTERNAL STATE
     // =================================================================
-    
     // Core configuration and state
     SystemConfiguration systemConfig_;
     mutable std::atomic<SystemState> currentState_{SystemState::UNINITIALIZED};
     mutable std::mutex stateMutex_;
-    
+
     // Core components
     std::unique_ptr<TimingController> timingController_;
     std::unique_ptr<Configuration> configuration_;
     std::unique_ptr<Logger> logger_;
-    
+
     // Processing unit management
     mutable std::mutex unitsMutex_;
     std::unordered_map<uint32_t, std::unique_ptr<ProcessingUnit>> processingUnits_;
     std::unordered_map<ProcessingUnit*, uint32_t> unitToIdMap_;
     std::atomic<uint32_t> nextUnitId_{1};
-    
+
     // System port management
     mutable std::mutex systemPortsMutex_;
     std::unordered_map<std::string, BasePort*> systemInputPorts_;
     std::unordered_map<std::string, BasePort*> systemOutputPorts_;
-    
+
     // Statistics and monitoring
     mutable SystemStatistics statistics_;
     mutable std::mutex statisticsMutex_;
     std::unique_ptr<std::thread> monitoringThread_;
     std::atomic<bool> monitoringEnabled_{false};
-    
+
     // Event system
+    std::unique_ptr<ThreadSafeQueue<SystemEvent*>> eventQueue_;
+    std::unique_ptr<MemoryPool<SystemEvent>> eventPool_;
+    std::unique_ptr<std::thread> eventProcessingThread_;
+    std::atomic<bool> eventProcessingRunning_{false};
     std::vector<EventCallback> eventCallbacks_;
     std::vector<HealthCheckCallback> healthCheckCallbacks_;
     std::vector<RecoveryCallback> recoveryCallbacks_;
     mutable std::mutex callbacksMutex_;
     std::atomic<uint32_t> nextCallbackId_{1};
-    
+
     // Health and recovery
     mutable SystemHealth lastHealth_;
     std::atomic<bool> debugMode_{false};
     std::atomic<uint32_t> currentRecoveryAttempts_{0};
+    std::atomic<bool> isShuttingDown_{false}; // New flag for graceful shutdown
     
     // =================================================================
     // INTERNAL METHODS
     // =================================================================
-    
     // State management
     bool transitionState(SystemState newState);
     void notifyStateChange(SystemState oldState, SystemState newState);
-    
     // Component lifecycle
     bool initializeComponents();
     bool startComponents();
@@ -664,20 +685,18 @@ private:
     bool resumeComponents();
     bool stopComponents(std::chrono::milliseconds timeout);
     void cleanupComponents();
-    
     // Monitoring and health
     void monitoringLoop();
     void updateStatistics();
     SystemHealth performInternalHealthCheck() const;
-    
     // Event handling
     void publishEvent(const SystemEvent& event);
     void handleProcessingUnitError(ProcessingUnit* unit, const std::string& error);
+    void eventProcessingLoop(); // New method for processing events
     
     // Recovery
     bool attemptRecovery(const std::string& errorDescription);
     void handleFatalError(const std::string& error);
-    
     // Utility methods
     std::string stateToString(SystemState state) const;
     void logStateTransition(SystemState from, SystemState to);

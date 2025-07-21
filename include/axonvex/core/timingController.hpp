@@ -11,6 +11,9 @@
 #include <unordered_map>
 #include <queue>
 #include <string>
+#include "precisionTimer.hpp"
+#include "threadSafeQueue.hpp"
+#include "memoryPool.hpp"
 
 namespace axonvex::core {
 
@@ -66,6 +69,8 @@ struct SchedulerStatistics {
     std::chrono::microseconds minExecutionTime{std::chrono::microseconds::max()};
     double cpuUtilization{0.0};
     double schedulabilityRatio{0.0};
+    std::chrono::microseconds schedulingJitter{0}; // New statistic
+    std::chrono::microseconds averageSchedulingJitter{0}; // New statistic
     
     void reset() {
         totalExecutions = 0;
@@ -79,6 +84,8 @@ struct SchedulerStatistics {
         minExecutionTime = std::chrono::microseconds::max();
         cpuUtilization = 0.0;
         schedulabilityRatio = 0.0;
+        schedulingJitter = std::chrono::microseconds{0};
+        averageSchedulingJitter = std::chrono::microseconds{0};
     }
 };
 
@@ -252,9 +259,10 @@ private:
     std::atomic<bool> realTimeMode_{false};
     std::chrono::microseconds timerResolution_{std::chrono::microseconds{1}};
     
-    // Task management
+    // Task management with MemoryPool
+    std::unique_ptr<MemoryPool<SchedulerTask>> taskPool_;
+    std::unordered_map<uint32_t, SchedulerTask*> tasks_;
     mutable std::mutex tasksMutex_;
-    std::unordered_map<uint32_t, SchedulerTask> tasks_;
     std::atomic<uint32_t> nextTaskId_{1};
     
     // Scheduler thread
@@ -276,11 +284,17 @@ private:
     // Error callback
     ErrorCallback errorCallback_;
     
+    // Scheduler performance timer
+    PrecisionTimer cycleTimer_;
+    
     // Performance optimization
     std::chrono::steady_clock::time_point lastScheduleTime_;
     std::priority_queue<std::pair<std::chrono::steady_clock::time_point, uint32_t>, 
                        std::vector<std::pair<std::chrono::steady_clock::time_point, uint32_t>>,
                        std::greater<>> taskQueue_;
+
+    // Helper methods
+    void updateSchedulingJitter(std::chrono::microseconds jitter);
 };
 
 // Main TimingController class
@@ -337,6 +351,19 @@ public:
     // Emergency controls
     void emergencyStop();
     void setFailsafeCallback(std::function<void(const std::string&)> callback);
+    
+protected:
+    // Core utility members for real-time performance
+    // High-precision timer for measuring scheduling jitter, cycle time, and latency
+    mutable PrecisionTimer schedulerTimer_{PrecisionTimer::DEFAULT_MAX_SAMPLES};
+    // Thread-safe queue for scheduling commands, deferred actions, or event notifications
+    // Example: ThreadSafeQueue<Command> commandQueue_;
+    // Memory pool for real-time safe allocation of timing event/statistics objects
+    // Example: MemoryPool<TimingEvent> eventPool_;
+    // Usage hooks:
+    // - Use schedulerTimer_ to time scheduling cycles and jitter
+    // - Use ThreadSafeQueue for command/event scheduling
+    // - Use MemoryPool for timing event/statistics allocation
     
 private:
     // Helper methods

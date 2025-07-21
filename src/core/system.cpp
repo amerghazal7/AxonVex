@@ -1,9 +1,12 @@
 /**
  * @file system.cpp
  * @brief AxonVex System Management and Lifecycle Control Implementation
- * @author AxonVex Development Team
- * @version 1.0.0
- * @date 2025
+ *
+ * Usage documentation for core utilities:
+ * - Use systemTimer_ for timing system-level operations (init, shutdown, health checks).
+ * - Use ThreadSafeQueue (e.g., eventQueue_) for event/message passing or deferred actions.
+ * - Use MemoryPool (e.g., eventPool_) for real-time safe allocation of system event objects.
+ * These members are available in the AxonVexSystem base class for use in implementation and extensions.
  */
 
 #include "axonvex/core/system.hpp"
@@ -176,9 +179,17 @@ AxonVexSystem::~AxonVexSystem() {
 // =================================================================
 
 bool AxonVexSystem::initialize(const std::string& configPath) {
+    // Initialize core components first to ensure they're ready for use
+    if (!initializeComponents()) {
+        logStateTransition(SystemState::UNINITIALIZED, SystemState::ERROR);
+        return false;
+    }
+
     if (!transitionState(SystemState::INITIALIZING)) {
         return false;
     }
+    
+    systemTimer_.start(); // Start timing initialization
     
     try {
         // Load configuration if path provided
@@ -202,15 +213,22 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             monitoringThread_ = std::make_unique<std::thread>(&AxonVexSystem::monitoringLoop, this);
         }
         
+        // Start event processing thread
+        eventProcessingRunning_.store(true);
+        eventProcessingThread_ = std::make_unique<std::thread>(&AxonVexSystem::eventProcessingLoop, this);
+
         // Transition to initialized state
         if (!transitionState(SystemState::INITIALIZED)) {
             cleanupComponents();
             return false;
         }
         
+        systemTimer_.stop(); // Stop timing initialization
+        
         // Log successful initialization
         if (logger_) {
-            logger_->info("System", "AxonVex System initialized successfully");
+            logger_->info("System", "AxonVex System initialized successfully in " + 
+                         std::to_string(systemTimer_.getElapsedMilliseconds()) + " ms");
             logger_->info("System", systemConfig_.toString());
         }
         
@@ -351,37 +369,43 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
         return false;
     }
     
+    isShuttingDown_.store(true); // Signal shutdown to all threads
+    systemTimer_.start(); // Start timing shutdown
+    
     try {
-        // Stop monitoring first
+        // Stop event processing thread first
+        eventProcessingRunning_.store(false);
+        if (eventProcessingThread_ && eventProcessingThread_->joinable()) {
+            eventProcessingThread_->join();
+            eventProcessingThread_.reset();
+        }
+        // Stop monitoring thread next
         monitoringEnabled_.store(false);
         if (monitoringThread_ && monitoringThread_->joinable()) {
             monitoringThread_->join();
             monitoringThread_.reset();
         }
-        
-        // Stop all components
+        // Now stop all components
         if (!stopComponents(timeoutMs)) {
-            // Force emergency shutdown if graceful stop fails
             emergencyShutdown();
             return false;
         }
-        
+        // Finally, clean up resources
+        cleanupComponents();
         // Transition to stopped state
         if (!transitionState(SystemState::STOPPED)) {
             return false;
         }
-        
+        systemTimer_.stop(); // Stop timing shutdown
         if (logger_) {
-            logger_->info("System", "AxonVex System stopped gracefully");
+            logger_->info("System", "AxonVex System stopped gracefully in " + 
+                         std::to_string(systemTimer_.getElapsedMilliseconds()) + " ms");
         }
-        
         return true;
-        
     } catch (const std::exception& e) {
         if (logger_) {
             logger_->error("System", "Stop failed: " + std::string(e.what()));
         }
-        
         emergencyShutdown();
         return false;
     }
@@ -390,38 +414,37 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
 void AxonVexSystem::emergencyShutdown() {
     SystemState oldState = currentState_.load();
     currentState_.store(SystemState::FATAL_ERROR);
-    
-    // Stop monitoring immediately
+    isShuttingDown_.store(true);
+    // Stop event processing thread first
+    eventProcessingRunning_.store(false);
+    if (eventProcessingThread_ && eventProcessingThread_->joinable()) {
+        eventProcessingThread_->join();
+        eventProcessingThread_.reset();
+    }
+    // Stop monitoring thread next
     monitoringEnabled_.store(false);
-    
+    if (monitoringThread_ && monitoringThread_->joinable()) {
+        monitoringThread_->join();
+        monitoringThread_.reset();
+    }
     // Force stop all components immediately
     try {
         if (timingController_) {
             timingController_->stop();
         }
-        
         // Clear all processing units
         {
             std::lock_guard<std::mutex> lock(unitsMutex_);
             processingUnits_.clear();
             unitToIdMap_.clear();
         }
-        
-        // Join monitoring thread if it exists
-        if (monitoringThread_ && monitoringThread_->joinable()) {
-            monitoringThread_->detach(); // Don't wait for it
-            monitoringThread_.reset();
-        }
-        
         if (logger_) {
             logger_->critical("System", "Emergency shutdown completed");
             logger_->flush();
         }
-        
     } catch (...) {
         // Ignore all exceptions during emergency shutdown
     }
-    
     notifyStateChange(oldState, SystemState::FATAL_ERROR);
 }
 
@@ -489,6 +512,8 @@ SystemHealth AxonVexSystem::getHealth() const {
 }
 
 void AxonVexSystem::performHealthCheck() {
+    systemTimer_.start(); // Start timing health check
+
     SystemHealth health = performInternalHealthCheck();
     
     {
@@ -515,6 +540,8 @@ void AxonVexSystem::performHealthCheck() {
         }
     }
     
+    systemTimer_.stop(); // Stop timing health check
+
     // Publish health check event
     SystemEvent event;
     event.type = SystemEvent::Type::HEALTH_CHECK;
@@ -525,6 +552,7 @@ void AxonVexSystem::performHealthCheck() {
     event.metadata["overall_status"] = health.getStatusString();
     event.metadata["warning_count"] = std::to_string(health.warnings.size());
     event.metadata["error_count"] = std::to_string(health.errors.size());
+    event.metadata["duration_ms"] = std::to_string(systemTimer_.getElapsedMilliseconds()); // Add duration to metadata
     
     publishEvent(event);
     
@@ -998,6 +1026,10 @@ bool AxonVexSystem::initializeComponents() {
         
         logger_->start();
         
+        // Initialize event queue and pool
+        eventPool_ = std::make_unique<MemoryPool<SystemEvent>>(systemConfig_.eventPoolSize);
+        eventQueue_ = std::make_unique<ThreadSafeQueue<SystemEvent*>>(systemConfig_.eventQueueSize);
+
         // Initialize configuration if not already set
         if (!configuration_) {
             configuration_ = std::make_unique<Configuration>();
@@ -1064,8 +1096,13 @@ bool AxonVexSystem::startComponents() {
 void AxonVexSystem::monitoringLoop() {
     auto lastUpdate = std::chrono::steady_clock::now();
     
-    while (monitoringEnabled_.load()) {
+    while (monitoringEnabled_.load() && !isShuttingDown_.load()) {
         try {
+            // Guard against accessing resources during shutdown
+            if (currentState_.load() >= SystemState::STOPPING) {
+                break;
+            }
+
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastUpdate);
             
@@ -1186,17 +1223,59 @@ void AxonVexSystem::handleProcessingUnitError(ProcessingUnit* unit, const std::s
 }
 
 void AxonVexSystem::publishEvent(const SystemEvent& event) {
-    std::lock_guard<std::mutex> lock(callbacksMutex_);
-    
-    for (const auto& callback : eventCallbacks_) {
-        if (callback) {
-            try {
-                callback(event);
-            } catch (const std::exception& e) {
-                if (logger_) {
-                    logger_->warning("System", "Event callback failed: " + std::string(e.what()));
+    // Allocate an event from the pool
+    SystemEvent* eventPtr = eventPool_->allocateObject(event);
+
+    if (eventPtr) {
+        // Enqueue the event for asynchronous processing
+        if (!eventQueue_->enqueue(eventPtr)) {
+            // Handle queue full case
+            eventPool_->deallocateObject(eventPtr); // Deallocate back to pool
+            if (logger_) {
+                logger_->warning("System", "Event queue overflow, event dropped.");
+            }
+            statistics_.errorCount.fetch_add(1);
+        }
+    } else {
+        // Handle pool exhaustion
+        if (logger_) {
+            logger_->warning("System", "Event pool exhausted, event dropped.");
+        }
+        statistics_.errorCount.fetch_add(1);
+    }
+}
+
+void AxonVexSystem::eventProcessingLoop() {
+    while (eventProcessingRunning_.load() && !isShuttingDown_.load()) {
+        // Guard against accessing resources during shutdown
+        if (currentState_.load() >= SystemState::STOPPING) {
+            break;
+        }
+
+        // Dequeue an event with a timeout to allow for graceful shutdown
+        auto eventOpt = eventQueue_->tryDequeue(std::chrono::milliseconds(100));
+        
+        if (eventOpt.has_value()) {
+            SystemEvent* eventPtr = eventOpt.value();
+            
+            // Process the event
+            {
+                std::lock_guard<std::mutex> lock(callbacksMutex_);
+                for (const auto& callback : eventCallbacks_) {
+                    if (callback) {
+                        try {
+                            callback(*eventPtr);
+                        } catch (const std::exception& e) {
+                            if (logger_) {
+                                logger_->warning("System", "Event callback failed: " + std::string(e.what()));
+                            }
+                        }
+                    }
                 }
             }
+            
+            // Deallocate the event back to the pool
+            eventPool_->deallocateObject(eventPtr);
         }
     }
 }

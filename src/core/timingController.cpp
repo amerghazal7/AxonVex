@@ -16,11 +16,19 @@
     #include <timeapi.h>
 #endif
 
+// Usage documentation for core utilities:
+// - Use schedulerTimer_ to measure each scheduling cycle and track jitter/latency.
+// - Use ThreadSafeQueue (e.g., commandQueue_) for thread-safe command/event scheduling.
+// - Use MemoryPool (e.g., eventPool_) for real-time safe allocation of timing events/statistics.
+// These members are available in the TimingController base class for use in implementation and extensions.
+
 namespace axonvex::core {
 
 // RealTimeScheduler Implementation
 RealTimeScheduler::RealTimeScheduler(SchedulingPolicy policy)
     : policy_(policy) {
+    // Initialize the task pool with a default capacity
+    taskPool_ = std::make_unique<MemoryPool<SchedulerTask>>(128);
 }
 
 RealTimeScheduler::~RealTimeScheduler() {
@@ -36,16 +44,25 @@ uint32_t RealTimeScheduler::addTask(ProcessingUnit* unit, const TimingConstraint
     
     std::lock_guard<std::mutex> lock(tasksMutex_);
     
-    uint32_t taskId = nextTaskId_.fetch_add(1);
-    SchedulerTask task;
-    task.unit = unit;
-    task.constraints = constraints;
-    task.taskId = taskId;
-    task.name = unit->getName();
-    task.nextExecution = std::chrono::steady_clock::now() + constraints.period;
-    task.lastExecution = std::chrono::steady_clock::now();
+    // Allocate a new task from the memory pool
+    SchedulerTask* task = taskPool_->allocateObject();
+    if (!task) {
+        // Handle pool exhaustion
+        if (errorCallback_) {
+            errorCallback_(nullptr, "Task pool exhausted");
+        }
+        return 0;
+    }
     
-    tasks_[taskId] = std::move(task);
+    uint32_t taskId = nextTaskId_.fetch_add(1);
+    task->unit = unit;
+    task->constraints = constraints;
+    task->taskId = taskId;
+    task->name = unit->getName();
+    task->nextExecution = std::chrono::steady_clock::now() + constraints.period;
+    task->lastExecution = std::chrono::steady_clock::now();
+    
+    tasks_[taskId] = task;
     
     // Wake up scheduler thread if running
     if (running_.load()) {
@@ -59,7 +76,9 @@ bool RealTimeScheduler::removeTask(uint32_t taskId) {
     std::lock_guard<std::mutex> lock(tasksMutex_);
     auto it = tasks_.find(taskId);
     if (it != tasks_.end()) {
-        it->second.active.store(false);
+        SchedulerTask* task = it->second;
+        task->active.store(false);
+        taskPool_->deallocateObject(task); // Deallocate back to the pool
         tasks_.erase(it);
         return true;
     }
@@ -69,7 +88,8 @@ bool RealTimeScheduler::removeTask(uint32_t taskId) {
 void RealTimeScheduler::removeAllTasks() {
     std::lock_guard<std::mutex> lock(tasksMutex_);
     for (auto& pair : tasks_) {
-        pair.second.active.store(false);
+        pair.second->active.store(false);
+        taskPool_->deallocateObject(pair.second);
     }
     tasks_.clear();
 }
@@ -78,9 +98,9 @@ bool RealTimeScheduler::updateTaskConstraints(uint32_t taskId, const TimingConst
     std::lock_guard<std::mutex> lock(tasksMutex_);
     auto it = tasks_.find(taskId);
     if (it != tasks_.end()) {
-        it->second.constraints = constraints;
+        it->second->constraints = constraints;
         // Recalculate next execution time
-        it->second.nextExecution = calculateNextExecution(it->second);
+        it->second->nextExecution = calculateNextExecution(*it->second);
         return true;
     }
     return false;
@@ -176,7 +196,7 @@ std::vector<uint32_t> RealTimeScheduler::getActiveTaskIds() const {
     taskIds.reserve(tasks_.size());
     
     for (const auto& pair : tasks_) {
-        if (pair.second.active.load()) {
+        if (pair.second->active.load()) {
             taskIds.push_back(pair.first);
         }
     }
@@ -188,7 +208,7 @@ TimingConstraints RealTimeScheduler::getTaskConstraints(uint32_t taskId) const {
     std::lock_guard<std::mutex> lock(tasksMutex_);
     auto it = tasks_.find(taskId);
     if (it != tasks_.end()) {
-        return it->second.constraints;
+        return it->second->constraints;
     }
     return TimingConstraints{};
 }
@@ -196,7 +216,7 @@ TimingConstraints RealTimeScheduler::getTaskConstraints(uint32_t taskId) const {
 bool RealTimeScheduler::isTaskActive(uint32_t taskId) const {
     std::lock_guard<std::mutex> lock(tasksMutex_);
     auto it = tasks_.find(taskId);
-    return (it != tasks_.end()) && it->second.active.load();
+    return (it != tasks_.end()) && it->second->active.load();
 }
 
 void RealTimeScheduler::setCustomScheduler(CustomSchedulerCallback callback) {
@@ -211,6 +231,7 @@ void RealTimeScheduler::setErrorCallback(ErrorCallback callback) {
 
 void RealTimeScheduler::schedulerLoop() {
     auto nextWakeup = std::chrono::steady_clock::now() + timerResolution_;
+    cycleTimer_.start(); // Start the cycle timer
     
     // Lock memory pages for real-time performance
 #ifdef __linux__
@@ -236,6 +257,15 @@ void RealTimeScheduler::schedulerLoop() {
         }
         
         auto now = std::chrono::steady_clock::now();
+        cycleTimer_.stop(); // Stop the timer to measure the cycle time
+        auto cycleTime = cycleTimer_.getElapsedNanoseconds();
+        cycleTimer_.start(); // Restart for the next cycle
+
+        // Calculate scheduling jitter
+        auto expectedCycleTime = std::chrono::duration_cast<std::chrono::nanoseconds>(timerResolution_);
+        auto jitter = std::chrono::abs(cycleTime - expectedCycleTime);
+        updateSchedulingJitter(std::chrono::duration_cast<std::chrono::microseconds>(jitter));
+
         nextWakeup = now + timerResolution_;
         
         // Select next task to execute based on scheduling policy
@@ -262,11 +292,11 @@ void RealTimeScheduler::schedulerLoop() {
         {
             std::lock_guard<std::mutex> lock(tasksMutex_);
             for (auto& [taskId, task] : tasks_) {
-                if (!task.active.load() && 
-                    task.consecutiveFailures > 0 && 
-                    now >= task.reactivationTime) {
-                    task.active.store(true);
-                    task.consecutiveFailures = 0; // Reset failure count on reactivation
+                if (!task->active.load() && 
+                    task->consecutiveFailures > 0 && 
+                    now >= task->reactivationTime) {
+                    task->active.store(true);
+                    task->consecutiveFailures = 0; // Reset failure count on reactivation
                 }
             }
         }
@@ -275,8 +305,8 @@ void RealTimeScheduler::schedulerLoop() {
         if (selectedTaskId != 0) {
             std::lock_guard<std::mutex> lock(tasksMutex_);
             auto it = tasks_.find(selectedTaskId);
-            if (it != tasks_.end() && it->second.active.load()) {
-                executeTask(it->second);
+            if (it != tasks_.end() && it->second->active.load()) {
+                executeTask(*it->second);
             }
         }
         
@@ -300,15 +330,15 @@ uint32_t RealTimeScheduler::schedulePriorityBased() {
     
     for (auto& pair : tasks_) {
         auto& task = pair.second;
-        if (!task.active.load() || task.executing.load()) {
+        if (!task->active.load() || task->executing.load()) {
             continue;
         }
         
         // Check if task is ready to execute
-        if (now >= task.nextExecution) {
+        if (now >= task->nextExecution) {
             // Lower enum values represent higher priorities (HIGH=0, NORMAL=1, LOW=2, IDLE=3)
-            if (!foundTask || task.constraints.priority < highestPriority) {
-                highestPriority = task.constraints.priority;
+            if (!foundTask || task->constraints.priority < highestPriority) {
+                highestPriority = task->constraints.priority;
                 selectedTask = pair.first;
                 foundTask = true;
             }
@@ -327,13 +357,13 @@ uint32_t RealTimeScheduler::scheduleEarliestDeadlineFirst() {
     
     for (auto& pair : tasks_) {
         auto& task = pair.second;
-        if (!task.active.load() || task.executing.load()) {
+        if (!task->active.load() || task->executing.load()) {
             continue;
         }
         
         // Check if task is ready to execute
-        if (now >= task.nextExecution) {
-            auto deadline = task.nextExecution + task.constraints.deadline;
+        if (now >= task->nextExecution) {
+            auto deadline = task->nextExecution + task->constraints.deadline;
             if (deadline < earliestDeadline) {
                 earliestDeadline = deadline;
                 selectedTask = pair.first;
@@ -353,14 +383,14 @@ uint32_t RealTimeScheduler::scheduleRateMonotonic() {
     
     for (auto& pair : tasks_) {
         auto& task = pair.second;
-        if (!task.active.load() || task.executing.load()) {
+        if (!task->active.load() || task->executing.load()) {
             continue;
         }
         
         // Check if task is ready to execute
-        if (now >= task.nextExecution) {
-            if (task.constraints.period < shortestPeriod) {
-                shortestPeriod = task.constraints.period;
+        if (now >= task->nextExecution) {
+            if (task->constraints.period < shortestPeriod) {
+                shortestPeriod = task->constraints.period;
                 selectedTask = pair.first;
             }
         }
@@ -390,7 +420,7 @@ uint32_t RealTimeScheduler::scheduleRoundRobin() {
         }
         
         auto& task = it->second;
-        if (task.active.load() && !task.executing.load() && now >= task.nextExecution) {
+        if (task->active.load() && !task->executing.load() && now >= task->nextExecution) {
             lastSelectedTask = it->first;
             return it->first;
         }
@@ -410,8 +440,8 @@ uint32_t RealTimeScheduler::scheduleCustom() {
     std::vector<SchedulerTask> activeTasks;
     
     for (const auto& pair : tasks_) {
-        if (pair.second.active.load()) {
-            activeTasks.emplace_back(pair.second);
+        if (pair.second->active.load()) {
+            activeTasks.emplace_back(*pair.second);
         }
     }
     
@@ -532,6 +562,21 @@ void RealTimeScheduler::updateTaskStatistics(SchedulerTask& task, std::chrono::m
     
     if (hasDeadlinePassed(task)) {
         task.missedDeadlines++;
+    }
+}
+
+void RealTimeScheduler::updateSchedulingJitter(std::chrono::microseconds jitter) {
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    statistics_.schedulingJitter = jitter;
+
+    // Update running average for jitter
+    auto avgCount = statistics_.totalExecutions;
+    if (avgCount > 0) {
+        auto oldAvg = statistics_.averageSchedulingJitter.count();
+        auto newAvg = (oldAvg * (avgCount - 1) + jitter.count()) / avgCount;
+        statistics_.averageSchedulingJitter = std::chrono::microseconds(static_cast<long long>(newAvg));
+    } else {
+        statistics_.averageSchedulingJitter = jitter;
     }
 }
 

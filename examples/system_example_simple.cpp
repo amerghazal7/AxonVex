@@ -46,6 +46,9 @@ public:
     }
     
     void processSync() override {
+        // Start the timer
+        executionTimer_.start();
+
         setState(ExecutionState::RUNNING);
         
         // Generate random data
@@ -58,6 +61,10 @@ public:
         if (generatedCount_.load() % 100 == 0) {
             std::cout << getName() << " generated " << generatedCount_.load() << " values" << std::endl;
         }
+
+        // Stop the timer and update metrics
+        executionTimer_.stop();
+        updatePerformanceMetrics(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
     }
     
     void processAsync() override {
@@ -72,6 +79,11 @@ public:
     }
     
     uint64_t getGeneratedCount() const { return generatedCount_.load(); }
+    
+    // Expose performance metrics
+    PerformanceMetrics getMetrics() const {
+        return getPerformanceMetrics();
+    }
     
     void finalize() override {
         setState(ExecutionState::STOPPED);
@@ -349,11 +361,15 @@ void demonstratePerformance() {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     
-    std::cout << "Performance Results:\n";
-    std::cout << "  Iterations: " << iterations << "\n";
-    std::cout << "  Total Time: " << duration.count() << " μs\n";
-    std::cout << "  Average per iteration: " << (duration.count() / iterations) << " μs\n";
-    std::cout << "  Operations per second: " << (iterations * 1000000.0 / duration.count()) << "\n";
+    // Get and display performance metrics from the unit
+    PerformanceMetrics metrics = generator->getMetrics();
+    
+    std::cout << "Performance Results (from internal timer):\n";
+    std::cout << "  Iterations: " << metrics.executionCount << "\n";
+    std::cout << "  Total Time (sum of samples): " << (metrics.averageExecutionTime.count() * metrics.executionCount) << " µs\n";
+    std::cout << "  Average per iteration: " << metrics.averageExecutionTime.count() << " µs\n";
+    std::cout << "  Min Time: " << metrics.minExecutionTime.count() << " µs\n";
+    std::cout << "  Max Time: " << metrics.maxExecutionTime.count() << " µs\n";
     
     generator->finalize();
     
