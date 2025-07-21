@@ -201,6 +201,10 @@ public:
     using CustomSchedulerCallback = std::function<uint32_t(const std::vector<SchedulerTask>&)>;
     void setCustomScheduler(CustomSchedulerCallback callback);
     
+    // Error callback for processing unit failures
+    using ErrorCallback = std::function<void(ProcessingUnit*, const std::string&)>;
+    void setErrorCallback(ErrorCallback callback);
+    
 private:
     // Scheduler thread function
     void schedulerLoop();
@@ -252,6 +256,9 @@ private:
     // Custom scheduler
     CustomSchedulerCallback customScheduler_;
     
+    // Error callback
+    ErrorCallback errorCallback_;
+    
     // Performance optimization
     std::chrono::steady_clock::time_point lastScheduleTime_;
     std::priority_queue<std::pair<std::chrono::steady_clock::time_point, uint32_t>, 
@@ -301,6 +308,7 @@ public:
     
     // Advanced features
     void setCustomScheduler(RealTimeScheduler::CustomSchedulerCallback callback);
+    void setErrorCallback(RealTimeScheduler::ErrorCallback callback);
     void enableDeterministicExecution(bool enable);
     void setGlobalTimeReference(std::chrono::steady_clock::time_point reference);
     

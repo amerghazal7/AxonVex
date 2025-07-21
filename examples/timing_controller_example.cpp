@@ -15,13 +15,12 @@ private:
     std::atomic<uint64_t> sampleCount_{0};
     double frequency_{1.0}; // Hz
     double amplitude_{1.0};
-    OutputPort<double>* output_;
+    axonvex::core::OutputPort<double>* output_;
 
 public:
     explicit SineWaveGenerator(const std::string& name, double frequency = 1.0)
         : ProcessingUnit(name), frequency_(frequency) {
         output_ = createOutputPort<double>(100, "sine_output");
-        initialize();
     }
 
     void initialize() override {

@@ -200,7 +200,13 @@ bool RealTimeScheduler::isTaskActive(uint32_t taskId) const {
 }
 
 void RealTimeScheduler::setCustomScheduler(CustomSchedulerCallback callback) {
-    customScheduler_ = std::move(callback);
+    std::lock_guard<std::mutex> lock(schedulerMutex_);
+    customScheduler_ = callback;
+}
+
+void RealTimeScheduler::setErrorCallback(ErrorCallback callback) {
+    std::lock_guard<std::mutex> lock(schedulerMutex_);
+    errorCallback_ = callback;
 }
 
 void RealTimeScheduler::schedulerLoop() {
@@ -468,6 +474,11 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         // Update task statistics for failed execution
         task.executionCount++;
         task.totalExecutionTime += executionTime;
+        
+        // Notify error callback if available
+        if (errorCallback_) {
+            errorCallback_(task.unit, e.what());
+        }
         if (hasDeadlinePassed(task)) {
             statistics_.missedDeadlines++;
             task.missedDeadlines++;
@@ -501,14 +512,48 @@ bool RealTimeScheduler::hasDeadlinePassed(const SchedulerTask& task) const {
 
 void RealTimeScheduler::setThreadPriority(std::thread& thread, SchedulerPriority priority) {
 #ifdef __linux__
-    // Set Linux thread priority
-    int policy = (priority >= SchedulerPriority::REAL_TIME) ? SCHED_FIFO : SCHED_OTHER;
-    int priorityValue = static_cast<int>(priority) * 10; // Scale to system range
-    
     pthread_t nativeHandle = thread.native_handle();
     struct sched_param param;
+    int policy = SCHED_OTHER;
+    int priorityValue = 0;
+    
+    // Try to set real-time priority if requested and available
+    if (priority >= SchedulerPriority::REAL_TIME) {
+        policy = SCHED_FIFO;
+        // Get valid priority range for FIFO policy
+        int minPrio = sched_get_priority_min(SCHED_FIFO);
+        int maxPrio = sched_get_priority_max(SCHED_FIFO);
+        
+        if (minPrio != -1 && maxPrio != -1) {
+            // Map our priority enum to valid FIFO range
+            int enumPrio = static_cast<int>(priority);
+            priorityValue = minPrio + ((enumPrio - static_cast<int>(SchedulerPriority::REAL_TIME)) * 
+                                     (maxPrio - minPrio) / (static_cast<int>(SchedulerPriority::CRITICAL) - 
+                                                          static_cast<int>(SchedulerPriority::REAL_TIME)));
+            priorityValue = std::max(minPrio, std::min(maxPrio, priorityValue));
+        } else {
+            // Fallback to SCHED_OTHER if can't get FIFO range
+            policy = SCHED_OTHER;
+            priorityValue = 0;
+        }
+    } else {
+        // For non-real-time priorities, use SCHED_OTHER with nice values
+        policy = SCHED_OTHER;
+        priorityValue = 0; // SCHED_OTHER must use priority 0
+    }
+    
     param.sched_priority = priorityValue;
-    pthread_setschedparam(nativeHandle, policy, &param);
+    
+    // Attempt to set the priority, but don't fail if it doesn't work
+    int result = pthread_setschedparam(nativeHandle, policy, &param);
+    if (result != 0) {
+        // Fallback to normal scheduling if real-time fails (e.g., no privileges)
+        if (policy != SCHED_OTHER) {
+            param.sched_priority = 0;
+            pthread_setschedparam(nativeHandle, SCHED_OTHER, &param);
+        }
+        // Note: In a production system, you might want to log this failure
+    }
     
 #elif _WIN32
     // Set Windows thread priority
@@ -690,6 +735,10 @@ TimingConstraints TimingController::getTaskConstraints(uint32_t taskId) const {
 
 void TimingController::setCustomScheduler(RealTimeScheduler::CustomSchedulerCallback callback) {
     scheduler_->setCustomScheduler(std::move(callback));
+}
+
+void TimingController::setErrorCallback(RealTimeScheduler::ErrorCallback callback) {
+    scheduler_->setErrorCallback(std::move(callback));
 }
 
 void TimingController::enableDeterministicExecution(bool enable) {

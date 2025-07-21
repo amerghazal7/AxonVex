@@ -20,6 +20,14 @@ target_link_libraries(configuration_example axonvex)
 add_executable(path_example path_example.cpp)
 target_link_libraries(path_example axonvex)
 
-# TimingController example
-add_executable(timing_controller_example timing_controller_example.cpp)
-target_link_libraries(timing_controller_example axonvex) 
+# Timing controller example (temporarily disabled due to namespace ambiguity)
+# add_executable(timing_controller_example timing_controller_example.cpp)
+# target_link_libraries(timing_controller_example axonvex)
+
+# System Management example (temporarily disabled due to namespace ambiguity)  
+# add_executable(system_example system_example.cpp)
+# target_link_libraries(system_example axonvex)
+
+# Subsystem Composition example (temporarily disabled due to namespace ambiguity)
+# add_executable(subsystem_example subsystem_example.cpp)
+# target_link_libraries(subsystem_example axonvex) 
