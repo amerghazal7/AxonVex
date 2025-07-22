@@ -16,19 +16,19 @@
  * - Integration with AxonVex components
  */
 
-#include <gtest/gtest.h>
 #include <axonvex/core/path.hpp>
-#include <fstream>
-#include <thread>
 #include <chrono>
 #include <cstdlib>
-#include <unordered_set>
+#include <fstream>
+#include <gtest/gtest.h>
 #include <sstream>
+#include <thread>
+#include <unordered_set>
 
 using namespace axonvex::core;
 
 class PathTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         // Create test directory structure
         test_root = Path::getDefaultTempDir() / "axonvex_path_test";
@@ -231,7 +231,7 @@ TEST_F(PathTest, PathPropertiesTest) {
 
     // Size test
     auto file_size = test_file.size();
-    EXPECT_GT(file_size, 0);  // Should have some content
+    EXPECT_GT(file_size, 0); // Should have some content
 
     // Readable/writable tests
     EXPECT_TRUE(test_file.isReadable());
@@ -344,8 +344,8 @@ TEST_F(PathTest, FileOperationsTest) {
 
     // Copy with overwrite test
     Path existing_dest = dest_file;
-    EXPECT_FALSE(source_file.copyTo(existing_dest, false));  // Should fail without overwrite
-    EXPECT_TRUE(source_file.copyTo(existing_dest, true));    // Should succeed with overwrite
+    EXPECT_FALSE(source_file.copyTo(existing_dest, false)); // Should fail without overwrite
+    EXPECT_TRUE(source_file.copyTo(existing_dest, true));   // Should succeed with overwrite
 
     // Move file
     Path moved_file = test_root / "moved_file.txt";
@@ -399,7 +399,7 @@ TEST_F(PathTest, StringConversionTest) {
     EXPECT_TRUE(path1 != path3);
 
     // Less than comparison (for containers)
-    EXPECT_TRUE(path1 < path3 || path3 < path1);  // One should be less than the other
+    EXPECT_TRUE(path1 < path3 || path3 < path1); // One should be less than the other
 }
 
 //==============================================================================
@@ -409,7 +409,7 @@ TEST_F(PathTest, StringConversionTest) {
 TEST_F(PathTest, AxonVexIntegrationTest) {
     // Create configuration path
     Path config_path = Path::createConfigPath("system");
-    EXPECT_NE(config_path.extension(), ".json");  // Should have .json extension
+    EXPECT_NE(config_path.extension(), ".json"); // Should have .json extension
     EXPECT_NE(config_path.toString().find("config"), std::string::npos);
     EXPECT_EQ(config_path.filename(), "system.json");
 
@@ -428,7 +428,7 @@ TEST_F(PathTest, AxonVexIntegrationTest) {
     Path temp_path1 = Path::createTempPath();
     Path temp_path2 = Path::createTempPath();
 
-    EXPECT_NE(temp_path1.toString(), temp_path2.toString());  // Should be unique
+    EXPECT_NE(temp_path1.toString(), temp_path2.toString()); // Should be unique
     EXPECT_EQ(temp_path1.extension(), ".tmp");
     EXPECT_NE(temp_path1.toString().find("axonvex_"), std::string::npos);
 
@@ -518,18 +518,18 @@ TEST_F(PathTest, ThreadSafetyTest) {
                 try {
                     // Mix of operations
                     if (i % 3 == 0) {
-                        Path path = Path::getDefaultTempDir() / ("thread_" + std::to_string(t)) / ("file_" + std::to_string(i));
+                        Path path = Path::getDefaultTempDir() / ("thread_" + std::to_string(t)) /
+                                    ("file_" + std::to_string(i));
                         volatile bool exists = path.exists();
                     } else if (i % 3 == 1) {
-                        Path config_path = Path::createConfigPath("thread_test_" + std::to_string(t) + "_" + std::to_string(i));
+                        Path config_path = Path::createConfigPath(
+                            "thread_test_" + std::to_string(t) + "_" + std::to_string(i));
                         volatile std::string str = config_path.toString();
                     } else {
                         Path temp_path = Path::createTempPath("thread_" + std::to_string(t) + "_");
                         volatile bool secure = temp_path.isSecure();
                     }
-                } catch (const std::exception&) {
-                    errors.fetch_add(1);
-                }
+                } catch (const std::exception&) { errors.fetch_add(1); }
             }
         });
     }
@@ -566,9 +566,9 @@ TEST_F(PathTest, GlobalOperatorsTest) {
     std::unordered_set<Path> path_set;
     path_set.insert(Path("path1"));
     path_set.insert(Path("path2"));
-    path_set.insert(Path("path1"));  // Duplicate
+    path_set.insert(Path("path1")); // Duplicate
 
-    EXPECT_EQ(path_set.size(), 2);  // Should only have 2 unique paths
+    EXPECT_EQ(path_set.size(), 2); // Should only have 2 unique paths
 }
 
 int main(int argc, char** argv) {

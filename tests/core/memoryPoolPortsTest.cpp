@@ -6,18 +6,18 @@
  * @date 2025
  */
 
-#include <gtest/gtest.h>
+#include <atomic>
 #include <axonvex/core/ports.hpp>
 #include <axonvex/core/processingUnit.hpp>
+#include <chrono>
+#include <gtest/gtest.h>
 #include <thread>
 #include <vector>
-#include <atomic>
-#include <chrono>
 
 using namespace axonvex::core;
 
 class MemoryPoolPortsTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         // Create a mock processing unit for port ownership
         processingUnit = std::make_unique<MockProcessingUnit>();
@@ -28,16 +28,22 @@ protected:
     }
 
     class MockProcessingUnit : public ProcessingUnit {
-    public:
+      public:
         MockProcessingUnit() : ProcessingUnit("MockProcessingUnit") {}
         ~MockProcessingUnit() override = default;
 
         void processSync() override {}
         void processAsync() override {}
-        void finalize() override { setState(ExecutionState::INITIALIZED); }
+        void finalize() override {
+            setState(ExecutionState::INITIALIZED);
+        }
         void initialize() override {}
-        void reset() override { setState(ExecutionState::INITIALIZED); }
-        std::string getTypeDescription() override { return "MockProcessingUnit"; }
+        void reset() override {
+            setState(ExecutionState::INITIALIZED);
+        }
+        std::string getTypeDescription() override {
+            return "MockProcessingUnit";
+        }
     };
 
     std::unique_ptr<MockProcessingUnit> processingUnit;
@@ -89,7 +95,8 @@ TEST_F(MemoryPoolPortsTest, OutputPortMemoryPoolBasics) {
 
 // Test MemoryPool with AsyncInputPort
 TEST_F(MemoryPoolPortsTest, AsyncInputPortMemoryPoolBasics) {
-    auto asyncInput = std::make_unique<AsyncInputPort<std::string>>(4, "async_input", processingUnit.get());
+    auto asyncInput =
+        std::make_unique<AsyncInputPort<std::string>>(4, "async_input", processingUnit.get());
 
     // Enable thread safety
     asyncInput->setThreadSafe(true);
@@ -107,7 +114,8 @@ TEST_F(MemoryPoolPortsTest, AsyncInputPortMemoryPoolBasics) {
 
 // Test MemoryPool with AsyncOutputPort
 TEST_F(MemoryPoolPortsTest, AsyncOutputPortMemoryPoolBasics) {
-    auto asyncOutput = std::make_unique<AsyncOutputPort<int>>(5, "async_output", processingUnit.get());
+    auto asyncOutput =
+        std::make_unique<AsyncOutputPort<int>>(5, "async_output", processingUnit.get());
     auto asyncInput = std::make_unique<AsyncInputPort<int>>(6, "async_input", processingUnit.get());
 
     // Connect async ports
@@ -174,8 +182,10 @@ TEST_F(MemoryPoolPortsTest, ThreadSafetyPerformanceComparison) {
     EXPECT_EQ(writeCounter.load(), NUM_THREADS * OPERATIONS_PER_THREAD / 2);
     EXPECT_GT(readCounter.load(), 0); // Some reads should have happened
 
-    std::cout << "MemoryPool thread safety test completed in " << duration.count() << " microseconds\n";
-    std::cout << "Total writes: " << writeCounter.load() << ", Total reads: " << readCounter.load() << "\n";
+    std::cout << "MemoryPool thread safety test completed in " << duration.count()
+              << " microseconds\n";
+    std::cout << "Total writes: " << writeCounter.load() << ", Total reads: " << readCounter.load()
+              << "\n";
 }
 
 // Test MemoryPool exhaustion handling
@@ -234,7 +244,8 @@ TEST_F(MemoryPoolPortsTest, ComplexDataTypes) {
         }
     };
 
-    auto inputPort = std::make_unique<InputPort<ComplexData>>(10, "complex_test", processingUnit.get());
+    auto inputPort =
+        std::make_unique<InputPort<ComplexData>>(10, "complex_test", processingUnit.get());
     inputPort->setThreadSafe(true);
 
     ComplexData testData{42, "TestObject", {1.0, 2.5, 3.14159}};

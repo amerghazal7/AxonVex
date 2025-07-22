@@ -6,17 +6,17 @@
  * @date 2025
  */
 
-#include <gtest/gtest.h>
 #include <axonvex/core/processingUnit.hpp>
-#include <string>
 #include <chrono>
+#include <gtest/gtest.h>
+#include <string>
 #include <thread>
 
 namespace axonvex::core::test {
 
 // Test implementation of ProcessingUnit
 class TestProcessingUnit : public ProcessingUnit {
-public:
+  public:
     explicit TestProcessingUnit(const std::string& name) : ProcessingUnit(name) {}
 
     void processSync() override {
@@ -74,17 +74,33 @@ public:
     }
 
     // Accessors for testing
-    int getSyncExecutionCount() const { return syncExecutionCount_; }
-    int getAsyncExecutionCount() const { return asyncExecutionCount_; }
-    int getResetCount() const { return resetCount_; }
-    int getProcessingFactor() const { return processingFactor_; }
-    const std::string& getLastAsyncCommand() const { return lastAsyncCommand_; }
+    int getSyncExecutionCount() const {
+        return syncExecutionCount_;
+    }
+    int getAsyncExecutionCount() const {
+        return asyncExecutionCount_;
+    }
+    int getResetCount() const {
+        return resetCount_;
+    }
+    int getProcessingFactor() const {
+        return processingFactor_;
+    }
+    const std::string& getLastAsyncCommand() const {
+        return lastAsyncCommand_;
+    }
 
-    InputPort<int>* getTestInputPort() { return inputPort_; }
-    OutputPort<int>* getTestOutputPort() { return outputPort_; }
-    AsyncInputPort<std::string>* getTestAsyncPort() { return customAsyncPort_; }
+    InputPort<int>* getTestInputPort() {
+        return inputPort_;
+    }
+    OutputPort<int>* getTestOutputPort() {
+        return outputPort_;
+    }
+    AsyncInputPort<std::string>* getTestAsyncPort() {
+        return customAsyncPort_;
+    }
 
-private:
+  private:
     int syncExecutionCount_ = 0;
     int asyncExecutionCount_ = 0;
     int resetCount_ = 0;
@@ -100,7 +116,7 @@ private:
 
 // Basic functionality tests
 class ProcessingUnitTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         unit = std::make_unique<TestProcessingUnit>("TestUnit");
         unit->setBlockUID(1);
@@ -189,7 +205,7 @@ TEST_F(ProcessingUnitTest, AsyncProcessing) {
     EXPECT_EQ(unit->getAsyncExecutionCount(), 1);
 
     // Send async command
-            unit->getTestAsyncPort()->update("MULTIPLY_2");
+    unit->getTestAsyncPort()->update("MULTIPLY_2");
     unit->processAsyncBase();
     EXPECT_EQ(unit->getAsyncExecutionCount(), 2);
     EXPECT_EQ(unit->getLastAsyncCommand(), "MULTIPLY_2");
@@ -205,13 +221,14 @@ TEST_F(ProcessingUnitTest, BuiltInResetFunctionality) {
 
     // Trigger reset via built-in port
     auto resetPort = unit->getAsyncInputPort<int>(ControlPorts::RESET);
-            resetPort->update(1); // Non-zero triggers reset
+    resetPort->update(1); // Non-zero triggers reset
 
     int resetCountBefore = unit->getResetCount();
     unit->processAsyncBase();
     EXPECT_EQ(unit->getResetCount(), resetCountBefore + 1);
     EXPECT_EQ(unit->getSyncExecutionCount(), 0); // Reset by derived reset()
-    // Note: Async execution count is incremented because processAsyncBase() was called to handle the reset
+    // Note: Async execution count is incremented because processAsyncBase() was called to handle
+    // the reset
     EXPECT_GE(unit->getAsyncExecutionCount(), 0);
 }
 
@@ -220,7 +237,7 @@ TEST_F(ProcessingUnitTest, BuiltInDisableFunctionality) {
 
     // Disable via built-in port
     auto disablePort = unit->getAsyncInputPort<int>(ControlPorts::DISABLE);
-            disablePort->update(1); // Non-zero disables
+    disablePort->update(1); // Non-zero disables
     unit->processAsyncBase();
 
     EXPECT_TRUE(unit->isDisabled());
@@ -232,7 +249,7 @@ TEST_F(ProcessingUnitTest, BuiltInDisableFunctionality) {
     EXPECT_EQ(unit->getSyncExecutionCount(), syncCountBefore); // No increment
 
     // Re-enable
-            disablePort->update(0); // Zero enables
+    disablePort->update(0); // Zero enables
     unit->processAsyncBase();
     EXPECT_FALSE(unit->isDisabled());
     EXPECT_EQ(unit->getState(), ExecutionState::RUNNING);
@@ -322,11 +339,11 @@ TEST_F(ProcessingUnitTest, ThreadSafety) {
 TEST_F(ProcessingUnitTest, ResetFunctionality) {
     // Set up some state
     unit->getTestInputPort()->writeData(42);
-            unit->getTestAsyncPort()->update("MULTIPLY_3");
+    unit->getTestAsyncPort()->update("MULTIPLY_3");
 
     // Check initial state before processing
     EXPECT_TRUE(unit->getTestInputPort()->hasNewData());
-            EXPECT_TRUE(unit->getTestAsyncPort()->wasUpdated());
+    EXPECT_TRUE(unit->getTestAsyncPort()->wasUpdated());
 
     // Process to get some execution counts
     unit->processSyncBase();
@@ -337,14 +354,14 @@ TEST_F(ProcessingUnitTest, ResetFunctionality) {
 
     // Set up fresh port data to verify reset clears it
     unit->getTestInputPort()->writeData(99);
-            unit->getTestAsyncPort()->update("NEW_COMMAND");
+    unit->getTestAsyncPort()->update("NEW_COMMAND");
 
     // Reset the block
     unit->resetBlock();
 
     // Check that ports and state were reset
     EXPECT_FALSE(unit->getTestInputPort()->hasNewData());
-            EXPECT_FALSE(unit->getTestAsyncPort()->wasUpdated());
+    EXPECT_FALSE(unit->getTestAsyncPort()->wasUpdated());
     EXPECT_EQ(unit->getSyncExecutionCount(), 0);
     EXPECT_EQ(unit->getAsyncExecutionCount(), 0);
     EXPECT_EQ(unit->getState(), ExecutionState::INITIALIZED);
@@ -403,7 +420,7 @@ TEST_F(ProcessingUnitTest, InvalidDownSamplingFactor) {
 
 // Integration test with multiple units
 class MultiUnitIntegrationTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         producer = std::make_unique<TestProcessingUnit>("Producer");
         processor = std::make_unique<TestProcessingUnit>("Processor");
@@ -459,7 +476,7 @@ TEST_F(MultiUnitIntegrationTest, DownSamplingInheritance) {
 
 TEST_F(MultiUnitIntegrationTest, AsyncControlCommands) {
     // Send async command to processor to change processing factor
-            processor->getTestAsyncPort()->update("MULTIPLY_3");
+    processor->getTestAsyncPort()->update("MULTIPLY_3");
     processor->processAsyncBase();
     EXPECT_EQ(processor->getProcessingFactor(), 3);
 

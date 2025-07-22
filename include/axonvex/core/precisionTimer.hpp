@@ -13,10 +13,10 @@
 
 #pragma once
 
-#include <chrono>
 #include <atomic>
-#include <vector>
+#include <chrono>
 #include <mutex>
+#include <vector>
 
 namespace axonvex::core {
 
@@ -56,7 +56,7 @@ struct TimingStatistics {
  * auto elapsed = timer.getElapsedNanoseconds();
  */
 class PrecisionTimer {
-public:
+  public:
     using ClockType = std::chrono::high_resolution_clock;
     using TimePointType = ClockType::time_point;
     using DurationType = std::chrono::nanoseconds;
@@ -97,7 +97,7 @@ public:
     static DurationType getClockResolution();
     static bool isClockSteady();
 
-private:
+  private:
     std::atomic<TimePointType> start_time_;
     std::atomic<TimePointType> stop_time_;
     std::atomic<bool> running_;
@@ -111,7 +111,8 @@ private:
     std::vector<DurationType> samples_;
 
     void addSample(DurationType duration) noexcept;
-    static DurationType calculatePercentileImpl(const std::vector<DurationType>& sorted_samples, double percentile);
+    static DurationType calculatePercentileImpl(const std::vector<DurationType>& sorted_samples,
+                                                double percentile);
 };
 
 } // namespace axonvex::core

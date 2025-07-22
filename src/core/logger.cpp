@@ -10,6 +10,6 @@
 
 // Static member definitions for FileLogger
 namespace axonvex::Log {
-    std::shared_ptr<axonvex::core::FileOutput> FileLogger::file_output_;
-    std::once_flag FileLogger::init_flag_;
-}
+std::shared_ptr<axonvex::core::FileOutput> FileLogger::file_output_;
+std::once_flag FileLogger::init_flag_;
+} // namespace axonvex::Log

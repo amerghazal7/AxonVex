@@ -11,24 +11,21 @@
  * management with JSON/YAML parsing, schema validation, and runtime updates.
  */
 
-#include <axonvex/core/configuration.hpp>
-#include <fstream>
-#include <sstream>
 #include <algorithm>
+#include <axonvex/core/configuration.hpp>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <regex>
+#include <sstream>
 
-extern char **environ;  // Environment variables declaration
+extern char** environ; // Environment variables declaration
 
 namespace axonvex::core {
 
 Configuration::Configuration(bool enable_monitoring, bool enable_validation)
-    : validation_enabled_(enable_validation)
-    , next_callback_id_(1)
-    , monitoring_enabled_(enable_monitoring)
-    , file_watching_enabled_(false) {
-}
+    : validation_enabled_(enable_validation), next_callback_id_(1),
+      monitoring_enabled_(enable_monitoring), file_watching_enabled_(false) {}
 
 Configuration::~Configuration() {
     clearCallbacks();
@@ -58,9 +55,7 @@ bool Configuration::loadFromFile(const std::string& filename, bool merge_with_ex
         }
 
         return false;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Configuration::loadFromString(const std::string& json_string, bool merge_with_existing) {
@@ -73,9 +68,7 @@ bool Configuration::loadFromString(const std::string& json_string, bool merge_wi
         }
 
         return false;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Configuration::loadFromEnvironment(const std::string& prefix, bool merge_with_existing) {
@@ -86,7 +79,8 @@ bool Configuration::loadFromEnvironment(const std::string& prefix, bool merge_wi
         for (char** env = environ; *env != nullptr; ++env) {
             std::string env_var(*env);
             size_t equals_pos = env_var.find('=');
-            if (equals_pos == std::string::npos) continue;
+            if (equals_pos == std::string::npos)
+                continue;
 
             std::string key = env_var.substr(0, equals_pos);
             std::string value = env_var.substr(equals_pos + 1);
@@ -116,9 +110,7 @@ bool Configuration::loadFromEnvironment(const std::string& prefix, bool merge_wi
         }
 
         return false;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Configuration::saveToFile(const std::string& filename, bool pretty_print) const {
@@ -138,9 +130,7 @@ bool Configuration::saveToFile(const std::string& filename, bool pretty_print) c
 
         stats_.total_saves.fetch_add(1, relaxed);
         return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 std::string Configuration::toString(bool pretty_print) const {
@@ -152,9 +142,7 @@ std::string Configuration::toString(bool pretty_print) const {
         } else {
             return config_data_.dump();
         }
-    } catch (const std::exception&) {
-        return "{}";
-    }
+    } catch (const std::exception&) { return "{}"; }
 }
 
 //==============================================================================
@@ -172,7 +160,8 @@ bool Configuration::remove(const std::string& key) {
 
     try {
         auto keys = splitKey(key);
-        if (keys.empty()) return false;
+        if (keys.empty())
+            return false;
 
         nlohmann::json* current = &config_data_;
 
@@ -192,9 +181,7 @@ bool Configuration::remove(const std::string& key) {
         }
 
         return false;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 std::vector<std::string> Configuration::getKeys(const std::string& pattern) const {
@@ -240,9 +227,7 @@ bool Configuration::setSchema(const ConfigurationSchema& schema) {
         }
 
         return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Configuration::loadSchema(const std::string& schema_file) {
@@ -257,9 +242,7 @@ bool Configuration::loadSchema(const std::string& schema_file) {
 
         ConfigurationSchema schema(schema_json, "1.0", "Loaded from " + schema_file);
         return setSchema(schema);
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 std::vector<ValidationError> Configuration::validate() const {
@@ -267,7 +250,8 @@ std::vector<ValidationError> Configuration::validate() const {
     return validateInternal(config_data_);
 }
 
-std::vector<ValidationError> Configuration::validateKey(const std::string& key, const ConfigValue& value) const {
+std::vector<ValidationError> Configuration::validateKey(const std::string& key,
+                                                        const ConfigValue& value) const {
     // For now, implement basic validation
     // In a full implementation, this would use a JSON schema validator
     std::vector<ValidationError> errors;
@@ -300,7 +284,8 @@ bool Configuration::isValidationEnabled() const noexcept {
 // Runtime Updates and Callbacks
 //==============================================================================
 
-size_t Configuration::registerCallback(const std::string& key_pattern, ConfigurationCallback callback) {
+size_t Configuration::registerCallback(const std::string& key_pattern,
+                                       ConfigurationCallback callback) {
     std::lock_guard<std::mutex> lock(callbacks_mutex_);
 
     size_t callback_id = next_callback_id_.fetch_add(1, relaxed);
@@ -343,7 +328,8 @@ bool Configuration::applyUpdates(const nlohmann::json& updates, bool validate) {
                         old_value = target[it.key()];
                     }
 
-                    if (it->is_object() && target.contains(it.key()) && target[it.key()].is_object()) {
+                    if (it->is_object() && target.contains(it.key()) &&
+                        target[it.key()].is_object()) {
                         merge(target[it.key()], *it, full_key);
                     } else {
                         target[it.key()] = *it;
@@ -363,9 +349,7 @@ bool Configuration::applyUpdates(const nlohmann::json& updates, bool validate) {
         stats_.runtime_updates.fetch_add(1, relaxed);
 
         return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 void Configuration::enableFileWatching(bool enable) {
@@ -410,7 +394,8 @@ std::vector<std::string> Configuration::getAvailableTemplates() const {
     return result;
 }
 
-std::optional<ConfigurationTemplate> Configuration::getTemplate(const std::string& template_name) const {
+std::optional<ConfigurationTemplate> Configuration::getTemplate(
+    const std::string& template_name) const {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
 
     auto it = templates_.find(template_name);
@@ -484,15 +469,14 @@ size_t Configuration::getKeyCount() const {
     std::shared_lock<std::shared_mutex> lock(config_mutex_);
 
     size_t count = 0;
-    std::function<void(const nlohmann::json&)> traverse =
-        [&](const nlohmann::json& obj) {
-            for (auto it = obj.begin(); it != obj.end(); ++it) {
-                count++;
-                if (it->is_object()) {
-                    traverse(*it);
-                }
+    std::function<void(const nlohmann::json&)> traverse = [&](const nlohmann::json& obj) {
+        for (auto it = obj.begin(); it != obj.end(); ++it) {
+            count++;
+            if (it->is_object()) {
+                traverse(*it);
             }
-        };
+        }
+    };
 
     traverse(config_data_);
     return count;
@@ -549,9 +533,7 @@ bool Configuration::loadFromJson(const nlohmann::json& json_data, bool merge_wit
         }
 
         return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 std::vector<ValidationError> Configuration::validateInternal(const nlohmann::json& data) const {
@@ -570,7 +552,8 @@ std::vector<ValidationError> Configuration::validateInternal(const nlohmann::jso
     return errors;
 }
 
-void Configuration::notifyCallbacks(const std::string& key, const ConfigValue& old_value, const ConfigValue& new_value) {
+void Configuration::notifyCallbacks(const std::string& key, const ConfigValue& old_value,
+                                    const ConfigValue& new_value) {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(callbacks_mutex_));
 
     for (const auto& pair : callbacks_) {
@@ -607,9 +590,7 @@ bool Configuration::matchesPattern(const std::string& key, const std::string& pa
         try {
             std::regex regex(regex_pattern);
             return std::regex_match(key, regex);
-        } catch (const std::exception&) {
-            return false;
-        }
+        } catch (const std::exception&) { return false; }
     }
 
     return key == pattern;
@@ -626,7 +607,8 @@ std::string Configuration::generateSnapshotId() const {
 
 nlohmann::json* Configuration::getJsonPointer(const std::string& key, bool create_if_missing) {
     auto keys = splitKey(key);
-    if (keys.empty()) return nullptr;
+    if (keys.empty())
+        return nullptr;
 
     nlohmann::json* current = &config_data_;
 
@@ -646,7 +628,8 @@ nlohmann::json* Configuration::getJsonPointer(const std::string& key, bool creat
 
 const nlohmann::json* Configuration::getJsonPointer(const std::string& key) const {
     auto keys = splitKey(key);
-    if (keys.empty()) return nullptr;
+    if (keys.empty())
+        return nullptr;
 
     const nlohmann::json* current = &config_data_;
 

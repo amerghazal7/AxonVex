@@ -6,19 +6,19 @@
  * @date 2025
  */
 
-#include <gtest/gtest.h>
 #include <axonvex/core/callback.hpp>
 #include <axonvex/core/caller.hpp>
 #include <axonvex/core/callerKeyed.hpp>
+#include <gtest/gtest.h>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <stdexcept>
 
 namespace axonvex::core::test {
 
 // Test callback implementations
 class TestCallback : public Callback<int> {
-public:
+  public:
     std::vector<int> received_data;
 
     void callbackPerform(const int data) override {
@@ -31,14 +31,14 @@ public:
 };
 
 class ExceptionCallback : public Callback<int> {
-public:
+  public:
     void callbackPerform(const int data) override {
         throw std::runtime_error("Test exception");
     }
 };
 
 class StringCallback : public Callback<std::string> {
-public:
+  public:
     std::vector<std::string> received_data;
 
     void callbackPerform(const std::string data) override {
@@ -52,7 +52,7 @@ public:
 
 // Tests for basic Caller functionality
 class CallerTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         callback1.clear();
         callback2.clear();
@@ -154,7 +154,7 @@ TEST_F(CallerTest, UnregisterNonExistentCallback) {
 TEST_F(CallerTest, UnregisterAllCallback) {
     Caller<int> caller;
     caller.registerCallback(&callback1);
-    caller.registerCallback(&callback1);  // Register same callback twice
+    caller.registerCallback(&callback1); // Register same callback twice
     caller.registerCallback(&callback2);
 
     EXPECT_EQ(caller.unregisterAllCallback(&callback1), 2);
@@ -192,7 +192,7 @@ TEST_F(CallerTest, ExceptionSafety) {
 
 // Tests for CallerKeyed functionality
 class CallerKeyedTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         stringCallback1.clear();
         stringCallback2.clear();
@@ -264,7 +264,7 @@ TEST_F(CallerKeyedTest, CallCallbacksByKey) {
 
     ASSERT_EQ(intCallback1.received_data.size(), 1);
     EXPECT_EQ(intCallback1.received_data[0], 42);
-    EXPECT_EQ(intCallback2.received_data.size(), 0);  // Should not be called
+    EXPECT_EQ(intCallback2.received_data.size(), 0); // Should not be called
 }
 
 TEST_F(CallerKeyedTest, CallMultipleCallbacksSameKey) {

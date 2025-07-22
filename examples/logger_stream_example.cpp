@@ -6,11 +6,11 @@
  * @date 2025
  */
 
-#include <axonvex/axonvex.hpp>
-#include <vector>
 #include <array>
+#include <axonvex/axonvex.hpp>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 using namespace axonvex;
 using namespace axonvex::Log;
@@ -70,8 +70,10 @@ int main() {
 
     traditional_logger.stop();
 
-    auto traditional_duration = std::chrono::duration_cast<std::chrono::microseconds>(mid_time - start_time);
-    auto stream_duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - mid_time);
+    auto traditional_duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(mid_time - start_time);
+    auto stream_duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(end_time - mid_time);
 
     std::cout << "\nPerformance Results:" << std::endl;
     std::cout << "Traditional logging: " << traditional_duration.count() << " μs" << std::endl;
@@ -99,7 +101,8 @@ int main() {
     std::cout << "\n5. File Logging:" << std::endl;
 
     // File logging
-    Log::File() << "This message goes to file: " << std::chrono::system_clock::now().time_since_epoch().count();
+    Log::File() << "This message goes to file: "
+                << std::chrono::system_clock::now().time_since_epoch().count();
     Log::File() << "File logging with data: " << data;
 
     std::cout << "\n6. Traditional API Still Available:" << std::endl;
@@ -118,7 +121,8 @@ int main() {
     // Display statistics
     const auto& stats = global_logger.getStatistics();
     std::cout << "Messages logged: " << stats.getMessagesLogged() << std::endl;
-    std::cout << "Average processing time: " << stats.getAverageProcessingTimeNs() << " ns" << std::endl;
+    std::cout << "Average processing time: " << stats.getAverageProcessingTimeNs() << " ns"
+              << std::endl;
     std::cout << "Peak queue size: " << stats.getPeakQueueSize() << std::endl;
 
     std::cout << "\n=== Demo Complete ===" << std::endl;

@@ -12,25 +12,25 @@
  * integration with AxonVex framework components.
  */
 
-#include <axonvex/core/path.hpp>
 #include <algorithm>
-#include <random>
-#include <chrono>
-#include <regex>
+#include <axonvex/core/path.hpp>
 #include <cctype>
-#include <fstream>
+#include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <random>
+#include <regex>
 
 #ifdef _WIN32
-    #include <windows.h>
-    #include <shlobj.h>
-    #include <userenv.h>
-    #pragma comment(lib, "userenv.lib")
+#include <shlobj.h>
+#include <userenv.h>
+#include <windows.h>
+#pragma comment(lib, "userenv.lib")
 #else
-    #include <unistd.h>
-    #include <pwd.h>
-    #include <sys/stat.h>
-    #include <sys/types.h>
+#include <pwd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #endif
 
 namespace axonvex::core {
@@ -177,9 +177,7 @@ std::filesystem::path Path::getSystemAppDataDirectory() {
 std::filesystem::path Path::getCurrentWorkingDirectory() {
     try {
         return std::filesystem::current_path();
-    } catch (const std::exception&) {
-        return std::filesystem::path(".");
-    }
+    } catch (const std::exception&) { return std::filesystem::path("."); }
 }
 
 //==============================================================================
@@ -286,25 +284,19 @@ std::string Path::stem() const {
 Path Path::relativeTo(const Path& base) const {
     try {
         return Path(std::filesystem::relative(path_, base.path_));
-    } catch (const std::exception&) {
-        return *this;
-    }
+    } catch (const std::exception&) { return *this; }
 }
 
 Path Path::absolute() const {
     try {
         return Path(std::filesystem::absolute(path_));
-    } catch (const std::exception&) {
-        return *this;
-    }
+    } catch (const std::exception&) { return *this; }
 }
 
 Path Path::canonical() const {
     try {
         return Path(std::filesystem::canonical(path_));
-    } catch (const std::exception&) {
-        return absolute();
-    }
+    } catch (const std::exception&) { return absolute(); }
 }
 
 Path Path::normalize() const {
@@ -312,9 +304,7 @@ Path Path::normalize() const {
         auto normalized = path_;
         normalized = normalized.lexically_normal();
         return Path(normalized);
-    } catch (const std::exception&) {
-        return *this;
-    }
+    } catch (const std::exception&) { return *this; }
 }
 
 Path Path::replaceExtension(const std::string& new_extension) const {
@@ -336,25 +326,19 @@ Path Path::replaceFilename(const std::string& new_filename) const {
 bool Path::exists() const {
     try {
         return std::filesystem::exists(path_);
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Path::isFile() const {
     try {
         return std::filesystem::is_regular_file(path_);
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Path::isDirectory() const {
     try {
         return std::filesystem::is_directory(path_);
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Path::isAbsolute() const {
@@ -428,17 +412,13 @@ std::uintmax_t Path::size() const {
             return std::filesystem::file_size(path_);
         }
         return 0;
-    } catch (const std::exception&) {
-        return 0;
-    }
+    } catch (const std::exception&) { return 0; }
 }
 
 std::filesystem::file_time_type Path::lastWriteTime() const {
     try {
         return std::filesystem::last_write_time(path_);
-    } catch (const std::exception&) {
-        return std::filesystem::file_time_type{};
-    }
+    } catch (const std::exception&) { return std::filesystem::file_time_type{}; }
 }
 
 bool Path::isReadable() const {
@@ -453,9 +433,7 @@ bool Path::isReadable() const {
             return true;
         }
         return false;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Path::isWritable() const {
@@ -467,7 +445,10 @@ bool Path::isWritable() const {
                 return file.good();
             } else if (isDirectory()) {
                 // Try to create a temporary file in the directory
-                auto temp_path = path_ / ("temp_write_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+                auto temp_path =
+                    path_ /
+                    ("temp_write_test_" +
+                     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
                 std::ofstream file(temp_path);
                 if (file.good()) {
                     file.close();
@@ -484,9 +465,7 @@ bool Path::isWritable() const {
             }
         }
         return false;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 //==============================================================================
@@ -500,9 +479,7 @@ bool Path::createDirectory(bool recursive) const {
         } else {
             return std::filesystem::create_directory(path_);
         }
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Path::createDirectories() const {
@@ -512,17 +489,13 @@ bool Path::createDirectories() const {
 bool Path::remove() const {
     try {
         return std::filesystem::remove(path_);
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 std::uintmax_t Path::removeAll() const {
     try {
         return std::filesystem::remove_all(path_);
-    } catch (const std::exception&) {
-        return 0;
-    }
+    } catch (const std::exception&) { return 0; }
 }
 
 std::vector<Path> Path::listDirectory(bool recursive) const {
@@ -590,12 +563,10 @@ bool Path::copyTo(const Path& destination, bool overwrite) const {
         destination.parent().createDirectories();
 
         std::filesystem::copy_file(path_, destination.path_,
-            overwrite ? std::filesystem::copy_options::overwrite_existing :
-                       std::filesystem::copy_options::none);
+                                   overwrite ? std::filesystem::copy_options::overwrite_existing
+                                             : std::filesystem::copy_options::none);
         return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Path::moveTo(const Path& destination) const {
@@ -605,9 +576,7 @@ bool Path::moveTo(const Path& destination) const {
 
         std::filesystem::rename(path_, destination.path_);
         return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 Path Path::createBackup(const std::string& backup_suffix) const {
@@ -730,9 +699,7 @@ std::unordered_map<std::string, std::string> Path::getSystemInfo() {
 
         info["filesystem_space"] = std::to_string(std::filesystem::space(".").available);
 
-    } catch (const std::exception& e) {
-        info["error"] = e.what();
-    }
+    } catch (const std::exception& e) { info["error"] = e.what(); }
 
     return info;
 }
@@ -778,13 +745,15 @@ Path Path::createTempPath(const std::string& prefix, const std::string& extensio
 
     // Generate unique filename
     auto now = std::chrono::steady_clock::now();
-    auto timestamp = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    auto timestamp =
+        std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
 
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> dis(1000, 9999);
 
-    std::string filename = prefix + std::to_string(timestamp) + "_" + std::to_string(dis(gen)) + extension;
+    std::string filename =
+        prefix + std::to_string(timestamp) + "_" + std::to_string(dis(gen)) + extension;
 
     return temp_dir / filename;
 }
@@ -797,8 +766,7 @@ bool Path::hasDirectoryTraversal() const {
     std::string path_str = toString();
 
     // Check for common directory traversal patterns
-    if (path_str.find("..") != std::string::npos ||
-        path_str.find("./") != std::string::npos ||
+    if (path_str.find("..") != std::string::npos || path_str.find("./") != std::string::npos ||
         path_str.find(".\\") != std::string::npos) {
         return true;
     }
@@ -821,15 +789,11 @@ bool Path::isInWhitelist() const {
                 if (!relative.empty() && relative.begin()->string() != "..") {
                     return true;
                 }
-            } catch (const std::exception&) {
-                continue;
-            }
+            } catch (const std::exception&) { continue; }
         }
 
         return false;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 bool Path::hasIllegalCharacters() const {
@@ -846,10 +810,8 @@ bool Path::hasIllegalCharacters() const {
 
     // Check for reserved names
     const std::vector<std::string> reserved_names = {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
-    };
+        "CON",  "PRN",  "AUX",  "NUL",  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
 
     for (const auto& reserved : reserved_names) {
         if (path_str.find(reserved) != std::string::npos) {

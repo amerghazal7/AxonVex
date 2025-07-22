@@ -1,23 +1,25 @@
-#include <gtest/gtest.h>
 #include "axonvex/core/timingController.hpp"
+
 #include "axonvex/core/processingUnit.hpp"
-#include <thread>
-#include <chrono>
+
 #include <atomic>
-#include <vector>
+#include <chrono>
+#include <gtest/gtest.h>
 #include <memory>
+#include <thread>
+#include <vector>
 
 using namespace axonvex::core;
 using namespace std::chrono_literals;
 
 // Test ProcessingUnit for TimingController tests
 class MockProcessingUnit : public ProcessingUnit {
-private:
+  private:
     std::atomic<uint32_t> processCallCount_{0};
     std::atomic<bool> shouldThrow_{false};
     std::chrono::microseconds processingDelay_{0};
 
-public:
+  public:
     explicit MockProcessingUnit(const std::string& name) : ProcessingUnit(name) {}
 
     void processSync() override {
@@ -62,13 +64,19 @@ public:
     }
 
     // Test utilities
-    uint32_t getProcessCallCount() const { return processCallCount_.load(); }
-    void setShouldThrow(bool shouldThrow) { shouldThrow_.store(shouldThrow); }
-    void setProcessingDelay(std::chrono::microseconds delay) { processingDelay_ = delay; }
+    uint32_t getProcessCallCount() const {
+        return processCallCount_.load();
+    }
+    void setShouldThrow(bool shouldThrow) {
+        shouldThrow_.store(shouldThrow);
+    }
+    void setProcessingDelay(std::chrono::microseconds delay) {
+        processingDelay_ = delay;
+    }
 };
 
 class TimingControllerTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         controller = std::make_unique<TimingController>(SchedulingPolicy::PRIORITY_BASED);
 
@@ -376,18 +384,20 @@ TEST_F(TimingControllerTest, CustomScheduling) {
 
     // Set custom scheduler that always selects the first active task
     uint32_t customCallCount = 0;
-    controller->setCustomScheduler([&customCallCount](const std::vector<SchedulerTask>& tasks) -> uint32_t {
-        customCallCount++;
-        if (tasks.empty()) return 0;
+    controller->setCustomScheduler(
+        [&customCallCount](const std::vector<SchedulerTask>& tasks) -> uint32_t {
+            customCallCount++;
+            if (tasks.empty())
+                return 0;
 
-        auto now = std::chrono::steady_clock::now();
-        for (const auto& task : tasks) {
-            if (task.active.load() && !task.executing.load() && now >= task.nextExecution) {
-                return task.taskId;
+            auto now = std::chrono::steady_clock::now();
+            for (const auto& task : tasks) {
+                if (task.active.load() && !task.executing.load() && now >= task.nextExecution) {
+                    return task.taskId;
+                }
             }
-        }
-        return 0;
-    });
+            return 0;
+        });
 
     TimingConstraints constraints;
     constraints.period = std::chrono::milliseconds(10);
@@ -493,11 +503,11 @@ TEST_F(TimingControllerTest, SchedulabilityValidation) {
     // Create schedulable task set (total utilization < 1.0)
     TimingConstraints task1;
     task1.period = std::chrono::milliseconds(20);
-    task1.wcet = std::chrono::milliseconds(5);   // Utilization = 0.25
+    task1.wcet = std::chrono::milliseconds(5); // Utilization = 0.25
 
     TimingConstraints task2;
     task2.period = std::chrono::milliseconds(40);
-    task2.wcet = std::chrono::milliseconds(10);  // Utilization = 0.25
+    task2.wcet = std::chrono::milliseconds(10); // Utilization = 0.25
 
     controller->scheduleProcessingUnit(unit1.get(), task1);
     controller->scheduleProcessingUnit(unit2.get(), task2);
@@ -510,11 +520,11 @@ TEST_F(TimingControllerTest, UnschedulableTaskSet) {
     // Create unschedulable task set (total utilization > 1.0)
     TimingConstraints task1;
     task1.period = std::chrono::milliseconds(10);
-    task1.wcet = std::chrono::milliseconds(8);   // Utilization = 0.8
+    task1.wcet = std::chrono::milliseconds(8); // Utilization = 0.8
 
     TimingConstraints task2;
     task2.period = std::chrono::milliseconds(15);
-    task2.wcet = std::chrono::milliseconds(7);   // Utilization ≈ 0.47
+    task2.wcet = std::chrono::milliseconds(7); // Utilization ≈ 0.47
 
     controller->scheduleProcessingUnit(unit1.get(), task1);
     controller->scheduleProcessingUnit(unit2.get(), task2);
@@ -617,9 +627,9 @@ TEST_F(TimingControllerTest, EmergencyStop) {
 
 // Thread Safety Tests
 TEST_F(TimingControllerTest, ConcurrentTaskManagement) {
-    // Test was failing due to priority scheduler bug - now fixed, keeping original priority-based test
-    // controller.reset();
-    // controller = std::make_unique<TimingController>(SchedulingPolicy::ROUND_ROBIN);
+    // Test was failing due to priority scheduler bug - now fixed, keeping original priority-based
+    // test controller.reset(); controller =
+    // std::make_unique<TimingController>(SchedulingPolicy::ROUND_ROBIN);
 
     const int numTasks = 10;
     std::vector<std::unique_ptr<MockProcessingUnit>> units;
@@ -640,10 +650,12 @@ TEST_F(TimingControllerTest, ConcurrentTaskManagement) {
     for (int i = 0; i < numTasks; ++i) {
         threads.emplace_back([&, i]() {
             TimingConstraints constraints;
-            constraints.period = std::chrono::milliseconds(5 + i); // Shorter, varied periods (5-14ms)
+            constraints.period =
+                std::chrono::milliseconds(5 + i); // Shorter, varied periods (5-14ms)
             constraints.deadline = constraints.period;
             // Use valid SchedulerPriority enum values instead of raw casting
-            SchedulerPriority priorities[] = {SchedulerPriority::HIGH, SchedulerPriority::NORMAL, SchedulerPriority::LOW};
+            SchedulerPriority priorities[] = {SchedulerPriority::HIGH, SchedulerPriority::NORMAL,
+                                              SchedulerPriority::LOW};
             constraints.priority = priorities[i % 3];
 
             uint32_t taskId = controller->scheduleProcessingUnit(units[i].get(), constraints);
@@ -664,7 +676,8 @@ TEST_F(TimingControllerTest, ConcurrentTaskManagement) {
     // Start and stop - longer execution time to ensure all tasks execute
     controller->start();
     EXPECT_TRUE(controller->isRunning());
-    std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Increased to 200ms for better coverage
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(200)); // Increased to 200ms for better coverage
     controller->stop();
     EXPECT_FALSE(controller->isRunning());
 

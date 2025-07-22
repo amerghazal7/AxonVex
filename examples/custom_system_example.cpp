@@ -5,10 +5,10 @@
  */
 
 #include <axonvex/axonvex.hpp>
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <thread>
-#include <chrono>
 
 using namespace axonvex::core;
 
@@ -20,21 +20,23 @@ using namespace axonvex::core;
  * @brief Signal Generator ProcessingUnit
  */
 class SignalGenerator : public ProcessingUnit {
-private:
+  private:
     std::atomic<uint64_t> sampleCount_{0};
     double frequency_{1.0};
     double amplitude_{1.0};
     OutputPort<double>* outputPort_;
 
-public:
-    explicit SignalGenerator(const std::string& name, double frequency = 1.0, double amplitude = 1.0)
+  public:
+    explicit SignalGenerator(const std::string& name, double frequency = 1.0,
+                             double amplitude = 1.0)
         : ProcessingUnit(name), frequency_(frequency), amplitude_(amplitude) {
         outputPort_ = createOutputPort<double>(100, "signal_output");
     }
 
     void initialize() override {
         setState(ExecutionState::INITIALIZED);
-        std::cout << "✓ Initialized " << getName() << " (freq: " << frequency_ << " Hz)" << std::endl;
+        std::cout << "✓ Initialized " << getName() << " (freq: " << frequency_ << " Hz)"
+                  << std::endl;
     }
 
     void processSync() override {
@@ -48,7 +50,8 @@ public:
         outputPort_->write(value);
 
         executionTimer_.stop();
-        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(
+            executionTimer_.getElapsedNanoseconds()));
     }
 
     void processAsync() override {
@@ -65,20 +68,22 @@ public:
         return "SignalGenerator";
     }
 
-    uint64_t getSampleCount() const { return sampleCount_.load(); }
+    uint64_t getSampleCount() const {
+        return sampleCount_.load();
+    }
 };
 
 /**
  * @brief Signal Filter ProcessingUnit
  */
 class SignalFilter : public ProcessingUnit {
-private:
+  private:
     InputPort<double>* inputPort_;
     OutputPort<double>* outputPort_;
     std::atomic<uint64_t> processedCount_{0};
     double filterCoeff_{0.5};
 
-public:
+  public:
     explicit SignalFilter(const std::string& name, double filterCoeff = 0.5)
         : ProcessingUnit(name), filterCoeff_(filterCoeff) {
         inputPort_ = createInputPort<double>(200, "signal_input");
@@ -87,7 +92,8 @@ public:
 
     void initialize() override {
         setState(ExecutionState::INITIALIZED);
-        std::cout << "✓ Initialized " << getName() << " (coeff: " << filterCoeff_ << ")" << std::endl;
+        std::cout << "✓ Initialized " << getName() << " (coeff: " << filterCoeff_ << ")"
+                  << std::endl;
     }
 
     void processSync() override {
@@ -104,7 +110,8 @@ public:
         }
 
         executionTimer_.stop();
-        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(
+            executionTimer_.getElapsedNanoseconds()));
     }
 
     void processAsync() override {
@@ -120,19 +127,21 @@ public:
         return "SignalFilter";
     }
 
-    uint64_t getProcessedCount() const { return processedCount_.load(); }
+    uint64_t getProcessedCount() const {
+        return processedCount_.load();
+    }
 };
 
 /**
  * @brief Data Logger ProcessingUnit
  */
 class DataLogger : public ProcessingUnit {
-private:
+  private:
     InputPort<double>* inputPort_;
     std::atomic<uint64_t> loggedCount_{0};
     double lastValue_{0.0};
 
-public:
+  public:
     explicit DataLogger(const std::string& name) : ProcessingUnit(name) {
         inputPort_ = createInputPort<double>(300, "data_input");
     }
@@ -151,14 +160,16 @@ public:
             loggedCount_.fetch_add(1);
 
             if (loggedCount_.load() % 100 == 0) {
-                std::cout << getName() << " logged " << loggedCount_.load() << " samples, last: " << lastValue_ << std::endl;
+                std::cout << getName() << " logged " << loggedCount_.load()
+                          << " samples, last: " << lastValue_ << std::endl;
             }
 
             inputPort_->clearNewDataFlag();
         }
 
         executionTimer_.stop();
-        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(
+            executionTimer_.getElapsedNanoseconds()));
     }
 
     void processAsync() override {
@@ -175,8 +186,12 @@ public:
         return "DataLogger";
     }
 
-    uint64_t getLoggedCount() const { return loggedCount_.load(); }
-    double getLastValue() const { return lastValue_; }
+    uint64_t getLoggedCount() const {
+        return loggedCount_.load();
+    }
+    double getLastValue() const {
+        return lastValue_;
+    }
 };
 
 // =================================================================
@@ -191,17 +206,16 @@ public:
  * - System exposes generator output and filtered data as system ports
  */
 class CustomSignalProcessingSystem : public AxonVexSystem {
-private:
+  private:
     std::unique_ptr<SignalGenerator> generator_;
     std::unique_ptr<SignalFilter> filter_;
     std::unique_ptr<DataLogger> logger_;
 
-public:
+  public:
     explicit CustomSignalProcessingSystem(const SystemConfiguration& config = SystemConfiguration{})
-        : AxonVexSystem(config) {
-    }
+        : AxonVexSystem(config) {}
 
-protected:
+  protected:
     /**
      * @brief Initialize the signal processing block layout
      */
@@ -216,17 +230,17 @@ protected:
 
             // Register processing units with the system
             TimingConstraints generatorConstraints;
-            generatorConstraints.period = std::chrono::milliseconds(10);  // 100 Hz
+            generatorConstraints.period = std::chrono::milliseconds(10); // 100 Hz
             generatorConstraints.deadline = std::chrono::milliseconds(5);
             generatorConstraints.priority = SchedulerPriority::HIGH;
 
             TimingConstraints filterConstraints;
-            filterConstraints.period = std::chrono::milliseconds(20);     // 50 Hz
+            filterConstraints.period = std::chrono::milliseconds(20); // 50 Hz
             filterConstraints.deadline = std::chrono::milliseconds(10);
             filterConstraints.priority = SchedulerPriority::NORMAL;
 
             TimingConstraints loggerConstraints;
-            loggerConstraints.period = std::chrono::milliseconds(50);     // 20 Hz
+            loggerConstraints.period = std::chrono::milliseconds(50); // 20 Hz
             loggerConstraints.deadline = std::chrono::milliseconds(25);
             loggerConstraints.priority = SchedulerPriority::LOW;
 
@@ -269,7 +283,9 @@ protected:
 
             std::cout << "✓ Block layout initialized successfully" << std::endl;
             std::cout << "  - Processing pipeline: Generator → Filter → Logger" << std::endl;
-            std::cout << "  - System ports: filter_input (in), raw_signal (out), filtered_signal (out)" << std::endl;
+            std::cout
+                << "  - System ports: filter_input (in), raw_signal (out), filtered_signal (out)"
+                << std::endl;
 
             return true;
 
@@ -279,7 +295,7 @@ protected:
         }
     }
 
-public:
+  public:
     /**
      * @brief Get processing statistics for monitoring
      */

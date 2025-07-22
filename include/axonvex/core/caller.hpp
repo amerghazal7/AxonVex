@@ -13,11 +13,11 @@
 
 #pragma once
 
-#include <vector>
-#include <memory>
-#include <algorithm>
-
 #include "callback.hpp"
+
+#include <algorithm>
+#include <memory>
+#include <vector>
 
 namespace axonvex::core {
 
@@ -44,10 +44,10 @@ namespace axonvex::core {
  */
 template <typename T>
 class Caller {
-private:
+  private:
     std::vector<Callback<T>*> callbacks_;
 
-public:
+  public:
     /**
      * @brief Default constructor
      */

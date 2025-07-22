@@ -6,27 +6,33 @@
  * @date 2025
  */
 
+#include <atomic>
 #include <axonvex/axonvex.hpp>
+#include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <thread>
 #include <vector>
-#include <chrono>
-#include <atomic>
-#include <iomanip>
 
 using namespace axonvex::core;
 
 class MockProcessingUnit : public ProcessingUnit {
-public:
+  public:
     MockProcessingUnit(const std::string& name) : ProcessingUnit(name) {}
     ~MockProcessingUnit() override = default;
 
     void processSync() override {}
     void processAsync() override {}
-    void finalize() override { setState(ExecutionState::INITIALIZED); }
+    void finalize() override {
+        setState(ExecutionState::INITIALIZED);
+    }
     void initialize() override {}
-    void reset() override { setState(ExecutionState::INITIALIZED); }
-    std::string getTypeDescription() override { return "MockProcessingUnit"; }
+    void reset() override {
+        setState(ExecutionState::INITIALIZED);
+    }
+    std::string getTypeDescription() override {
+        return "MockProcessingUnit";
+    }
 };
 
 int main() {
@@ -84,7 +90,8 @@ int main() {
         // Test data flow
         outputPort->write(42.0);
         std::cout << "✓ Data written to output port: 42.0" << std::endl;
-        std::cout << "✓ Input port has new data: " << (inputPort2->hasNewData() ? "Yes" : "No") << std::endl;
+        std::cout << "✓ Input port has new data: " << (inputPort2->hasNewData() ? "Yes" : "No")
+                  << std::endl;
         std::cout << "✓ Data received: " << inputPort2->read() << std::endl;
 
         // Test 3: Thread Safety Performance Test
@@ -137,17 +144,20 @@ int main() {
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 
         std::cout << "Performance Results:" << std::endl;
-        std::cout << "  Operations completed: " << writeCounter.load() << " writes, " << readCounter.load() << " reads" << std::endl;
+        std::cout << "  Operations completed: " << writeCounter.load() << " writes, "
+                  << readCounter.load() << " reads" << std::endl;
         std::cout << "  Duration: " << duration.count() << " microseconds" << std::endl;
         std::cout << "  Write throughput: " << std::fixed << std::setprecision(0)
-                 << (writeCounter.load() * 1e6 / duration.count()) << " ops/sec" << std::endl;
+                  << (writeCounter.load() * 1e6 / duration.count()) << " ops/sec" << std::endl;
 
         // Test 4: Async Ports with MemoryPool
         std::cout << "\n📊 Test 4: Async Ports with MemoryPool\n";
         std::cout << "======================================\n" << std::endl;
 
-        auto asyncOutput = std::make_unique<AsyncOutputPort<std::string>>(5, "async_out", producer.get());
-        auto asyncInput = std::make_unique<AsyncInputPort<std::string>>(6, "async_in", consumer.get());
+        auto asyncOutput =
+            std::make_unique<AsyncOutputPort<std::string>>(5, "async_out", producer.get());
+        auto asyncInput =
+            std::make_unique<AsyncInputPort<std::string>>(6, "async_in", consumer.get());
 
         // Enable thread safety
         asyncOutput->setThreadSafe(true);
@@ -159,7 +169,8 @@ int main() {
 
         asyncOutput->write("Hello MemoryPool!");
         std::cout << "✓ Async data sent: 'Hello MemoryPool!'" << std::endl;
-        std::cout << "✓ Async port updated: " << (asyncInput->wasUpdated() ? "Yes" : "No") << std::endl;
+        std::cout << "✓ Async port updated: " << (asyncInput->wasUpdated() ? "Yes" : "No")
+                  << std::endl;
         std::cout << "✓ Received: '" << asyncInput->read() << "'" << std::endl;
 
         // Test 5: Port Statistics

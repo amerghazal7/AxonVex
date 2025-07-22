@@ -1,16 +1,16 @@
-#include <gtest/gtest.h>
-#include <axonvex/core/logger.hpp>
-#include <thread>
-#include <chrono>
-#include <fstream>
-#include <filesystem>
-#include <sstream>
 #include <atomic>
+#include <axonvex/core/logger.hpp>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <gtest/gtest.h>
+#include <sstream>
+#include <thread>
 
 using namespace axonvex::core;
 
 class LoggerTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         // Create a clean test environment
         test_log_file_ = "test_log.txt";
@@ -81,7 +81,8 @@ TEST_F(LoggerTest, LogStatistics) {
 
 // Test LogMessage
 TEST_F(LoggerTest, LogMessage) {
-    LogMessage msg(LogLevel::Info, "TestCategory", "Test message", __FILE__, __LINE__, __FUNCTION__);
+    LogMessage msg(LogLevel::Info, "TestCategory", "Test message", __FILE__, __LINE__,
+                   __FUNCTION__);
 
     EXPECT_EQ(msg.level, LogLevel::Info);
     EXPECT_EQ(msg.category, "TestCategory");
@@ -94,7 +95,7 @@ TEST_F(LoggerTest, LogMessage) {
     // Timestamp should be recent
     auto now = std::chrono::high_resolution_clock::now();
     auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(now - msg.timestamp);
-    EXPECT_LT(diff.count(), 100);  // Should be within 100ms
+    EXPECT_LT(diff.count(), 100); // Should be within 100ms
 }
 
 // Test Logger Construction
@@ -110,10 +111,10 @@ TEST_F(LoggerTest, Construction) {
     EXPECT_EQ(logger2.getQueueCapacity(), 8192);
 
     // Boundary cases
-    Logger logger3(100, 200);  // Below minimum
+    Logger logger3(100, 200); // Below minimum
     EXPECT_GE(logger3.getQueueCapacity(), Logger::MIN_QUEUE_SIZE);
 
-    Logger logger4(2000000, 3000000);  // Above maximum
+    Logger logger4(2000000, 3000000); // Above maximum
     EXPECT_LE(logger4.getQueueCapacity(), Logger::MAX_QUEUE_SIZE);
 }
 
@@ -163,7 +164,7 @@ TEST_F(LoggerTest, LogLevelConfiguration) {
 
 // Custom test output for verification
 class TestOutput : public LogOutput {
-public:
+  public:
     TestOutput() {
         formatter_ = [this](const LogMessage& msg) { return defaultFormat(msg); };
     }
@@ -192,7 +193,7 @@ public:
         messages_.clear();
     }
 
-private:
+  private:
     mutable std::mutex mutex_;
     std::vector<LogMessage> messages_;
 };
@@ -243,7 +244,7 @@ TEST_F(LoggerTest, BasicLogging) {
 
     // Verify messages were logged
     auto messages = test_output->getMessages();
-    EXPECT_EQ(messages.size(), 4);  // Debug filtered out by default level (Info)
+    EXPECT_EQ(messages.size(), 4); // Debug filtered out by default level (Info)
 
     EXPECT_EQ(messages[0].level, LogLevel::Info);
     EXPECT_EQ(messages[0].message, "Info message");
@@ -446,7 +447,7 @@ TEST_F(LoggerTest, FileOutput) {
 
 // Test Multi-threaded Logging
 TEST_F(LoggerTest, MultiThreadedLogging) {
-    Logger logger(8192, 16384);  // Larger buffers for concurrent access
+    Logger logger(8192, 16384); // Larger buffers for concurrent access
     auto test_output = std::make_shared<TestOutput>();
     logger.addOutput(test_output);
     logger.setLevel(LogLevel::Debug);
@@ -463,7 +464,7 @@ TEST_F(LoggerTest, MultiThreadedLogging) {
         threads.emplace_back([&logger, &completed_threads, t, messages_per_thread]() {
             for (int i = 0; i < messages_per_thread; ++i) {
                 logger.info("Thread" + std::to_string(t),
-                           "Message " + std::to_string(i) + " from thread " + std::to_string(t));
+                            "Message " + std::to_string(i) + " from thread " + std::to_string(t));
             }
             completed_threads.fetch_add(1);
         });
@@ -491,7 +492,7 @@ TEST_F(LoggerTest, MultiThreadedLogging) {
 
 // Test High-Load Performance
 TEST_F(LoggerTest, HighLoadPerformance) {
-    Logger logger(16384, 32768);  // Large buffers
+    Logger logger(16384, 32768); // Large buffers
     auto test_output = std::make_shared<TestOutput>();
     logger.addOutput(test_output);
 
@@ -515,7 +516,8 @@ TEST_F(LoggerTest, HighLoadPerformance) {
 
     // Calculate performance metrics
     auto log_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(log_time - start_time);
-    auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    auto total_duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
     double avg_log_time_ns = static_cast<double>(log_duration.count()) / num_messages;
 
@@ -533,12 +535,13 @@ TEST_F(LoggerTest, HighLoadPerformance) {
     std::cout << "  Messages: " << num_messages << "\n";
     std::cout << "  Average log time: " << avg_log_time_ns << " ns\n";
     std::cout << "  Total test time: " << total_duration.count() << " ms\n";
-    std::cout << "  Throughput: " << (num_messages * 1000.0 / total_duration.count()) << " messages/sec\n";
+    std::cout << "  Throughput: " << (num_messages * 1000.0 / total_duration.count())
+              << " messages/sec\n";
 }
 
 // Test Queue Overflow Handling
 TEST_F(LoggerTest, QueueOverflowHandling) {
-    Logger logger(2, 4);  // Absolutely minimal buffers to guarantee overflow
+    Logger logger(2, 4); // Absolutely minimal buffers to guarantee overflow
     auto test_output = std::make_shared<TestOutput>();
     logger.addOutput(test_output);
 
@@ -582,9 +585,12 @@ TEST_F(LoggerTest, QueueOverflowHandling) {
     // Either we get drops or the logger is incredibly efficient (which is good!)
     // If no drops, we'll make this a softer expectation
     if (final_stats.getMessagesDropped() == 0) {
-        std::cout << "Logger successfully processed all messages despite tiny queue - excellent performance!" << std::endl;
+        std::cout << "Logger successfully processed all messages despite tiny queue - excellent "
+                     "performance!"
+                  << std::endl;
         // This actually shows the logger is working perfectly
-        EXPECT_GE(final_stats.getMessagesLogged(), messages_sent.load() - 10); // Allow small variance
+        EXPECT_GE(final_stats.getMessagesLogged(),
+                  messages_sent.load() - 10); // Allow small variance
     } else {
         EXPECT_GT(final_stats.getMessagesDropped(), 0);
         EXPECT_GT(final_stats.getQueueOverflows(), 0);
@@ -593,7 +599,7 @@ TEST_F(LoggerTest, QueueOverflowHandling) {
 
 // Test Memory Pool Exhaustion
 TEST_F(LoggerTest, MemoryPoolExhaustion) {
-    Logger logger(1024, 8);  // Reasonable queue, extremely tiny pool
+    Logger logger(1024, 8); // Reasonable queue, extremely tiny pool
     auto test_output = std::make_shared<TestOutput>();
     logger.addOutput(test_output);
 
@@ -631,7 +637,9 @@ TEST_F(LoggerTest, MemoryPoolExhaustion) {
 
     // Either we get drops due to pool exhaustion, or the memory pool is incredibly efficient
     if (stats.getMessagesDropped() == 0) {
-        std::cout << "Memory pool handled all large messages efficiently - excellent memory management!" << std::endl;
+        std::cout
+            << "Memory pool handled all large messages efficiently - excellent memory management!"
+            << std::endl;
         // This shows the memory pool is working well
         EXPECT_GE(stats.getMessagesLogged(), messages_sent.load() - 5); // Allow small variance
     } else {

@@ -1,17 +1,17 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
-#include <string>
-#include <unordered_map>
+#include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <shared_mutex>
-#include <atomic>
-#include <vector>
+#include <nlohmann/json.hpp>
 #include <optional>
-#include <fstream>
-#include <filesystem>
+#include <shared_mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace axonvex::core {
 
@@ -28,7 +28,8 @@ using ConfigValue = nlohmann::json;
 /**
  * @brief Configuration update callback function type
  */
-using ConfigurationCallback = std::function<void(const std::string& key, const ConfigValue& oldValue, const ConfigValue& newValue)>;
+using ConfigurationCallback = std::function<void(
+    const std::string& key, const ConfigValue& oldValue, const ConfigValue& newValue)>;
 
 /**
  * @brief Validation error information
@@ -39,8 +40,8 @@ struct ValidationError {
     std::string expectedType;
     std::string actualType;
 
-    ValidationError(const std::string& k, const std::string& msg,
-                   const std::string& expected = "", const std::string& actual = "")
+    ValidationError(const std::string& k, const std::string& msg, const std::string& expected = "",
+                    const std::string& actual = "")
         : key(k), message(msg), expectedType(expected), actualType(actual) {}
 };
 
@@ -55,12 +56,24 @@ struct ConfigurationStatistics {
     std::atomic<uint64_t> runtime_updates{0};
     std::atomic<uint64_t> callback_invocations{0};
 
-    uint64_t getTotalLoads() const noexcept { return total_loads.load(); }
-    uint64_t getTotalSaves() const noexcept { return total_saves.load(); }
-    uint64_t getTotalUpdates() const noexcept { return total_updates.load(); }
-    uint64_t getValidationFailures() const noexcept { return validation_failures.load(); }
-    uint64_t getRuntimeUpdates() const noexcept { return runtime_updates.load(); }
-    uint64_t getCallbackInvocations() const noexcept { return callback_invocations.load(); }
+    uint64_t getTotalLoads() const noexcept {
+        return total_loads.load();
+    }
+    uint64_t getTotalSaves() const noexcept {
+        return total_saves.load();
+    }
+    uint64_t getTotalUpdates() const noexcept {
+        return total_updates.load();
+    }
+    uint64_t getValidationFailures() const noexcept {
+        return validation_failures.load();
+    }
+    uint64_t getRuntimeUpdates() const noexcept {
+        return runtime_updates.load();
+    }
+    uint64_t getCallbackInvocations() const noexcept {
+        return callback_invocations.load();
+    }
 
     void reset() noexcept {
         total_loads.store(0);
@@ -81,7 +94,8 @@ struct ConfigurationSchema {
     std::string description;
 
     ConfigurationSchema() = default;
-    ConfigurationSchema(const nlohmann::json& s, const std::string& v = "1.0", const std::string& desc = "")
+    ConfigurationSchema(const nlohmann::json& s, const std::string& v = "1.0",
+                        const std::string& desc = "")
         : schema(s), version(v), description(desc) {}
 };
 
@@ -95,7 +109,8 @@ struct ConfigurationTemplate {
     std::vector<std::string> tags;
 
     ConfigurationTemplate() = default;
-    ConfigurationTemplate(const std::string& n, const nlohmann::json& c, const std::string& desc = "")
+    ConfigurationTemplate(const std::string& n, const nlohmann::json& c,
+                          const std::string& desc = "")
         : name(n), description(desc), config(c) {}
 };
 
@@ -129,13 +144,13 @@ struct ConfigurationTemplate {
  * auto frequency = config.get<double>("execution.frequency", 1000.0);
  * config.set("logging.level", "info");
  *
- * config.registerCallback("execution.*", [](const auto& key, const auto& old, const auto& new_val) {
- *     Log::Info() << "Execution config changed: " << key;
+ * config.registerCallback("execution.*", [](const auto& key, const auto& old, const auto& new_val)
+ * { Log::Info() << "Execution config changed: " << key;
  * });
  * @endcode
  */
 class Configuration {
-public:
+  public:
     static constexpr size_t DEFAULT_MAX_DEPTH = 32;
     static constexpr size_t DEFAULT_MAX_ARRAY_SIZE = 10000;
 
@@ -187,7 +202,8 @@ public:
      * @param merge_with_existing If true, merge with current config
      * @return true if loaded successfully
      */
-    bool loadFromEnvironment(const std::string& prefix = "AXONVEX_", bool merge_with_existing = true);
+    bool loadFromEnvironment(const std::string& prefix = "AXONVEX_",
+                             bool merge_with_existing = true);
 
     /**
      * @brief Save configuration to JSON file
@@ -218,7 +234,7 @@ public:
      * @param default_value Default value if key not found
      * @return Configuration value or default
      */
-    template<typename T>
+    template <typename T>
     T get(const std::string& key, const T& default_value = T{}) const;
 
     /**
@@ -228,7 +244,7 @@ public:
      * @param key Configuration key
      * @return Optional value (empty if not found)
      */
-    template<typename T>
+    template <typename T>
     std::optional<T> getOptional(const std::string& key) const;
 
     /**
@@ -240,7 +256,7 @@ public:
      * @param validate If true, validate against schema
      * @return true if set successfully
      */
-    template<typename T>
+    template <typename T>
     bool set(const std::string& key, const T& value, bool validate = true);
 
     /**
@@ -301,7 +317,8 @@ public:
      * @param value Value to validate
      * @return Vector of validation errors
      */
-    std::vector<ValidationError> validateKey(const std::string& key, const ConfigValue& value) const;
+    std::vector<ValidationError> validateKey(const std::string& key,
+                                             const ConfigValue& value) const;
 
     /**
      * @brief Enable or disable automatic validation
@@ -477,7 +494,7 @@ public:
      */
     std::string getPerformanceMetrics() const;
 
-private:
+  private:
     // Core configuration data
     nlohmann::json config_data_;
     mutable std::shared_mutex config_mutex_;
@@ -514,7 +531,8 @@ private:
     // Helper methods
     bool loadFromJson(const nlohmann::json& json_data, bool merge_with_existing);
     std::vector<ValidationError> validateInternal(const nlohmann::json& data) const;
-    void notifyCallbacks(const std::string& key, const ConfigValue& old_value, const ConfigValue& new_value);
+    void notifyCallbacks(const std::string& key, const ConfigValue& old_value,
+                         const ConfigValue& new_value);
     std::vector<std::string> expandKeyPattern(const std::string& pattern) const;
     bool matchesPattern(const std::string& key, const std::string& pattern) const;
     std::string generateSnapshotId() const;
@@ -528,7 +546,7 @@ private:
 // Template Implementations
 //==============================================================================
 
-template<typename T>
+template <typename T>
 inline T Configuration::get(const std::string& key, const T& default_value) const {
     std::shared_lock<std::shared_mutex> lock(config_mutex_);
 
@@ -549,12 +567,10 @@ inline T Configuration::get(const std::string& key, const T& default_value) cons
         }
 
         return default_value;
-    } catch (const std::exception&) {
-        return default_value;
-    }
+    } catch (const std::exception&) { return default_value; }
 }
 
-template<typename T>
+template <typename T>
 inline std::optional<T> Configuration::getOptional(const std::string& key) const {
     std::shared_lock<std::shared_mutex> lock(config_mutex_);
 
@@ -565,12 +581,10 @@ inline std::optional<T> Configuration::getOptional(const std::string& key) const
         }
 
         return json_ptr->get<T>();
-    } catch (const std::exception&) {
-        return std::nullopt;
-    }
+    } catch (const std::exception&) { return std::nullopt; }
 }
 
-template<typename T>
+template <typename T>
 inline bool Configuration::set(const std::string& key, const T& value, bool validate) {
     std::unique_lock<std::shared_mutex> lock(config_mutex_);
 
@@ -616,9 +630,7 @@ inline bool Configuration::set(const std::string& key, const T& value, bool vali
         }
 
         return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
 } // namespace axonvex::core

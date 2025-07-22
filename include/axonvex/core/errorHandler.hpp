@@ -1,12 +1,12 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
-#include <functional>
-#include <chrono>
-#include <atomic>
-#include <mutex>
-#include <memory>
 
 namespace axonvex::core {
 
@@ -14,12 +14,12 @@ namespace axonvex::core {
  * @brief Error severity levels
  */
 enum class ErrorSeverity {
-    DEBUG_LEVEL = 0,///< Debug information
-    INFO = 1,       ///< Informational
-    WARNING = 2,    ///< Warning condition
-    ERROR = 3,      ///< Error condition
-    CRITICAL = 4,   ///< Critical error
-    FATAL = 5       ///< Fatal error (system cannot continue)
+    DEBUG_LEVEL = 0, ///< Debug information
+    INFO = 1,        ///< Informational
+    WARNING = 2,     ///< Warning condition
+    ERROR = 3,       ///< Error condition
+    CRITICAL = 4,    ///< Critical error
+    FATAL = 5        ///< Fatal error (system cannot continue)
 };
 
 /**
@@ -60,10 +60,10 @@ struct ErrorInfo {
     ErrorInfo() = default;
 
     ErrorInfo(ErrorSeverity sev, ErrorCategory cat, const std::string& msg,
-              const std::string& comp = "", const std::string& file = "",
-              int line = 0, const std::string& func = "")
-        : severity(sev), category(cat), message(msg), component_name(comp),
-          source_file(file), source_line(line), source_function(func) {}
+              const std::string& comp = "", const std::string& file = "", int line = 0,
+              const std::string& func = "")
+        : severity(sev), category(cat), message(msg), component_name(comp), source_file(file),
+          source_line(line), source_function(func) {}
 
     /**
      * @brief Get formatted error message
@@ -99,7 +99,7 @@ struct ErrorInfo {
  * @brief Error handling interface for components
  */
 class IErrorHandler {
-public:
+  public:
     using ErrorCallback = std::function<void(const ErrorInfo&)>;
     using RecoveryCallback = std::function<bool(const ErrorInfo&)>;
 
@@ -150,11 +150,11 @@ public:
  * @brief Common error handler implementation
  */
 class ErrorHandler : public IErrorHandler {
-public:
+  public:
     static constexpr size_t DEFAULT_MAX_ERRORS = 1000;
 
     explicit ErrorHandler(const std::string& component_name = "Unknown",
-                         size_t max_errors = DEFAULT_MAX_ERRORS);
+                          size_t max_errors = DEFAULT_MAX_ERRORS);
 
     ~ErrorHandler() override = default;
 
@@ -178,9 +178,8 @@ public:
     /**
      * @brief Report error with source location information
      */
-    void reportError(ErrorSeverity severity, const std::string& message,
-                     ErrorCategory category, const std::string& file,
-                     int line, const std::string& function);
+    void reportError(ErrorSeverity severity, const std::string& message, ErrorCategory category,
+                     const std::string& file, int line, const std::string& function);
 
     bool hasErrors() const noexcept override;
     bool hasCriticalErrors() const noexcept override;
@@ -247,7 +246,7 @@ public:
      */
     std::string getErrorReport() const;
 
-private:
+  private:
     std::string component_name_;
     size_t max_errors_;
 
@@ -271,14 +270,16 @@ private:
  * @brief RAII error context helper for automatic error reporting
  */
 class ErrorContext {
-public:
+  public:
     ErrorContext(ErrorHandler& handler, const std::string& operation_name);
     ~ErrorContext();
 
     /**
      * @brief Mark operation as successful (prevents error on destruction)
      */
-    void markSuccess() noexcept { success_ = true; }
+    void markSuccess() noexcept {
+        success_ = true;
+    }
 
     /**
      * @brief Add context information
@@ -291,7 +292,7 @@ public:
     void reportError(ErrorSeverity severity, const std::string& message,
                      ErrorCategory category = ErrorCategory::RUNTIME);
 
-private:
+  private:
     ErrorHandler& handler_;
     std::string operation_name_;
     std::chrono::steady_clock::time_point start_time_;
@@ -300,20 +301,24 @@ private:
 };
 
 // Convenience macros for error reporting with source location
-#define AXONVEX_REPORT_ERROR(handler, severity, message, category) \
+#define AXONVEX_REPORT_ERROR(handler, severity, message, category)                                 \
     (handler).reportError((severity), (message), (category), __FILE__, __LINE__, __FUNCTION__)
 
-#define AXONVEX_REPORT_WARNING(handler, message) \
-    AXONVEX_REPORT_ERROR(handler, axonvex::core::ErrorSeverity::WARNING, message, axonvex::core::ErrorCategory::RUNTIME)
+#define AXONVEX_REPORT_WARNING(handler, message)                                                   \
+    AXONVEX_REPORT_ERROR(handler, axonvex::core::ErrorSeverity::WARNING, message,                  \
+                         axonvex::core::ErrorCategory::RUNTIME)
 
-#define AXONVEX_REPORT_ERROR_MSG(handler, message) \
-    AXONVEX_REPORT_ERROR(handler, axonvex::core::ErrorSeverity::ERROR, message, axonvex::core::ErrorCategory::RUNTIME)
+#define AXONVEX_REPORT_ERROR_MSG(handler, message)                                                 \
+    AXONVEX_REPORT_ERROR(handler, axonvex::core::ErrorSeverity::ERROR, message,                    \
+                         axonvex::core::ErrorCategory::RUNTIME)
 
-#define AXONVEX_REPORT_CRITICAL(handler, message) \
-    AXONVEX_REPORT_ERROR(handler, axonvex::core::ErrorSeverity::CRITICAL, message, axonvex::core::ErrorCategory::RUNTIME)
+#define AXONVEX_REPORT_CRITICAL(handler, message)                                                  \
+    AXONVEX_REPORT_ERROR(handler, axonvex::core::ErrorSeverity::CRITICAL, message,                 \
+                         axonvex::core::ErrorCategory::RUNTIME)
 
-#define AXONVEX_REPORT_FATAL(handler, message) \
-    AXONVEX_REPORT_ERROR(handler, axonvex::core::ErrorSeverity::FATAL, message, axonvex::core::ErrorCategory::RUNTIME)
+#define AXONVEX_REPORT_FATAL(handler, message)                                                     \
+    AXONVEX_REPORT_ERROR(handler, axonvex::core::ErrorSeverity::FATAL, message,                    \
+                         axonvex::core::ErrorCategory::RUNTIME)
 
 // Utility functions
 std::string to_string(ErrorSeverity severity);

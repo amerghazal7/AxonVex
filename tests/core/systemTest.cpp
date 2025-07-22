@@ -1,9 +1,9 @@
-#include <gtest/gtest.h>
-#include <axonvex/core/system.hpp>
-#include <thread>
-#include <chrono>
 #include <atomic>
+#include <axonvex/core/system.hpp>
+#include <chrono>
+#include <gtest/gtest.h>
 #include <memory>
+#include <thread>
 #include <vector>
 
 using namespace axonvex::core;
@@ -11,13 +11,12 @@ using namespace std::chrono_literals;
 
 // Mock ProcessingUnit for testing
 class MockProcessingUnit : public ProcessingUnit {
-private:
+  private:
     axonvex::core::OutputPort<double>* outputPort_;
     axonvex::core::InputPort<double>* inputPort_;
 
-public:
-    explicit MockProcessingUnit(const std::string& name)
-        : ProcessingUnit(name) {
+  public:
+    explicit MockProcessingUnit(const std::string& name) : ProcessingUnit(name) {
         // Create ports that system port tests expect
         outputPort_ = createOutputPort<double>(1000, "test_output");
         inputPort_ = createInputPort<double>(1001, "test_input");
@@ -74,15 +73,27 @@ public:
     }
 
     // Test helpers
-    void setShouldThrow(bool shouldThrow) { shouldThrow_ = shouldThrow; }
-    void setProcessingTime(std::chrono::microseconds time) { processingTime_ = time; }
+    void setShouldThrow(bool shouldThrow) {
+        shouldThrow_ = shouldThrow;
+    }
+    void setProcessingTime(std::chrono::microseconds time) {
+        processingTime_ = time;
+    }
 
-    std::atomic<int> getProcessCallCount() const { return processCallCount_.load(); }
-    int getInitializeCallCount() const { return initializeCallCount_; }
-    int getResetCallCount() const { return resetCallCount_; }
-    int getFinalizeCallCount() const { return finalizeCallCount_; }
+    std::atomic<int> getProcessCallCount() const {
+        return processCallCount_.load();
+    }
+    int getInitializeCallCount() const {
+        return initializeCallCount_;
+    }
+    int getResetCallCount() const {
+        return resetCallCount_;
+    }
+    int getFinalizeCallCount() const {
+        return finalizeCallCount_;
+    }
 
-private:
+  private:
     std::atomic<int> processCallCount_{0};
     int initializeCallCount_{0};
     int resetCallCount_{0};
@@ -95,11 +106,11 @@ private:
  * @brief Concrete AxonVexSystem implementation for testing
  */
 class TestAxonVexSystem : public AxonVexSystem {
-public:
+  public:
     explicit TestAxonVexSystem(const SystemConfiguration& config = SystemConfiguration{})
         : AxonVexSystem(config) {}
 
-protected:
+  protected:
     bool initializeBlocksLayout() override {
         // For basic system tests, we don't need any specific processing units
         // Just return true to indicate successful initialization
@@ -111,14 +122,14 @@ protected:
  * @brief Test system that creates MockProcessingUnits for testing
  */
 class TestAxonVexSystemWithUnits : public AxonVexSystem {
-private:
+  private:
     std::unique_ptr<MockProcessingUnit> mockUnit_;
 
-public:
+  public:
     explicit TestAxonVexSystemWithUnits(const SystemConfiguration& config = SystemConfiguration{})
         : AxonVexSystem(config) {}
 
-protected:
+  protected:
     bool initializeBlocksLayout() override {
         try {
             // Create and register a mock processing unit for tests
@@ -137,7 +148,7 @@ protected:
         }
     }
 
-public:
+  public:
     MockProcessingUnit* getTestUnit() const {
         auto units = getAllProcessingUnits();
         if (!units.empty()) {
@@ -149,7 +160,7 @@ public:
 
 // Google Test fixture for AxonVexSystem tests
 class AxonVexSystemTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         // Create a test configuration
         config_.systemName = "TestSystem";
@@ -162,7 +173,7 @@ protected:
         config_.healthCheckInterval = std::chrono::seconds(2);
         config_.enableFileLogging = false; // Disable file logging for tests
 
-                // Create system with test configuration
+        // Create system with test configuration
         system_ = std::make_unique<TestAxonVexSystem>(config_);
     }
 
@@ -215,9 +226,7 @@ TEST_F(AxonVexSystemTest, InitializationFailure) {
     SystemConfiguration invalidConfig;
     invalidConfig.systemName = ""; // Invalid empty name
 
-    EXPECT_THROW({
-        TestAxonVexSystem invalidSystem(invalidConfig);
-    }, std::invalid_argument);
+    EXPECT_THROW({ TestAxonVexSystem invalidSystem(invalidConfig); }, std::invalid_argument);
 }
 
 TEST_F(AxonVexSystemTest, PauseAndResume) {
@@ -408,8 +417,8 @@ TEST_F(AxonVexSystemTest, EventCallbacks) {
     auto eventMutex = std::make_shared<std::mutex>();
 
     // Register event callback using shared pointers to ensure lifetime
-    uint32_t callbackId = system_->registerEventCallback(
-        [receivedEvents, eventMutex](const SystemEvent& event) {
+    uint32_t callbackId =
+        system_->registerEventCallback([receivedEvents, eventMutex](const SystemEvent& event) {
             std::lock_guard<std::mutex> lock(*eventMutex);
             receivedEvents->push_back(event);
         });
@@ -679,13 +688,11 @@ TEST_F(AxonVexSystemTest, ConcurrentProcessingUnitRegistration) {
         threads.emplace_back([&, t]() {
             for (int i = 0; i < unitsPerThread; ++i) {
                 try {
-                    auto unit = std::make_unique<MockProcessingUnit>(
-                        "Thread" + std::to_string(t) + "_Unit" + std::to_string(i));
+                    auto unit = std::make_unique<MockProcessingUnit>("Thread" + std::to_string(t) +
+                                                                     "_Unit" + std::to_string(i));
                     system_->registerProcessingUnit(std::move(unit));
                     registeredCount.fetch_add(1);
-                } catch (...) {
-                    errorCount.fetch_add(1);
-                }
+                } catch (...) { errorCount.fetch_add(1); }
             }
         });
     }
@@ -857,7 +864,7 @@ TEST_F(AxonVexSystemTest, InvalidSystemPortOperations) {
     system_->registerProcessingUnit(std::move(unit));
 
     // Test invalid parameters
-    EXPECT_FALSE(system_->assignSystemInputPort("", unitPtr, 1001)); // Empty name
+    EXPECT_FALSE(system_->assignSystemInputPort("", unitPtr, 1001));     // Empty name
     EXPECT_FALSE(system_->assignSystemInputPort("test", nullptr, 1001)); // Null unit
     EXPECT_FALSE(system_->assignSystemInputPort("test", unitPtr, 9999)); // Invalid port ID
 

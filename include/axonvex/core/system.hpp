@@ -14,25 +14,24 @@
 
 #pragma once
 
-#include <memory>
-#include <string>
-#include <vector>
-#include <unordered_map>
 #include <atomic>
-#include <mutex>
-#include <thread>
+#include <axonvex/core/configuration.hpp>
+#include <axonvex/core/logger.hpp>
+#include <axonvex/core/memoryPool.hpp>
+#include <axonvex/core/path.hpp>
+#include <axonvex/core/precisionTimer.hpp>
+#include <axonvex/core/processingUnit.hpp>
+#include <axonvex/core/threadSafeQueue.hpp>
+#include <axonvex/core/timingController.hpp>
 #include <chrono>
 #include <functional>
 #include <future>
-
-#include <axonvex/core/processingUnit.hpp>
-#include <axonvex/core/timingController.hpp>
-#include <axonvex/core/configuration.hpp>
-#include <axonvex/core/logger.hpp>
-#include <axonvex/core/path.hpp>
-#include <axonvex/core/precisionTimer.hpp>
-#include <axonvex/core/threadSafeQueue.hpp>
-#include <axonvex/core/memoryPool.hpp>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
 namespace axonvex::core {
 
@@ -40,18 +39,18 @@ namespace axonvex::core {
  * @brief System state enumeration
  */
 enum class SystemState {
-    UNINITIALIZED = 0,  ///< System not yet initialized
-    INITIALIZING,       ///< System currently initializing
-    INITIALIZED,        ///< System initialized but not started
-    STARTING,           ///< System currently starting
-    RUNNING,            ///< System running normally
-    PAUSING,            ///< System currently pausing
-    PAUSED,             ///< System paused
-    RESUMING,           ///< System resuming from pause
-    STOPPING,           ///< System currently stopping
-    STOPPED,            ///< System stopped
-    ERROR,              ///< System in error state
-    FATAL_ERROR         ///< System in unrecoverable error state
+    UNINITIALIZED = 0, ///< System not yet initialized
+    INITIALIZING,      ///< System currently initializing
+    INITIALIZED,       ///< System initialized but not started
+    STARTING,          ///< System currently starting
+    RUNNING,           ///< System running normally
+    PAUSING,           ///< System currently pausing
+    PAUSED,            ///< System paused
+    RESUMING,          ///< System resuming from pause
+    STOPPING,          ///< System currently stopping
+    STOPPED,           ///< System stopped
+    ERROR,             ///< System in error state
+    FATAL_ERROR        ///< System in unrecoverable error state
 };
 
 /**
@@ -153,12 +152,7 @@ struct SystemEvent {
  * @brief System health information
  */
 struct SystemHealth {
-    enum class Status {
-        HEALTHY,
-        WARNING,
-        CRITICAL,
-        FAILURE
-    };
+    enum class Status { HEALTHY, WARNING, CRITICAL, FAILURE };
 
     Status overallStatus{Status::HEALTHY};
     std::vector<std::string> warnings;
@@ -178,7 +172,9 @@ struct SystemHealth {
     double missedDeadlineRatio{0.0};
 
     std::string getStatusString() const;
-    bool isHealthy() const { return overallStatus == Status::HEALTHY; }
+    bool isHealthy() const {
+        return overallStatus == Status::HEALTHY;
+    }
 };
 
 /**
@@ -208,7 +204,7 @@ struct SystemHealth {
  * @endcode
  */
 class AxonVexSystem {
-public:
+  public:
     using EventCallback = std::function<void(const SystemEvent&)>;
     using HealthCheckCallback = std::function<SystemHealth()>;
     using RecoveryCallback = std::function<bool(const std::string&)>;
@@ -249,7 +245,7 @@ public:
      */
     bool initialize(const Configuration& config);
 
-protected:
+  protected:
     /**
      * @brief Pure virtual method for initializing the processing block layout
      *
@@ -266,7 +262,7 @@ protected:
      */
     virtual bool initializeBlocksLayout() = 0;
 
-public:
+  public:
     /**
      * @brief Start the system and all registered components
      *
@@ -357,7 +353,7 @@ public:
      * @return Unit ID for future operations
      */
     uint32_t registerProcessingUnit(std::unique_ptr<ProcessingUnit> unit,
-                                   const TimingConstraints& constraints = {});
+                                    const TimingConstraints& constraints = {});
 
     /**
      * @brief Unregister a processing unit
@@ -529,9 +525,8 @@ public:
      * @param unitPortId ID of the port within the ProcessingUnit
      * @return true if assignment successful
      */
-    bool assignSystemInputPort(const std::string& systemPortName,
-                              ProcessingUnit* unit,
-                              int unitPortId);
+    bool assignSystemInputPort(const std::string& systemPortName, ProcessingUnit* unit,
+                               int unitPortId);
 
     /**
      * @brief Assign a ProcessingUnit's output port as a system output port
@@ -541,9 +536,8 @@ public:
      * @param unitPortId ID of the port within the ProcessingUnit
      * @return true if assignment successful
      */
-    bool assignSystemOutputPort(const std::string& systemPortName,
-                               ProcessingUnit* unit,
-                               int unitPortId);
+    bool assignSystemOutputPort(const std::string& systemPortName, ProcessingUnit* unit,
+                                int unitPortId);
 
     /**
      * @brief Remove a system input port assignment
@@ -607,10 +601,9 @@ public:
      * @param inputPortName Name of target system's input port
      * @return true if connection successful
      */
-    template<typename T>
-    bool connectToSystem(const std::string& outputPortName,
-                        AxonVexSystem* targetSystem,
-                        const std::string& inputPortName);
+    template <typename T>
+    bool connectToSystem(const std::string& outputPortName, AxonVexSystem* targetSystem,
+                         const std::string& inputPortName);
 
     /**
      * @brief Disconnect this system's output from another system
@@ -620,19 +613,19 @@ public:
      * @param inputPortName Name of target system's input port
      * @return true if disconnection successful
      */
-    template<typename T>
-    bool disconnectFromSystem(const std::string& outputPortName,
-                             AxonVexSystem* targetSystem,
-                             const std::string& inputPortName);
+    template <typename T>
+    bool disconnectFromSystem(const std::string& outputPortName, AxonVexSystem* targetSystem,
+                              const std::string& inputPortName);
 
     /**
      * @brief Get system port connection information
      */
     std::string getSystemPortInfo() const;
 
-protected:
+  protected:
     // Core utility members for system-level performance and diagnostics
-    // High-precision timer for system-level diagnostics (e.g., initialization, shutdown, health checks)
+    // High-precision timer for system-level diagnostics (e.g., initialization, shutdown, health
+    // checks)
     mutable PrecisionTimer systemTimer_{PrecisionTimer::DEFAULT_MAX_SAMPLES};
     // Thread-safe queue for event publishing, system-level message passing, or deferred actions
     // Example: ThreadSafeQueue<SystemEvent> eventQueue_;
@@ -642,7 +635,7 @@ protected:
     // - Use systemTimer_ for timing system operations
     // - Use ThreadSafeQueue for event/message passing
     // - Use MemoryPool for system event allocation
-private:
+  private:
     // =================================================================
     // INTERNAL STATE
     // =================================================================
@@ -749,10 +742,9 @@ bool saveSystemConfigurationToFile(const SystemConfiguration& config, const Path
 // TEMPLATE IMPLEMENTATIONS
 // =================================================================
 
-template<typename T>
-bool AxonVexSystem::connectToSystem(const std::string& outputPortName,
-                                   AxonVexSystem* targetSystem,
-                                   const std::string& inputPortName) {
+template <typename T>
+bool AxonVexSystem::connectToSystem(const std::string& outputPortName, AxonVexSystem* targetSystem,
+                                    const std::string& inputPortName) {
     if (!targetSystem) {
         return false;
     }
@@ -794,9 +786,10 @@ bool AxonVexSystem::connectToSystem(const std::string& outputPortName,
         outputPort->connect(inputPort);
 
         if (logger_) {
-            logger_->info("System", "Connected system '" + systemConfig_.systemName +
-                         "." + outputPortName + "' to '" +
-                         targetSystem->systemConfig_.systemName + "." + inputPortName + "'");
+            logger_->info("System", "Connected system '" + systemConfig_.systemName + "." +
+                                        outputPortName + "' to '" +
+                                        targetSystem->systemConfig_.systemName + "." +
+                                        inputPortName + "'");
         }
 
         return true;
@@ -808,10 +801,10 @@ bool AxonVexSystem::connectToSystem(const std::string& outputPortName,
     }
 }
 
-template<typename T>
+template <typename T>
 bool AxonVexSystem::disconnectFromSystem(const std::string& outputPortName,
-                                        AxonVexSystem* targetSystem,
-                                        const std::string& inputPortName) {
+                                         AxonVexSystem* targetSystem,
+                                         const std::string& inputPortName) {
     if (!targetSystem) {
         return false;
     }
@@ -844,9 +837,10 @@ bool AxonVexSystem::disconnectFromSystem(const std::string& outputPortName,
         outputPort->disconnect(inputPort);
 
         if (logger_) {
-            logger_->info("System", "Disconnected system '" + systemConfig_.systemName +
-                         "." + outputPortName + "' from '" +
-                         targetSystem->systemConfig_.systemName + "." + inputPortName + "'");
+            logger_->info("System", "Disconnected system '" + systemConfig_.systemName + "." +
+                                        outputPortName + "' from '" +
+                                        targetSystem->systemConfig_.systemName + "." +
+                                        inputPortName + "'");
         }
 
         return true;

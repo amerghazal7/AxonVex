@@ -6,19 +6,19 @@
  * @date 2025
  */
 
-#include <gtest/gtest.h>
 #include <axonvex/core/ports.hpp>
 #include <axonvex/core/processingUnit.hpp>
+#include <cmath>
+#include <gtest/gtest.h>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <stdexcept>
-#include <cmath>
 
 namespace axonvex::core::test {
 
 // Test ProcessingUnit for creating ports
 class TestProcessingUnit : public ProcessingUnit {
-public:
+  public:
     explicit TestProcessingUnit(const std::string& name) : ProcessingUnit(name) {}
 
     void processSync() override {
@@ -43,11 +43,17 @@ public:
         return "TestProcessingUnit";
     }
 
-    int getSyncCallCount() const { return syncCallCount_; }
-    int getAsyncCallCount() const { return asyncCallCount_; }
-    int getResetCallCount() const { return resetCallCount_; }
+    int getSyncCallCount() const {
+        return syncCallCount_;
+    }
+    int getAsyncCallCount() const {
+        return asyncCallCount_;
+    }
+    int getResetCallCount() const {
+        return resetCallCount_;
+    }
 
-private:
+  private:
     int syncCallCount_ = 0;
     int asyncCallCount_ = 0;
     int resetCallCount_ = 0;
@@ -55,7 +61,7 @@ private:
 
 // Tests for InputPort
 class InputPortTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         unit = std::make_unique<TestProcessingUnit>("TestUnit");
         unit->setBlockUID(1);
@@ -100,9 +106,9 @@ TEST_F(InputPortTest, ValidationCallback) {
         }
     });
 
-    port->writeData(10);  // Valid
-    port->writeData(-5);  // Invalid
-    port->writeData(20);  // Valid
+    port->writeData(10); // Valid
+    port->writeData(-5); // Invalid
+    port->writeData(20); // Valid
 
     EXPECT_EQ(validCount, 2);
     EXPECT_EQ(invalidCount, 1);
@@ -114,9 +120,7 @@ TEST_F(InputPortTest, ValidationCallback) {
 TEST_F(InputPortTest, DataCallback) {
     std::vector<int> receivedData;
 
-    port->setDataCallback([&](const int& data) {
-        receivedData.push_back(data);
-    });
+    port->setDataCallback([&](const int& data) { receivedData.push_back(data); });
 
     port->writeData(1);
     port->writeData(2);
@@ -170,7 +174,7 @@ TEST_F(InputPortTest, Reset) {
 
 // Tests for OutputPort
 class OutputPortTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         unit = std::make_unique<TestProcessingUnit>("TestUnit");
         unit->setBlockUID(1);
@@ -229,9 +233,7 @@ TEST_F(OutputPortTest, MultipleConnections) {
 TEST_F(OutputPortTest, OutputCallback) {
     std::vector<int> outputData;
 
-    port->setOutputCallback([&](const int& data) {
-        outputData.push_back(data);
-    });
+    port->setOutputCallback([&](const int& data) { outputData.push_back(data); });
 
     port->write(10);
     port->write(20);
@@ -260,7 +262,7 @@ TEST_F(OutputPortTest, Disconnect) {
 
 // Tests for AsyncInputPort
 class AsyncInputPortTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         unit = std::make_unique<TestProcessingUnit>("TestUnit");
         unit->setBlockUID(1);
@@ -322,7 +324,7 @@ TEST_F(AsyncInputPortTest, AsyncBridgePorts) {
 
 // Tests for AsyncOutputPort
 class AsyncOutputPortTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         unit = std::make_unique<TestProcessingUnit>("TestUnit");
         unit->setBlockUID(1);
@@ -346,7 +348,7 @@ TEST_F(AsyncOutputPortTest, AsyncConnection) {
     unit2->setBlockUID(2);
     auto inputPort = unit2->createAsyncInputPort<int>(1, "TestAsyncInput");
 
-            port->connect(inputPort);
+    port->connect(inputPort);
     EXPECT_TRUE(port->isConnected());
     EXPECT_EQ(port->getConnectionCount(), 1);
 
@@ -365,8 +367,8 @@ TEST_F(AsyncOutputPortTest, MultipleAsyncConnections) {
     auto inputPort1 = unit2->createAsyncInputPort<int>(1, "Input1");
     auto inputPort2 = unit3->createAsyncInputPort<int>(1, "Input2");
 
-            port->connect(inputPort1);
-        port->connect(inputPort2);
+    port->connect(inputPort1);
+    port->connect(inputPort2);
     EXPECT_EQ(port->getConnectionCount(), 2);
 
     // Writing should update both inputs
@@ -379,7 +381,7 @@ TEST_F(AsyncOutputPortTest, MultipleAsyncConnections) {
 
 // Tests for NaN validation
 class NaNValidationTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         unit = std::make_unique<TestProcessingUnit>("TestUnit");
         unit->setBlockUID(1);
@@ -409,7 +411,7 @@ TEST_F(NaNValidationTest, NaNDetection) {
 
 // Integration tests
 class IntegrationTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         producer = std::make_unique<TestProcessingUnit>("Producer");
         processor = std::make_unique<TestProcessingUnit>("Processor");
@@ -456,7 +458,7 @@ TEST_F(IntegrationTest, DataFlowPipeline) {
 
 TEST_F(IntegrationTest, PortUIDGeneration) {
     // Verify port UIDs follow formula: block_uid*256 + port_idx
-    EXPECT_EQ(producerOutput->getPortUID(), 1 * 256 + 1); // Block 1, Port 1
+    EXPECT_EQ(producerOutput->getPortUID(), 1 * 256 + 1);  // Block 1, Port 1
     EXPECT_EQ(processorInput->getPortUID(), 2 * 256 + 1);  // Block 2, Port 1
     EXPECT_EQ(processorOutput->getPortUID(), 2 * 256 + 1); // Block 2, Port 1
     EXPECT_EQ(consumerInput->getPortUID(), 3 * 256 + 1);   // Block 3, Port 1

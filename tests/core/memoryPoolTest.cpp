@@ -6,21 +6,21 @@
  * @date 2025
  */
 
-#include <gtest/gtest.h>
-#include <axonvex/core/memoryPool.hpp>
-#include <thread>
-#include <vector>
+#include <algorithm>
 #include <atomic>
+#include <axonvex/core/memoryPool.hpp>
 #include <chrono>
 #include <future>
+#include <gtest/gtest.h>
 #include <random>
 #include <string>
-#include <algorithm>
+#include <thread>
+#include <vector>
 
 using namespace axonvex::core;
 
 class MemoryPoolTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         // Set up test fixtures
     }
@@ -56,7 +56,7 @@ protected:
 // Test basic pool construction
 TEST_F(MemoryPoolTest, Construction) {
     MemoryPool<int> pool;
-    EXPECT_EQ(pool.getCapacity(), 1024);  // Default capacity
+    EXPECT_EQ(pool.getCapacity(), 1024); // Default capacity
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 1024);
     EXPECT_TRUE(pool.isFull());
@@ -75,11 +75,11 @@ TEST_F(MemoryPoolTest, CustomCapacityConstruction) {
 
     // Test power-of-2 rounding
     MemoryPool<int> pool2(500);
-    EXPECT_EQ(pool2.getCapacity(), 512);  // Rounded up to next power of 2
+    EXPECT_EQ(pool2.getCapacity(), 512); // Rounded up to next power of 2
 
     // Test minimum capacity
     MemoryPool<int> pool3(8);
-    EXPECT_EQ(pool3.getCapacity(), 16);  // Minimum capacity
+    EXPECT_EQ(pool3.getCapacity(), 16); // Minimum capacity
 }
 
 // Test basic allocation and deallocation
@@ -192,7 +192,7 @@ TEST_F(MemoryPoolTest, InvalidPointerDeallocation) {
     int* ptr = pool.allocate();
     ASSERT_NE(ptr, nullptr);
     EXPECT_TRUE(pool.deallocate(ptr));
-    EXPECT_FALSE(pool.deallocate(ptr));  // Should fail second time
+    EXPECT_FALSE(pool.deallocate(ptr)); // Should fail second time
 
     // Check statistics
     const auto& stats = pool.getStatistics();
@@ -264,7 +264,7 @@ TEST_F(MemoryPoolTest, StatisticsCollection) {
     const auto& stats = pool.getStatistics();
     EXPECT_GT(stats.getAllocations(), 0);
     EXPECT_EQ(stats.getDeallocations(), 10);
-    EXPECT_GE(stats.getAllocationFailures(), 0);  // May have failures if pool is full
+    EXPECT_GE(stats.getAllocationFailures(), 0); // May have failures if pool is full
     EXPECT_EQ(stats.getDeallocationFailures(), 0);
     EXPECT_GT(stats.getPeakUsage(), 0);
     EXPECT_GT(stats.getCurrentUsage(), 0);
@@ -286,7 +286,7 @@ TEST_F(MemoryPoolTest, StatisticsReset) {
     int* ptr1 = pool.allocate();
     int* ptr2 = pool.allocate();
     pool.deallocate(ptr1);
-    pool.deallocate(nullptr);  // This should fail
+    pool.deallocate(nullptr); // This should fail
 
     const auto& stats = pool.getStatistics();
     EXPECT_GT(stats.getAllocations(), 0);
@@ -393,7 +393,7 @@ TEST_F(MemoryPoolTest, ThreadSafety) {
 
 // Test performance
 TEST_F(MemoryPoolTest, PerformanceTest) {
-    MemoryPool<SimpleStruct> pool(100000);  // Large pool
+    MemoryPool<SimpleStruct> pool(100000); // Large pool
     const int NUM_OPERATIONS = 50000;
 
     // Measure allocation performance
@@ -418,8 +418,10 @@ TEST_F(MemoryPoolTest, PerformanceTest) {
 
     auto end_time = std::chrono::high_resolution_clock::now();
 
-    auto allocation_duration = std::chrono::duration_cast<std::chrono::microseconds>(mid_time - start_time);
-    auto deallocation_duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - mid_time);
+    auto allocation_duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(mid_time - start_time);
+    auto deallocation_duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(end_time - mid_time);
 
     double allocation_ops_per_sec = NUM_OPERATIONS / (allocation_duration.count() / 1e6);
     double deallocation_ops_per_sec = NUM_OPERATIONS / (deallocation_duration.count() / 1e6);
@@ -427,8 +429,10 @@ TEST_F(MemoryPoolTest, PerformanceTest) {
     std::cout << "MemoryPool Performance:\n";
     std::cout << "  Allocation operations per second: " << allocation_ops_per_sec << "\n";
     std::cout << "  Deallocation operations per second: " << deallocation_ops_per_sec << "\n";
-    std::cout << "  Allocation time per operation: " << (allocation_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
-    std::cout << "  Deallocation time per operation: " << (deallocation_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
+    std::cout << "  Allocation time per operation: "
+              << (allocation_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
+    std::cout << "  Deallocation time per operation: "
+              << (deallocation_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
 
     // Performance expectations (targeting <20ns per operation = 50M+ ops/sec)
     EXPECT_GT(allocation_ops_per_sec, 10000000);   // At least 10M ops/sec
@@ -538,5 +542,5 @@ TEST_F(MemoryPoolTest, ErrorHandling) {
 
     // Check error statistics
     const auto& stats = pool.getStatistics();
-    EXPECT_EQ(stats.getDeallocationFailures(), 6);  // 5 null + 1 double deallocation
+    EXPECT_EQ(stats.getDeallocationFailures(), 6); // 5 null + 1 double deallocation
 }

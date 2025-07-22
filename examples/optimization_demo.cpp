@@ -9,17 +9,17 @@
  * 4. Enhanced MemoryPool utilization
  */
 
+#include <chrono>
 #include <iostream>
 #include <memory>
-#include <thread>
-#include <chrono>
 #include <random>
+#include <thread>
 
 // Include our optimized headers
-#include <axonvex/core/performanceStatistics.hpp>
-#include <axonvex/core/errorHandler.hpp>
 #include <axonvex/core/coreUtilities.hpp>
+#include <axonvex/core/errorHandler.hpp>
 #include <axonvex/core/memoryPool.hpp>
+#include <axonvex/core/performanceStatistics.hpp>
 // Note: CircularBuffer and ThreadSafeQueue updates are in progress
 
 using namespace axonvex::core;
@@ -28,15 +28,14 @@ using namespace axonvex::core;
  * @brief Example component demonstrating unified statistics collection
  */
 class OptimizedProcessor : public PerformanceStatisticsBase<OptimizedProcessor> {
-private:
+  private:
     std::string name_;
     ErrorHandler error_handler_;
     ThroughputStatistics throughput_stats_;
     MemoryStatistics memory_stats_;
 
-public:
-    explicit OptimizedProcessor(const std::string& name)
-        : name_(name), error_handler_(name) {
+  public:
+    explicit OptimizedProcessor(const std::string& name) : name_(name), error_handler_(name) {
 
         // Set up error handling callbacks
         error_handler_.setErrorCallback([this](const ErrorInfo& error) {
@@ -69,7 +68,8 @@ public:
             }
 
             if (data.size() > 10000) {
-                context.reportError(ErrorSeverity::ERROR, "Data set too large", ErrorCategory::VALIDATION);
+                context.reportError(ErrorSeverity::ERROR, "Data set too large",
+                                    ErrorCategory::VALIDATION);
                 return; // context destructor will report failure
             }
 
@@ -96,8 +96,8 @@ public:
 
         auto duration = TimingUtils::elapsed(start_time);
         if (duration > std::chrono::microseconds(100)) {
-            AXONVEX_REPORT_WARNING(error_handler_,
-                "Slow memory allocation: " + std::to_string(duration.count()) + " ns");
+            AXONVEX_REPORT_WARNING(error_handler_, "Slow memory allocation: " +
+                                                       std::to_string(duration.count()) + " ns");
         }
     }
 
@@ -124,9 +124,15 @@ public:
         return name_;
     }
 
-    const ErrorHandler& getErrorHandler() const { return error_handler_; }
-    const ThroughputStatistics& getThroughputStats() const { return throughput_stats_; }
-    const MemoryStatistics& getMemoryStats() const { return memory_stats_; }
+    const ErrorHandler& getErrorHandler() const {
+        return error_handler_;
+    }
+    const ThroughputStatistics& getThroughputStats() const {
+        return throughput_stats_;
+    }
+    const MemoryStatistics& getMemoryStats() const {
+        return memory_stats_;
+    }
 };
 
 /**
@@ -147,12 +153,9 @@ void demonstrateSharedUtilities() {
     // Demonstrate CapacityUtils
     std::cout << "\nCapacity validation:\n";
     for (size_t requested : {10, 50, 1000, 2000000}) {
-        size_t validated = CapacityUtils::validateCapacity(
-            requested,
-            CapacityUtils::Defaults::MIN_CAPACITY,
-            CapacityUtils::Defaults::MAX_CAPACITY,
-            true
-        );
+        size_t validated =
+            CapacityUtils::validateCapacity(requested, CapacityUtils::Defaults::MIN_CAPACITY,
+                                            CapacityUtils::Defaults::MAX_CAPACITY, true);
         std::cout << "  Requested: " << requested << " -> Validated: " << validated << "\n";
     }
 
@@ -161,7 +164,7 @@ void demonstrateSharedUtilities() {
     std::atomic<uint64_t> counter{0};
 
     AtomicUtils::safeIncrement(counter);
-    AtomicUtils::safeIncrement(counter, static_cast<uint64_t>(99));  // Increment by 99 more
+    AtomicUtils::safeIncrement(counter, static_cast<uint64_t>(99)); // Increment by 99 more
     std::cout << "  After increments: " << AtomicUtils::safeLoad(counter) << "\n";
 
     std::atomic<uint64_t> maximum{50};
@@ -193,8 +196,8 @@ void demonstrateMemoryPoolOptimization() {
     }
 
     std::cout << "Allocated " << allocated_objects.size() << " objects\n";
-    std::cout << "Pool usage: " << pool.getUsage() << "/" << pool.getCapacity()
-              << " (" << (pool.getUtilization() * 100.0) << "%)\n";
+    std::cout << "Pool usage: " << pool.getUsage() << "/" << pool.getCapacity() << " ("
+              << (pool.getUtilization() * 100.0) << "%)\n";
 
     // Get statistics
     const auto& stats = pool.getStatistics();
@@ -208,7 +211,8 @@ void demonstrateMemoryPoolOptimization() {
         pool.deallocateObject(obj);
     }
 
-    std::cout << "After cleanup - Pool usage: " << pool.getUsage() << "/" << pool.getCapacity() << "\n";
+    std::cout << "After cleanup - Pool usage: " << pool.getUsage() << "/" << pool.getCapacity()
+              << "\n";
 }
 
 /**
@@ -260,8 +264,8 @@ void demonstrateErrorHandling() {
     // Manually report some errors
     auto& error_handler = const_cast<ErrorHandler&>(processor.getErrorHandler());
 
-    AXONVEX_REPORT_ERROR(error_handler, ErrorSeverity::WARNING,
-                        "This is a test warning", ErrorCategory::VALIDATION);
+    AXONVEX_REPORT_ERROR(error_handler, ErrorSeverity::WARNING, "This is a test warning",
+                         ErrorCategory::VALIDATION);
 
     AXONVEX_REPORT_CRITICAL(error_handler, "Critical system error detected");
 

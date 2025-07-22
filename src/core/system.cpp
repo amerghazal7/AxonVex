@@ -6,23 +6,24 @@
  * - Use systemTimer_ for timing system-level operations (init, shutdown, health checks).
  * - Use ThreadSafeQueue (e.g., eventQueue_) for event/message passing or deferred actions.
  * - Use MemoryPool (e.g., eventPool_) for real-time safe allocation of system event objects.
- * These members are available in the AxonVexSystem base class for use in implementation and extensions.
+ * These members are available in the AxonVexSystem base class for use in implementation and
+ * extensions.
  */
 
-#include <axonvex/core/system.hpp>
 #include <algorithm>
-#include <sstream>
-#include <fstream>
+#include <axonvex/core/system.hpp>
 #include <cstdlib>
-#include <thread>
+#include <fstream>
 #include <iomanip>
+#include <sstream>
+#include <thread>
 
 #ifdef __linux__
-    #include <unistd.h>
-    #include <sys/resource.h>
+#include <sys/resource.h>
+#include <unistd.h>
 #elif _WIN32
-    #include <windows.h>
-    #include <psapi.h>
+#include <psapi.h>
+#include <windows.h>
 #endif
 
 namespace axonvex::core {
@@ -105,17 +106,17 @@ std::string SystemStatistics::getReport() const {
     oss << "System Statistics:\n";
     oss << "  Processing Units: " << totalProcessingUnits.load() << " total, "
         << activeProcessingUnits.load() << " active\n";
-    oss << "  Executions: " << totalExecutions.load() << " total, "
-        << successfulExecutions.load() << " successful, "
-        << failedExecutions.load() << " failed\n";
-    oss << "  Success Rate: " << std::fixed << std::setprecision(2)
-        << (getSuccessRate() * 100.0) << "%\n";
+    oss << "  Executions: " << totalExecutions.load() << " total, " << successfulExecutions.load()
+        << " successful, " << failedExecutions.load() << " failed\n";
+    oss << "  Success Rate: " << std::fixed << std::setprecision(2) << (getSuccessRate() * 100.0)
+        << "%\n";
     oss << "  Missed Deadlines: " << totalMissedDeadlines.load() << "\n";
-    oss << "  Memory Usage: " << (memoryUsageBytes.load() / 1024 / 1024) << " MB (Peak: "
-        << (peakMemoryUsageBytes.load() / 1024 / 1024) << " MB)\n";
+    oss << "  Memory Usage: " << (memoryUsageBytes.load() / 1024 / 1024)
+        << " MB (Peak: " << (peakMemoryUsageBytes.load() / 1024 / 1024) << " MB)\n";
     oss << "  State Transitions: " << totalStateTransitions.load() << "\n";
     oss << "  Errors: " << errorCount.load() << "\n";
-    oss << "  Recovery: " << successfulRecoveries.load() << "/" << recoveryAttempts.load() << " attempts\n";
+    oss << "  Recovery: " << successfulRecoveries.load() << "/" << recoveryAttempts.load()
+        << " attempts\n";
     oss << "  Uptime: " << std::fixed << std::setprecision(1) << getUptimeSeconds() << " seconds\n";
     return oss.str();
 }
@@ -128,7 +129,8 @@ double SystemStatistics::getUptimeSeconds() const {
 
 double SystemStatistics::getSuccessRate() const {
     auto total = totalExecutions.load();
-    if (total == 0) return 1.0;
+    if (total == 0)
+        return 1.0;
     return static_cast<double>(successfulExecutions.load()) / static_cast<double>(total);
 }
 
@@ -138,11 +140,16 @@ double SystemStatistics::getSuccessRate() const {
 
 std::string SystemHealth::getStatusString() const {
     switch (overallStatus) {
-        case Status::HEALTHY: return "HEALTHY";
-        case Status::WARNING: return "WARNING";
-        case Status::CRITICAL: return "CRITICAL";
-        case Status::FAILURE: return "FAILURE";
-        default: return "UNKNOWN";
+        case Status::HEALTHY:
+            return "HEALTHY";
+        case Status::WARNING:
+            return "WARNING";
+        case Status::CRITICAL:
+            return "CRITICAL";
+        case Status::FAILURE:
+            return "FAILURE";
+        default:
+            return "UNKNOWN";
     }
 }
 
@@ -150,8 +157,7 @@ std::string SystemHealth::getStatusString() const {
 // AXONVEX SYSTEM IMPLEMENTATION
 // =================================================================
 
-AxonVexSystem::AxonVexSystem(const SystemConfiguration& config)
-    : systemConfig_(config) {
+AxonVexSystem::AxonVexSystem(const SystemConfiguration& config) : systemConfig_(config) {
 
     // Validate configuration
     try {
@@ -225,7 +231,8 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
 
         // Start event processing thread
         eventProcessingRunning_.store(true);
-        eventProcessingThread_ = std::make_unique<std::thread>(&AxonVexSystem::eventProcessingLoop, this);
+        eventProcessingThread_ =
+            std::make_unique<std::thread>(&AxonVexSystem::eventProcessingLoop, this);
 
         // Transition to initialized state
         if (!transitionState(SystemState::INITIALIZED)) {
@@ -238,7 +245,8 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
         // Log successful initialization
         if (logger_) {
             logger_->info("System", "AxonVex System initialized successfully in " +
-                         std::to_string(systemTimer_.getElapsedMilliseconds()) + " ms");
+                                        std::to_string(systemTimer_.getElapsedMilliseconds()) +
+                                        " ms");
             logger_->info("System", systemConfig_.toString());
         }
 
@@ -264,7 +272,9 @@ bool AxonVexSystem::initialize(const Configuration& config) {
     // Note: Cannot copy Configuration due to it being non-copyable
     // Users should load configuration from file or set values individually
     if (logger_) {
-        logger_->warning("System", "Configuration copy not supported - please use file-based configuration loading");
+        logger_->warning(
+            "System",
+            "Configuration copy not supported - please use file-based configuration loading");
     }
 
     return true;
@@ -380,7 +390,7 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
     }
 
     isShuttingDown_.store(true); // Signal shutdown to all threads
-    systemTimer_.start(); // Start timing shutdown
+    systemTimer_.start();        // Start timing shutdown
 
     try {
         // Stop event processing thread first
@@ -409,7 +419,8 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
         systemTimer_.stop(); // Stop timing shutdown
         if (logger_) {
             logger_->info("System", "AxonVex System stopped gracefully in " +
-                         std::to_string(systemTimer_.getElapsedMilliseconds()) + " ms");
+                                        std::to_string(systemTimer_.getElapsedMilliseconds()) +
+                                        " ms");
         }
         return true;
     } catch (const std::exception& e) {
@@ -539,13 +550,11 @@ void AxonVexSystem::performHealthCheck() {
                     if (userHealth.overallStatus > health.overallStatus) {
                         health.overallStatus = userHealth.overallStatus;
                     }
-                    health.warnings.insert(health.warnings.end(),
-                                         userHealth.warnings.begin(), userHealth.warnings.end());
-                    health.errors.insert(health.errors.end(),
-                                       userHealth.errors.begin(), userHealth.errors.end());
-                } catch (...) {
-                    health.errors.push_back("Health check callback failed");
-                }
+                    health.warnings.insert(health.warnings.end(), userHealth.warnings.begin(),
+                                           userHealth.warnings.end());
+                    health.errors.insert(health.errors.end(), userHealth.errors.begin(),
+                                         userHealth.errors.end());
+                } catch (...) { health.errors.push_back("Health check callback failed"); }
             }
         }
     }
@@ -562,7 +571,8 @@ void AxonVexSystem::performHealthCheck() {
     event.metadata["overall_status"] = health.getStatusString();
     event.metadata["warning_count"] = std::to_string(health.warnings.size());
     event.metadata["error_count"] = std::to_string(health.errors.size());
-    event.metadata["duration_ms"] = std::to_string(systemTimer_.getElapsedMilliseconds()); // Add duration to metadata
+    event.metadata["duration_ms"] =
+        std::to_string(systemTimer_.getElapsedMilliseconds()); // Add duration to metadata
 
     publishEvent(event);
 
@@ -585,7 +595,7 @@ void AxonVexSystem::performHealthCheck() {
 // =================================================================
 
 uint32_t AxonVexSystem::registerProcessingUnit(std::unique_ptr<ProcessingUnit> unit,
-                                             const TimingConstraints& constraints) {
+                                               const TimingConstraints& constraints) {
     if (!unit) {
         throw std::invalid_argument("Processing unit cannot be null");
     }
@@ -643,7 +653,7 @@ uint32_t AxonVexSystem::registerProcessingUnit(std::unique_ptr<ProcessingUnit> u
 
     if (logger_) {
         logger_->info("System", "Registered processing unit: " + unitPtr->getName() +
-                     " (ID: " + std::to_string(unitId) + ")");
+                                    " (ID: " + std::to_string(unitId) + ")");
     }
 
     return unitId;
@@ -680,9 +690,8 @@ size_t AxonVexSystem::getProcessingUnitCount() const noexcept {
 // SYSTEM PORT MANAGEMENT IMPLEMENTATION
 // =================================================================
 
-bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName,
-                                         ProcessingUnit* unit,
-                                         int unitPortId) {
+bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName, ProcessingUnit* unit,
+                                          int unitPortId) {
     if (!unit || systemPortName.empty()) {
         if (logger_) {
             logger_->warning("System", "Invalid parameters for system input port assignment");
@@ -722,7 +731,7 @@ bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName,
     if (!port) {
         if (logger_) {
             logger_->warning("System", "Input port " + std::to_string(unitPortId) +
-                           " not found in ProcessingUnit " + unit->getName());
+                                           " not found in ProcessingUnit " + unit->getName());
         }
         return false;
     }
@@ -741,8 +750,8 @@ bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName,
     systemInputPorts_[systemPortName] = port;
 
     if (logger_) {
-        logger_->info("System", "Assigned system input port '" + systemPortName +
-                     "' from " + unit->getName() + ":" + std::to_string(unitPortId));
+        logger_->info("System", "Assigned system input port '" + systemPortName + "' from " +
+                                    unit->getName() + ":" + std::to_string(unitPortId));
     }
 
     // Publish event
@@ -761,9 +770,8 @@ bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName,
     return true;
 }
 
-bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName,
-                                          ProcessingUnit* unit,
-                                          int unitPortId) {
+bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName, ProcessingUnit* unit,
+                                           int unitPortId) {
     if (!unit || systemPortName.empty()) {
         if (logger_) {
             logger_->warning("System", "Invalid parameters for system output port assignment");
@@ -803,7 +811,7 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName,
     if (!port) {
         if (logger_) {
             logger_->warning("System", "Output port " + std::to_string(unitPortId) +
-                           " not found in ProcessingUnit " + unit->getName());
+                                           " not found in ProcessingUnit " + unit->getName());
         }
         return false;
     }
@@ -813,7 +821,8 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName,
     // Check if system port name already exists
     if (systemOutputPorts_.find(systemPortName) != systemOutputPorts_.end()) {
         if (logger_) {
-            logger_->warning("System", "System output port '" + systemPortName + "' already exists");
+            logger_->warning("System",
+                             "System output port '" + systemPortName + "' already exists");
         }
         return false;
     }
@@ -822,8 +831,8 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName,
     systemOutputPorts_[systemPortName] = port;
 
     if (logger_) {
-        logger_->info("System", "Assigned system output port '" + systemPortName +
-                     "' from " + unit->getName() + ":" + std::to_string(unitPortId));
+        logger_->info("System", "Assigned system output port '" + systemPortName + "' from " +
+                                    unit->getName() + ":" + std::to_string(unitPortId));
     }
 
     // Publish event
@@ -978,41 +987,36 @@ bool AxonVexSystem::transitionState(SystemState newState) {
             validTransition = (newState == SystemState::INITIALIZING);
             break;
         case SystemState::INITIALIZING:
-            validTransition = (newState == SystemState::INITIALIZED ||
-                             newState == SystemState::ERROR);
+            validTransition =
+                (newState == SystemState::INITIALIZED || newState == SystemState::ERROR);
             break;
         case SystemState::INITIALIZED:
             validTransition = (newState == SystemState::STARTING);
             break;
         case SystemState::STARTING:
-            validTransition = (newState == SystemState::RUNNING ||
-                             newState == SystemState::ERROR);
+            validTransition = (newState == SystemState::RUNNING || newState == SystemState::ERROR);
             break;
         case SystemState::RUNNING:
             validTransition = (newState == SystemState::PAUSING ||
-                             newState == SystemState::STOPPING ||
-                             newState == SystemState::ERROR);
+                               newState == SystemState::STOPPING || newState == SystemState::ERROR);
             break;
         case SystemState::PAUSING:
-            validTransition = (newState == SystemState::PAUSED ||
-                             newState == SystemState::ERROR);
+            validTransition = (newState == SystemState::PAUSED || newState == SystemState::ERROR);
             break;
         case SystemState::PAUSED:
             validTransition = (newState == SystemState::RESUMING ||
-                             newState == SystemState::STOPPING ||
-                             newState == SystemState::ERROR);
+                               newState == SystemState::STOPPING || newState == SystemState::ERROR);
             break;
         case SystemState::RESUMING:
-            validTransition = (newState == SystemState::RUNNING ||
-                             newState == SystemState::ERROR);
+            validTransition = (newState == SystemState::RUNNING || newState == SystemState::ERROR);
             break;
         case SystemState::STOPPING:
-            validTransition = (newState == SystemState::STOPPED ||
-                             newState == SystemState::FATAL_ERROR);
+            validTransition =
+                (newState == SystemState::STOPPED || newState == SystemState::FATAL_ERROR);
             break;
         case SystemState::STOPPED:
-            validTransition = (newState == SystemState::STARTING ||
-                             newState == SystemState::UNINITIALIZED);
+            validTransition =
+                (newState == SystemState::STARTING || newState == SystemState::UNINITIALIZED);
             break;
         case SystemState::ERROR:
             validTransition = true; // Can transition to any state from error
@@ -1025,7 +1029,8 @@ bool AxonVexSystem::transitionState(SystemState newState) {
     if (!validTransition) {
         if (logger_) {
             logger_->warning("System", "Invalid state transition from " +
-                           stateToString(currentState) + " to " + stateToString(newState));
+                                           stateToString(currentState) + " to " +
+                                           stateToString(newState));
         }
         return false;
     }
@@ -1072,7 +1077,8 @@ bool AxonVexSystem::initializeComponents() {
         }
 
         // Initialize timing controller
-        timingController_ = std::make_unique<TimingController>(systemConfig_.defaultSchedulingPolicy);
+        timingController_ =
+            std::make_unique<TimingController>(systemConfig_.defaultSchedulingPolicy);
 
         // Set up simple error callback to update system error statistics
         timingController_->setErrorCallback([this](ProcessingUnit*, const std::string&) {
@@ -1113,7 +1119,7 @@ bool AxonVexSystem::startComponents() {
                 } catch (const std::exception& e) {
                     if (logger_) {
                         logger_->warning("System", "Failed to schedule processing unit " +
-                                       unit->getName() + ": " + e.what());
+                                                       unit->getName() + ": " + e.what());
                     }
                 }
             }
@@ -1150,7 +1156,8 @@ void AxonVexSystem::monitoringLoop() {
 
             // Perform health check periodically
             auto lastHealthCheck = lastHealth_.lastCheckTime;
-            auto healthElapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastHealthCheck);
+            auto healthElapsed =
+                std::chrono::duration_cast<std::chrono::seconds>(now - lastHealthCheck);
 
             if (healthElapsed >= systemConfig_.healthCheckInterval) {
                 performHealthCheck();
@@ -1192,19 +1199,21 @@ SystemHealth AxonVexSystem::performInternalHealthCheck() const {
     if (health.memoryUtilization > 0.9) {
         health.overallStatus = std::max(health.overallStatus, SystemHealth::Status::CRITICAL);
         health.errors.push_back("Memory utilization critical: " +
-                              std::to_string(static_cast<int>(health.memoryUtilization * 100)) + "%");
+                                std::to_string(static_cast<int>(health.memoryUtilization * 100)) +
+                                "%");
     } else if (health.memoryUtilization > 0.75) {
         health.overallStatus = std::max(health.overallStatus, SystemHealth::Status::WARNING);
         health.warnings.push_back("Memory utilization high: " +
-                                std::to_string(static_cast<int>(health.memoryUtilization * 100)) + "%");
+                                  std::to_string(static_cast<int>(health.memoryUtilization * 100)) +
+                                  "%");
     }
 
     // Check performance metrics
     auto successRate = statistics_.getSuccessRate();
     if (successRate < 0.9) {
         health.overallStatus = std::max(health.overallStatus, SystemHealth::Status::WARNING);
-        health.warnings.push_back("Success rate low: " +
-                                std::to_string(static_cast<int>(successRate * 100)) + "%");
+        health.warnings.push_back(
+            "Success rate low: " + std::to_string(static_cast<int>(successRate * 100)) + "%");
     }
 
     health.memoryHealthy = (health.memoryUtilization < 0.95);
@@ -1218,7 +1227,8 @@ std::string AxonVexSystem::stateToString(SystemState state) const {
 
 void AxonVexSystem::logStateTransition(SystemState from, SystemState to) {
     if (logger_) {
-        logger_->info("System", "State transition: " + stateToString(from) + " → " + stateToString(to));
+        logger_->info("System",
+                      "State transition: " + stateToString(from) + " → " + stateToString(to));
     }
 }
 
@@ -1227,15 +1237,16 @@ void AxonVexSystem::notifyStateChange(SystemState oldState, SystemState newState
     event.type = SystemEvent::Type::STATE_CHANGE;
     event.oldState = oldState;
     event.newState = newState;
-    event.description = "System state changed from " + stateToString(oldState) +
-                       " to " + stateToString(newState);
+    event.description =
+        "System state changed from " + stateToString(oldState) + " to " + stateToString(newState);
     event.timestamp = std::chrono::steady_clock::now();
 
     publishEvent(event);
 }
 
 void AxonVexSystem::handleProcessingUnitError(ProcessingUnit* unit, const std::string& error) {
-    if (!unit) return;
+    if (!unit)
+        return;
 
     // Set error state in the processing unit
     unit->setError(error);
@@ -1303,7 +1314,8 @@ void AxonVexSystem::eventProcessingLoop() {
                             callback(*eventPtr);
                         } catch (const std::exception& e) {
                             if (logger_) {
-                                logger_->warning("System", "Event callback failed: " + std::string(e.what()));
+                                logger_->warning("System",
+                                                 "Event callback failed: " + std::string(e.what()));
                             }
                         }
                     }
@@ -1322,19 +1334,32 @@ void AxonVexSystem::eventProcessingLoop() {
 
 std::string to_string(SystemState state) {
     switch (state) {
-        case SystemState::UNINITIALIZED: return "UNINITIALIZED";
-        case SystemState::INITIALIZING: return "INITIALIZING";
-        case SystemState::INITIALIZED: return "INITIALIZED";
-        case SystemState::STARTING: return "STARTING";
-        case SystemState::RUNNING: return "RUNNING";
-        case SystemState::PAUSING: return "PAUSING";
-        case SystemState::PAUSED: return "PAUSED";
-        case SystemState::RESUMING: return "RESUMING";
-        case SystemState::STOPPING: return "STOPPING";
-        case SystemState::STOPPED: return "STOPPED";
-        case SystemState::ERROR: return "ERROR";
-        case SystemState::FATAL_ERROR: return "FATAL_ERROR";
-        default: return "UNKNOWN";
+        case SystemState::UNINITIALIZED:
+            return "UNINITIALIZED";
+        case SystemState::INITIALIZING:
+            return "INITIALIZING";
+        case SystemState::INITIALIZED:
+            return "INITIALIZED";
+        case SystemState::STARTING:
+            return "STARTING";
+        case SystemState::RUNNING:
+            return "RUNNING";
+        case SystemState::PAUSING:
+            return "PAUSING";
+        case SystemState::PAUSED:
+            return "PAUSED";
+        case SystemState::RESUMING:
+            return "RESUMING";
+        case SystemState::STOPPING:
+            return "STOPPING";
+        case SystemState::STOPPED:
+            return "STOPPED";
+        case SystemState::ERROR:
+            return "ERROR";
+        case SystemState::FATAL_ERROR:
+            return "FATAL_ERROR";
+        default:
+            return "UNKNOWN";
     }
 }
 
@@ -1392,7 +1417,8 @@ bool AxonVexSystem::stopComponents(std::chrono::milliseconds timeout) {
 }
 
 void AxonVexSystem::updateStatistics() {
-    if (!timingController_) return;
+    if (!timingController_)
+        return;
 
     try {
         auto timingStats = timingController_->getPerformanceMetrics();
@@ -1431,7 +1457,8 @@ bool AxonVexSystem::attemptRecovery(const std::string& errorDescription) {
     uint32_t currentAttempts = currentRecoveryAttempts_.load();
     if (currentAttempts >= systemConfig_.maxRecoveryAttempts) {
         if (logger_) {
-            logger_->error("System", "Max recovery attempts reached: " + std::to_string(currentAttempts));
+            logger_->error("System",
+                           "Max recovery attempts reached: " + std::to_string(currentAttempts));
         }
         return false;
     }
@@ -1477,7 +1504,8 @@ size_t AxonVexSystem::getMemoryUsage() const noexcept {
     }
 
     statistics_.memoryUsageBytes.store(usage);
-    statistics_.peakMemoryUsageBytes.store(std::max(usage, statistics_.peakMemoryUsageBytes.load()));
+    statistics_.peakMemoryUsageBytes.store(
+        std::max(usage, statistics_.peakMemoryUsageBytes.load()));
 
     return usage;
 }
@@ -1492,8 +1520,10 @@ std::string AxonVexSystem::getResourceReport() const {
     oss << "  Current Memory: " << (getMemoryUsage() / 1024) << " KB\n";
     oss << "  Peak Memory: " << (getPeakMemoryUsage() / 1024) << " KB\n";
     oss << "  Processing Units: " << getProcessingUnitCount() << "\n";
-    oss << "  System Ports: " << (getSystemInputPortNames().size() + getSystemOutputPortNames().size()) << "\n";
-    oss << "  Uptime: " << std::fixed << std::setprecision(1) << statistics_.getUptimeSeconds() << " seconds\n";
+    oss << "  System Ports: "
+        << (getSystemInputPortNames().size() + getSystemOutputPortNames().size()) << "\n";
+    oss << "  Uptime: " << std::fixed << std::setprecision(1) << statistics_.getUptimeSeconds()
+        << " seconds\n";
     return oss.str();
 }
 
@@ -1513,7 +1543,8 @@ bool AxonVexSystem::updateSystemConfiguration(const SystemConfiguration& config)
         return true;
     } catch (const std::exception& e) {
         if (logger_) {
-            logger_->error("System", "Failed to update system configuration: " + std::string(e.what()));
+            logger_->error("System",
+                           "Failed to update system configuration: " + std::string(e.what()));
         }
         return false;
     }
@@ -1528,7 +1559,8 @@ const Configuration& AxonVexSystem::getConfiguration() const noexcept {
 }
 
 uint32_t AxonVexSystem::registerEventCallback(EventCallback callback) {
-    if (!callback) return 0;
+    if (!callback)
+        return 0;
 
     std::lock_guard<std::mutex> lock(callbacksMutex_);
     uint32_t callbackId = nextCallbackId_.fetch_add(1);
@@ -1550,7 +1582,8 @@ void AxonVexSystem::unregisterEventCallback(uint32_t callbackId) {
 }
 
 uint32_t AxonVexSystem::registerHealthCheckCallback(HealthCheckCallback callback) {
-    if (!callback) return 0;
+    if (!callback)
+        return 0;
 
     std::lock_guard<std::mutex> lock(callbacksMutex_);
     uint32_t callbackId = nextCallbackId_.fetch_add(1);
@@ -1635,8 +1668,8 @@ bool AxonVexSystem::unregisterProcessingUnit(uint32_t unitId) {
         while (inputIt != systemInputPorts_.end()) {
             if (inputIt->second && inputIt->second->getOwner() == unitPtr) {
                 if (logger_) {
-                    logger_->info("System", "Removing system input port '" +
-                                 inputIt->first + "' due to ProcessingUnit removal");
+                    logger_->info("System", "Removing system input port '" + inputIt->first +
+                                                "' due to ProcessingUnit removal");
                 }
                 inputIt = systemInputPorts_.erase(inputIt);
             } else {
@@ -1649,8 +1682,8 @@ bool AxonVexSystem::unregisterProcessingUnit(uint32_t unitId) {
         while (outputIt != systemOutputPorts_.end()) {
             if (outputIt->second && outputIt->second->getOwner() == unitPtr) {
                 if (logger_) {
-                    logger_->info("System", "Removing system output port '" +
-                                 outputIt->first + "' due to ProcessingUnit removal");
+                    logger_->info("System", "Removing system output port '" + outputIt->first +
+                                                "' due to ProcessingUnit removal");
                 }
                 outputIt = systemOutputPorts_.erase(outputIt);
             } else {
@@ -1665,7 +1698,7 @@ bool AxonVexSystem::unregisterProcessingUnit(uint32_t unitId) {
             } catch (const std::exception& e) {
                 if (logger_) {
                     logger_->warning("System", "Failed to remove unit from timing controller: " +
-                                   std::string(e.what()));
+                                                   std::string(e.what()));
                 }
             }
         }
@@ -1692,7 +1725,7 @@ bool AxonVexSystem::unregisterProcessingUnit(uint32_t unitId) {
 
     if (logger_) {
         logger_->info("System", "Unregistered processing unit: " + unitName +
-                     " (ID: " + std::to_string(unitId) + ")");
+                                    " (ID: " + std::to_string(unitId) + ")");
     }
 
     return true;

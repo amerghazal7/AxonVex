@@ -6,20 +6,20 @@
  * @date 2025
  */
 
-#include <gtest/gtest.h>
-#include <axonvex/core/threadSafeQueue.hpp>
-#include <thread>
-#include <vector>
 #include <atomic>
+#include <axonvex/core/threadSafeQueue.hpp>
 #include <chrono>
 #include <future>
+#include <gtest/gtest.h>
 #include <random>
 #include <string>
+#include <thread>
+#include <vector>
 
 using namespace axonvex::core;
 
 class ThreadSafeQueueTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         // Set up test fixtures
     }
@@ -47,7 +47,7 @@ protected:
 // Test basic queue construction
 TEST_F(ThreadSafeQueueTest, Construction) {
     ThreadSafeQueue<int> queue;
-    EXPECT_EQ(queue.capacity(), 1024);  // Default capacity
+    EXPECT_EQ(queue.capacity(), 1024); // Default capacity
     EXPECT_EQ(queue.size(), 0);
     EXPECT_TRUE(queue.isEmpty());
     EXPECT_FALSE(queue.isFull());
@@ -63,11 +63,11 @@ TEST_F(ThreadSafeQueueTest, CustomCapacityConstruction) {
 
     // Test power-of-2 rounding
     ThreadSafeQueue<int> queue2(500);
-    EXPECT_EQ(queue2.capacity(), 512);  // Rounded up to next power of 2
+    EXPECT_EQ(queue2.capacity(), 512); // Rounded up to next power of 2
 
     // Test minimum capacity
     ThreadSafeQueue<int> queue3(8);
-    EXPECT_EQ(queue3.capacity(), 16);  // Minimum capacity
+    EXPECT_EQ(queue3.capacity(), 16); // Minimum capacity
 }
 
 // Test basic enqueue and dequeue operations
@@ -111,11 +111,11 @@ TEST_F(ThreadSafeQueueTest, QueueOverflow) {
     ThreadSafeQueue<int> queue(16);
 
     // Fill queue to capacity
-    for (int i = 0; i < 15; ++i) {  // One less than capacity due to implementation
+    for (int i = 0; i < 15; ++i) { // One less than capacity due to implementation
         EXPECT_TRUE(queue.enqueue(i));
     }
 
-    EXPECT_GT(queue.size(), 10);  // Should have significant size
+    EXPECT_GT(queue.size(), 10); // Should have significant size
     EXPECT_FALSE(queue.isEmpty());
 
     // Try to enqueue more (should eventually fail)
@@ -160,7 +160,7 @@ TEST_F(ThreadSafeQueueTest, TryDequeueTimeout) {
 
     EXPECT_FALSE(value.has_value());
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    EXPECT_GE(elapsed.count(), 8);  // Allow some margin
+    EXPECT_GE(elapsed.count(), 8); // Allow some margin
 
     // Test successful dequeue
     queue.enqueue(42);
@@ -206,7 +206,7 @@ TEST_F(ThreadSafeQueueTest, StatisticsReset) {
     // Generate some statistics
     queue.enqueue(1);
     queue.dequeue();
-    queue.dequeue();  // This should fail
+    queue.dequeue(); // This should fail
 
     const auto& stats = queue.getStatistics();
     EXPECT_GT(stats.getEnqueueCount(), 0);
@@ -363,7 +363,7 @@ TEST_F(ThreadSafeQueueTest, MultipleProducerConsumerThreadSafety) {
 
 // Test performance characteristics
 TEST_F(ThreadSafeQueueTest, PerformanceTest) {
-    ThreadSafeQueue<int> queue(200000);  // Larger queue size
+    ThreadSafeQueue<int> queue(200000); // Larger queue size
     const int NUM_OPERATIONS = 100000;
 
     // Measure enqueue performance
@@ -384,8 +384,10 @@ TEST_F(ThreadSafeQueueTest, PerformanceTest) {
 
     auto end_time = std::chrono::high_resolution_clock::now();
 
-    auto enqueue_duration = std::chrono::duration_cast<std::chrono::microseconds>(mid_time - start_time);
-    auto dequeue_duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - mid_time);
+    auto enqueue_duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(mid_time - start_time);
+    auto dequeue_duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(end_time - mid_time);
 
     double enqueue_ops_per_sec = NUM_OPERATIONS / (enqueue_duration.count() / 1e6);
     double dequeue_ops_per_sec = NUM_OPERATIONS / (dequeue_duration.count() / 1e6);
@@ -393,12 +395,14 @@ TEST_F(ThreadSafeQueueTest, PerformanceTest) {
     std::cout << "ThreadSafeQueue Performance:\n";
     std::cout << "  Enqueue operations per second: " << enqueue_ops_per_sec << "\n";
     std::cout << "  Dequeue operations per second: " << dequeue_ops_per_sec << "\n";
-    std::cout << "  Enqueue time per operation: " << (enqueue_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
-    std::cout << "  Dequeue time per operation: " << (dequeue_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
+    std::cout << "  Enqueue time per operation: "
+              << (enqueue_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
+    std::cout << "  Dequeue time per operation: "
+              << (dequeue_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
 
     // Performance expectations
-    EXPECT_GT(enqueue_ops_per_sec, 1000000);  // At least 1M ops/sec
-    EXPECT_GT(dequeue_ops_per_sec, 1000000);  // At least 1M ops/sec
+    EXPECT_GT(enqueue_ops_per_sec, 1000000); // At least 1M ops/sec
+    EXPECT_GT(dequeue_ops_per_sec, 1000000); // At least 1M ops/sec
 }
 
 // Test with complex data types (simplified to avoid memory issues)

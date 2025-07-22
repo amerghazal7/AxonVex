@@ -11,12 +11,12 @@
  * - Simple data processing pipeline
  */
 
-#include <axonvex/axonvex.hpp>
-#include <iostream>
-#include <chrono>
-#include <thread>
 #include <atomic>
+#include <axonvex/axonvex.hpp>
+#include <chrono>
+#include <iostream>
 #include <random>
+#include <thread>
 
 using namespace axonvex::core;
 
@@ -30,17 +30,16 @@ using namespace axonvex;
  * @brief Simple Data Generator ProcessingUnit
  */
 class SimpleDataGenerator : public ProcessingUnit {
-private:
+  private:
     std::atomic<uint64_t> generatedCount_{0};
     std::mt19937 generator_;
     std::uniform_real_distribution<> distribution_;
 
-public:
+  public:
     explicit SimpleDataGenerator(const std::string& name)
-        : ProcessingUnit(name)
-        , generator_(std::chrono::steady_clock::now().time_since_epoch().count())
-        , distribution_(-10.0, 10.0) {
-    }
+        : ProcessingUnit(name),
+          generator_(std::chrono::steady_clock::now().time_since_epoch().count()),
+          distribution_(-10.0, 10.0) {}
 
     void initialize() override {
         setState(ExecutionState::INITIALIZED);
@@ -61,12 +60,14 @@ public:
         std::this_thread::sleep_for(std::chrono::microseconds(100));
 
         if (generatedCount_.load() % 100 == 0) {
-            std::cout << getName() << " generated " << generatedCount_.load() << " values" << std::endl;
+            std::cout << getName() << " generated " << generatedCount_.load() << " values"
+                      << std::endl;
         }
 
         // Stop the timer and update metrics
         executionTimer_.stop();
-        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(
+            executionTimer_.getElapsedNanoseconds()));
     }
 
     void processAsync() override {
@@ -83,12 +84,14 @@ public:
         std::this_thread::sleep_for(std::chrono::microseconds(100));
 
         if (generatedCount_.load() % 100 == 0) {
-            std::cout << getName() << " generated " << generatedCount_.load() << " values (async)" << std::endl;
+            std::cout << getName() << " generated " << generatedCount_.load() << " values (async)"
+                      << std::endl;
         }
 
         // Stop the timer and update metrics
         executionTimer_.stop();
-        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(
+            executionTimer_.getElapsedNanoseconds()));
     }
 
     void reset() override {
@@ -101,7 +104,9 @@ public:
         return "SimpleDataGenerator";
     }
 
-    uint64_t getGeneratedCount() const { return generatedCount_.load(); }
+    uint64_t getGeneratedCount() const {
+        return generatedCount_.load();
+    }
 
     // Expose performance metrics
     axonvex::core::ProcessingUnit::PerformanceMetrics getMetrics() const {
@@ -110,7 +115,8 @@ public:
 
     void finalize() override {
         setState(ExecutionState::INITIALIZED);
-        std::cout << "Finalized: " << getName() << " (Generated: " << generatedCount_.load() << ")" << std::endl;
+        std::cout << "Finalized: " << getName() << " (Generated: " << generatedCount_.load() << ")"
+                  << std::endl;
     }
 };
 
@@ -118,15 +124,13 @@ public:
  * @brief Simple Data Processor ProcessingUnit
  */
 class SimpleDataProcessor : public ProcessingUnit {
-private:
+  private:
     std::atomic<uint64_t> processedCount_{0};
     double runningSum_{0.0};
     mutable std::mutex sumMutex_;
 
-public:
-    explicit SimpleDataProcessor(const std::string& name)
-        : ProcessingUnit(name) {
-    }
+  public:
+    explicit SimpleDataProcessor(const std::string& name) : ProcessingUnit(name) {}
 
     void initialize() override {
         setState(ExecutionState::INITIALIZED);
@@ -150,12 +154,14 @@ public:
         std::this_thread::sleep_for(std::chrono::microseconds(50));
 
         if (processedCount_.load() % 150 == 0) {
-            std::cout << getName() << " processed " << processedCount_.load() << " values" << std::endl;
+            std::cout << getName() << " processed " << processedCount_.load() << " values"
+                      << std::endl;
         }
 
         // Stop the timer and update metrics
         executionTimer_.stop();
-        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(
+            executionTimer_.getElapsedNanoseconds()));
     }
 
     void processAsync() override {
@@ -175,12 +181,14 @@ public:
         std::this_thread::sleep_for(std::chrono::microseconds(50));
 
         if (processedCount_.load() % 150 == 0) {
-            std::cout << getName() << " processed " << processedCount_.load() << " values (async)" << std::endl;
+            std::cout << getName() << " processed " << processedCount_.load() << " values (async)"
+                      << std::endl;
         }
 
         // Stop the timer and update metrics
         executionTimer_.stop();
-        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(
+            executionTimer_.getElapsedNanoseconds()));
     }
 
     void reset() override {
@@ -197,7 +205,9 @@ public:
         return "SimpleDataProcessor";
     }
 
-    uint64_t getProcessedCount() const { return processedCount_.load(); }
+    uint64_t getProcessedCount() const {
+        return processedCount_.load();
+    }
 
     double getRunningSum() const {
         std::lock_guard<std::mutex> lock(sumMutex_);
@@ -206,7 +216,8 @@ public:
 
     void finalize() override {
         setState(ExecutionState::INITIALIZED);
-        std::cout << "Finalized: " << getName() << " (Processed: " << processedCount_.load() << ")" << std::endl;
+        std::cout << "Finalized: " << getName() << " (Processed: " << processedCount_.load() << ")"
+                  << std::endl;
     }
 };
 
@@ -214,13 +225,11 @@ public:
  * @brief Simple Monitor ProcessingUnit
  */
 class SimpleMonitor : public ProcessingUnit {
-private:
+  private:
     std::atomic<uint64_t> monitoringCycles_{0};
 
-public:
-    explicit SimpleMonitor(const std::string& name)
-        : ProcessingUnit(name) {
-    }
+  public:
+    explicit SimpleMonitor(const std::string& name) : ProcessingUnit(name) {}
 
     void initialize() override {
         setState(ExecutionState::INITIALIZED);
@@ -237,7 +246,8 @@ public:
 
         // Periodic monitoring output
         if (monitoringCycles_.load() % 50 == 0) {
-            std::cout << getName() << " monitoring cycle: " << monitoringCycles_.load() << std::endl;
+            std::cout << getName() << " monitoring cycle: " << monitoringCycles_.load()
+                      << std::endl;
         }
 
         // Simulate monitoring time
@@ -245,7 +255,8 @@ public:
 
         // Stop the timer and update metrics
         executionTimer_.stop();
-        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(
+            executionTimer_.getElapsedNanoseconds()));
     }
 
     void processAsync() override {
@@ -258,7 +269,8 @@ public:
 
         // Periodic monitoring output
         if (monitoringCycles_.load() % 50 == 0) {
-            std::cout << getName() << " monitoring cycle: " << monitoringCycles_.load() << " (async)" << std::endl;
+            std::cout << getName() << " monitoring cycle: " << monitoringCycles_.load()
+                      << " (async)" << std::endl;
         }
 
         // Simulate monitoring time
@@ -266,7 +278,8 @@ public:
 
         // Stop the timer and update metrics
         executionTimer_.stop();
-        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(
+            executionTimer_.getElapsedNanoseconds()));
     }
 
     void reset() override {
@@ -279,11 +292,14 @@ public:
         return "SimpleMonitor";
     }
 
-    uint64_t getMonitoringCycles() const { return monitoringCycles_.load(); }
+    uint64_t getMonitoringCycles() const {
+        return monitoringCycles_.load();
+    }
 
     void finalize() override {
         setState(ExecutionState::INITIALIZED);
-        std::cout << "Finalized: " << getName() << " (Cycles: " << monitoringCycles_.load() << ")" << std::endl;
+        std::cout << "Finalized: " << getName() << " (Cycles: " << monitoringCycles_.load() << ")"
+                  << std::endl;
     }
 };
 
@@ -447,7 +463,8 @@ void demonstratePerformance() {
 
     std::cout << "Performance Results (from internal timer):\n";
     std::cout << "  Iterations: " << metrics.executionCount << "\n";
-    std::cout << "  Total Time (sum of samples): " << (metrics.averageExecutionTime.count() * metrics.executionCount) << " µs\n";
+    std::cout << "  Total Time (sum of samples): "
+              << (metrics.averageExecutionTime.count() * metrics.executionCount) << " µs\n";
     std::cout << "  Average per iteration: " << metrics.averageExecutionTime.count() << " µs\n";
     std::cout << "  Min Time: " << metrics.minExecutionTime.count() << " µs\n";
     std::cout << "  Max Time: " << metrics.maxExecutionTime.count() << " µs\n";

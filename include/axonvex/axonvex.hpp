@@ -32,8 +32,8 @@
 #include <axonvex/core/precisionTimer.hpp>
 
 // High-performance data structures
-#include <axonvex/core/threadSafeQueue.hpp>
 #include <axonvex/core/circularBuffer.hpp>
+#include <axonvex/core/threadSafeQueue.hpp>
 
 // Memory management
 #include <axonvex/core/memoryPool.hpp>
@@ -92,7 +92,7 @@ namespace axonvex {
  * configuration, system management, and high-performance data structures.
  */
 namespace core {
-    // Core utilities are defined in their respective headers
+// Core utilities are defined in their respective headers
 }
 
 /**

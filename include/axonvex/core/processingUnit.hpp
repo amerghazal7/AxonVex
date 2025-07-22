@@ -14,19 +14,19 @@
 
 #pragma once
 
-#include <memory>
-#include <string>
-#include <map>
-#include <vector>
+#include "ports.hpp"
+
 #include <atomic>
-#include <mutex>
-#include <functional>
+#include <axonvex/core/precisionTimer.hpp>
 #include <chrono>
 #include <filesystem>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
-
-#include "ports.hpp"
-#include <axonvex/core/precisionTimer.hpp>
+#include <string>
+#include <vector>
 
 namespace axonvex::core {
 
@@ -36,22 +36,16 @@ class AxonVexSystem;
 /**
  * @brief Execution state for processing units
  */
-enum class ExecutionState {
-    UNINITIALIZED = 0,
-    INITIALIZED,
-    RUNNING,
-    DISABLED,
-    ERROR
-};
+enum class ExecutionState { UNINITIALIZED = 0, INITIALIZED, RUNNING, DISABLED, ERROR };
 
 /**
  * @brief Built-in control port indices (reserved range 100-199)
  */
 namespace ControlPorts {
-    constexpr int RESET = 100;
-    constexpr int DISABLE = 101;
-    constexpr int ENABLE = 102;
-}
+constexpr int RESET = 100;
+constexpr int DISABLE = 101;
+constexpr int ENABLE = 102;
+} // namespace ControlPorts
 
 /**
  * @brief Advanced Processing Unit
@@ -65,7 +59,7 @@ namespace ControlPorts {
  * - Bridge port support for complex routing
  */
 class ProcessingUnit {
-public:
+  public:
     explicit ProcessingUnit(const std::string& name);
     virtual ~ProcessingUnit();
 
@@ -153,7 +147,7 @@ public:
      * @param name Descriptive name for the port
      * @return Pointer to created input port
      */
-    template<typename T>
+    template <typename T>
     InputPort<T>* createInputPort(int idx, const std::string& name);
 
     /**
@@ -163,7 +157,7 @@ public:
      * @param name Descriptive name for the port
      * @return Pointer to created output port
      */
-    template<typename T>
+    template <typename T>
     OutputPort<T>* createOutputPort(int idx, const std::string& name);
 
     /**
@@ -173,7 +167,7 @@ public:
      * @param name Descriptive name for the port
      * @return Pointer to created async input port
      */
-    template<typename T>
+    template <typename T>
     AsyncInputPort<T>* createAsyncInputPort(int idx, const std::string& name);
 
     /**
@@ -183,7 +177,7 @@ public:
      * @param name Descriptive name for the port
      * @return Pointer to created async output port
      */
-    template<typename T>
+    template <typename T>
     AsyncOutputPort<T>* createAsyncOutputPort(int idx, const std::string& name);
 
     /**
@@ -192,7 +186,7 @@ public:
      * @param idx Port index
      * @return Pointer to input port or nullptr if not found
      */
-    template<typename T>
+    template <typename T>
     InputPort<T>* getInputPort(int idx);
 
     /**
@@ -201,43 +195,43 @@ public:
      * @return Pointer to the single input port if only one exists
      * @throws std::runtime_error if multiple ports exist
      */
-    template<typename T>
+    template <typename T>
     InputPort<T>* getInputPort();
 
     /**
      * @brief Get synchronous output port by index
      */
-    template<typename T>
+    template <typename T>
     OutputPort<T>* getOutputPort(int idx);
 
     /**
      * @brief Get synchronous output port (default - single port behavior)
      */
-    template<typename T>
+    template <typename T>
     OutputPort<T>* getOutputPort();
 
     /**
      * @brief Get asynchronous input port by index
      */
-    template<typename T>
+    template <typename T>
     AsyncInputPort<T>* getAsyncInputPort(int idx);
 
     /**
      * @brief Get asynchronous input port (default - single port behavior)
      */
-    template<typename T>
+    template <typename T>
     AsyncInputPort<T>* getAsyncInputPort();
 
     /**
      * @brief Get asynchronous output port by index
      */
-    template<typename T>
+    template <typename T>
     AsyncOutputPort<T>* getAsyncOutputPort(int idx);
 
     /**
      * @brief Get asynchronous output port (default - single port behavior)
      */
-    template<typename T>
+    template <typename T>
     AsyncOutputPort<T>* getAsyncOutputPort();
 
     // Port name access
@@ -247,10 +241,18 @@ public:
     std::string getAsyncOutputPortName(int idx) const;
 
     // Port collection access
-    const std::map<int, BasePort*>& getInputPorts() const { return inputPorts_; }
-    const std::map<int, BasePort*>& getOutputPorts() const { return outputPorts_; }
-    const std::map<int, BasePort*>& getAsyncInputPorts() const { return asyncInputPorts_; }
-    const std::map<int, BasePort*>& getAsyncOutputPorts() const { return asyncOutputPorts_; }
+    const std::map<int, BasePort*>& getInputPorts() const {
+        return inputPorts_;
+    }
+    const std::map<int, BasePort*>& getOutputPorts() const {
+        return outputPorts_;
+    }
+    const std::map<int, BasePort*>& getAsyncInputPorts() const {
+        return asyncInputPorts_;
+    }
+    const std::map<int, BasePort*>& getAsyncOutputPorts() const {
+        return asyncOutputPorts_;
+    }
 
     // =================================================================
     // DOWN-SAMPLING CONTROL
@@ -269,7 +271,9 @@ public:
     /**
      * @brief Get current down-sampling factor
      */
-    int getDownSamplingFactor() const noexcept { return downSamplingFactor_; }
+    int getDownSamplingFactor() const noexcept {
+        return downSamplingFactor_;
+    }
 
     /**
      * @brief Inherit down-sampling factor from another processing unit
@@ -288,7 +292,9 @@ public:
     /**
      * @brief Get block sampling period
      */
-    std::chrono::microseconds getBlockSamplingPeriod() const noexcept { return samplingPeriod_; }
+    std::chrono::microseconds getBlockSamplingPeriod() const noexcept {
+        return samplingPeriod_;
+    }
 
     // =================================================================
     // UNIQUE ID MANAGEMENT
@@ -297,7 +303,9 @@ public:
     /**
      * @brief Get unique block ID
      */
-    uint32_t getBlockUID() const noexcept { return blockUID_; }
+    uint32_t getBlockUID() const noexcept {
+        return blockUID_;
+    }
 
     /**
      * @brief Set unique block ID (called by system)
@@ -307,7 +315,9 @@ public:
     /**
      * @brief Check if block has been added to a system
      */
-    bool hasBeenAddedToSystem() const noexcept { return hasBeenAddedToSystem_; }
+    bool hasBeenAddedToSystem() const noexcept {
+        return hasBeenAddedToSystem_;
+    }
 
     // =================================================================
     // HIERARCHICAL ADDRESSING
@@ -321,22 +331,30 @@ public:
     /**
      * @brief Get relative URL
      */
-    std::filesystem::path getRelativeURL() const { return relativeURL_; }
+    std::filesystem::path getRelativeURL() const {
+        return relativeURL_;
+    }
 
     /**
      * @brief Get absolute URL
      */
-    std::filesystem::path getAbsoluteURL() const { return absoluteURL_; }
+    std::filesystem::path getAbsoluteURL() const {
+        return absoluteURL_;
+    }
 
     /**
      * @brief Set parent block for hierarchical systems
      */
-    void setParentBlock(ProcessingUnit* parent) { parentBlock_ = parent; }
+    void setParentBlock(ProcessingUnit* parent) {
+        parentBlock_ = parent;
+    }
 
     /**
      * @brief Get parent block
      */
-    ProcessingUnit* getParentBlock() const { return parentBlock_; }
+    ProcessingUnit* getParentBlock() const {
+        return parentBlock_;
+    }
 
     // =================================================================
     // STATE MANAGEMENT
@@ -345,17 +363,23 @@ public:
     /**
      * @brief Get current execution state
      */
-    ExecutionState getState() const noexcept { return state_.load(); }
+    ExecutionState getState() const noexcept {
+        return state_.load();
+    }
 
     /**
      * @brief Check if unit is initialized
      */
-    bool isInitialized() const { return state_ != ExecutionState::UNINITIALIZED; }
+    bool isInitialized() const {
+        return state_ != ExecutionState::UNINITIALIZED;
+    }
 
     /**
      * @brief Check if unit is running
      */
-    bool isRunning() const { return state_ == ExecutionState::RUNNING; }
+    bool isRunning() const {
+        return state_ == ExecutionState::RUNNING;
+    }
 
     /**
      * @brief Enable/disable the processing unit
@@ -365,7 +389,9 @@ public:
     /**
      * @brief Check if processing unit is disabled
      */
-    bool isDisabled() const noexcept { return isDisabled_.load(); }
+    bool isDisabled() const noexcept {
+        return isDisabled_.load();
+    }
 
     /**
      * @brief Reset the processing unit
@@ -389,7 +415,9 @@ public:
     /**
      * @brief Get processing unit name
      */
-    const std::string& getName() const noexcept { return name_; }
+    const std::string& getName() const noexcept {
+        return name_;
+    }
 
     /**
      * @brief Update instance description
@@ -399,7 +427,9 @@ public:
     /**
      * @brief Get instance description
      */
-    const std::string& getInstanceDescription() const noexcept { return instanceDescription_; }
+    const std::string& getInstanceDescription() const noexcept {
+        return instanceDescription_;
+    }
 
     // =================================================================
     // PERFORMANCE MONITORING
@@ -454,24 +484,36 @@ public:
     // EXECUTION TIMING
     // =================================================================
 
-    void setExecutionPeriod(std::chrono::microseconds period) { executionPeriod_ = period; }
-    std::chrono::microseconds getExecutionPeriod() const { return executionPeriod_; }
+    void setExecutionPeriod(std::chrono::microseconds period) {
+        executionPeriod_ = period;
+    }
+    std::chrono::microseconds getExecutionPeriod() const {
+        return executionPeriod_;
+    }
 
     // =================================================================
     // ERROR HANDLING
     // =================================================================
 
-    bool hasError() const { return state_ == ExecutionState::ERROR; }
-    const std::string& getLastError() const { return lastError_; }
+    bool hasError() const {
+        return state_ == ExecutionState::ERROR;
+    }
+    const std::string& getLastError() const {
+        return lastError_;
+    }
 
     // =================================================================
     // DEBUG AND DIAGNOSTICS
     // =================================================================
 
-    void setDebugMode(bool enable) { debugMode_ = enable; }
-    bool isDebugMode() const { return debugMode_; }
+    void setDebugMode(bool enable) {
+        debugMode_ = enable;
+    }
+    bool isDebugMode() const {
+        return debugMode_;
+    }
 
-protected:
+  protected:
     // Core utility members for real-time performance
     mutable PrecisionTimer executionTimer_{PrecisionTimer::DEFAULT_MAX_SAMPLES};
 
@@ -479,14 +521,16 @@ protected:
     friend class AxonVexSystem;
 
     // State management
-    void setState(ExecutionState state) { state_.store(state); }
+    void setState(ExecutionState state) {
+        state_.store(state);
+    }
     void setError(const std::string& error);
 
     // Performance tracking
     void updateSyncExecutionStats(std::chrono::microseconds executionTime);
     void updateAsyncExecutionStats(std::chrono::microseconds executionTime);
 
-private:
+  private:
     // Basic information
     std::string name_;
     std::string instanceDescription_;
@@ -540,13 +584,14 @@ private:
 
 // Template implementations
 
-template<typename T>
+template <typename T>
 InputPort<T>* ProcessingUnit::createInputPort(int idx, const std::string& name) {
     std::lock_guard<std::mutex> lock(portsMutex_);
 
     // Check if port with this index already exists
     if (inputPorts_.find(idx) != inputPorts_.end()) {
-        throw std::runtime_error("Input port with index " + std::to_string(idx) + " already exists");
+        throw std::runtime_error("Input port with index " + std::to_string(idx) +
+                                 " already exists");
     }
 
     // Create the port
@@ -568,12 +613,13 @@ InputPort<T>* ProcessingUnit::createInputPort(int idx, const std::string& name) 
     return portPtr;
 }
 
-template<typename T>
+template <typename T>
 OutputPort<T>* ProcessingUnit::createOutputPort(int idx, const std::string& name) {
     std::lock_guard<std::mutex> lock(portsMutex_);
 
     if (outputPorts_.find(idx) != outputPorts_.end()) {
-        throw std::runtime_error("Output port with index " + std::to_string(idx) + " already exists");
+        throw std::runtime_error("Output port with index " + std::to_string(idx) +
+                                 " already exists");
     }
 
     auto port = std::make_unique<OutputPort<T>>(idx, name, this);
@@ -590,12 +636,13 @@ OutputPort<T>* ProcessingUnit::createOutputPort(int idx, const std::string& name
     return portPtr;
 }
 
-template<typename T>
+template <typename T>
 AsyncInputPort<T>* ProcessingUnit::createAsyncInputPort(int idx, const std::string& name) {
     std::lock_guard<std::mutex> lock(portsMutex_);
 
     if (asyncInputPorts_.find(idx) != asyncInputPorts_.end()) {
-        throw std::runtime_error("Async input port with index " + std::to_string(idx) + " already exists");
+        throw std::runtime_error("Async input port with index " + std::to_string(idx) +
+                                 " already exists");
     }
 
     auto port = std::make_unique<AsyncInputPort<T>>(idx, name, this);
@@ -612,12 +659,13 @@ AsyncInputPort<T>* ProcessingUnit::createAsyncInputPort(int idx, const std::stri
     return portPtr;
 }
 
-template<typename T>
+template <typename T>
 AsyncOutputPort<T>* ProcessingUnit::createAsyncOutputPort(int idx, const std::string& name) {
     std::lock_guard<std::mutex> lock(portsMutex_);
 
     if (asyncOutputPorts_.find(idx) != asyncOutputPorts_.end()) {
-        throw std::runtime_error("Async output port with index " + std::to_string(idx) + " already exists");
+        throw std::runtime_error("Async output port with index " + std::to_string(idx) +
+                                 " already exists");
     }
 
     auto port = std::make_unique<AsyncOutputPort<T>>(idx, name, this);
@@ -634,7 +682,7 @@ AsyncOutputPort<T>* ProcessingUnit::createAsyncOutputPort(int idx, const std::st
     return portPtr;
 }
 
-template<typename T>
+template <typename T>
 InputPort<T>* ProcessingUnit::getInputPort(int idx) {
     std::lock_guard<std::mutex> lock(portsMutex_);
     auto it = inputPorts_.find(idx);
@@ -644,19 +692,20 @@ InputPort<T>* ProcessingUnit::getInputPort(int idx) {
     return nullptr;
 }
 
-template<typename T>
+template <typename T>
 InputPort<T>* ProcessingUnit::getInputPort() {
     std::lock_guard<std::mutex> lock(portsMutex_);
     if (inputPorts_.size() == 1) {
         return static_cast<InputPort<T>*>(inputPorts_.begin()->second);
     } else {
         std::stringstream errorMessage;
-        errorMessage << "Error in Block " << blockUID_ << " at getInputPort(), no default port available";
+        errorMessage << "Error in Block " << blockUID_
+                     << " at getInputPort(), no default port available";
         throw std::runtime_error(errorMessage.str());
     }
 }
 
-template<typename T>
+template <typename T>
 OutputPort<T>* ProcessingUnit::getOutputPort(int idx) {
     std::lock_guard<std::mutex> lock(portsMutex_);
     auto it = outputPorts_.find(idx);
@@ -666,19 +715,20 @@ OutputPort<T>* ProcessingUnit::getOutputPort(int idx) {
     return nullptr;
 }
 
-template<typename T>
+template <typename T>
 OutputPort<T>* ProcessingUnit::getOutputPort() {
     std::lock_guard<std::mutex> lock(portsMutex_);
     if (outputPorts_.size() == 1) {
         return static_cast<OutputPort<T>*>(outputPorts_.begin()->second);
     } else {
         std::stringstream errorMessage;
-        errorMessage << "Error in Block " << blockUID_ << " at getOutputPort(), no default port available";
+        errorMessage << "Error in Block " << blockUID_
+                     << " at getOutputPort(), no default port available";
         throw std::runtime_error(errorMessage.str());
     }
 }
 
-template<typename T>
+template <typename T>
 AsyncInputPort<T>* ProcessingUnit::getAsyncInputPort(int idx) {
     std::lock_guard<std::mutex> lock(portsMutex_);
     auto it = asyncInputPorts_.find(idx);
@@ -688,7 +738,7 @@ AsyncInputPort<T>* ProcessingUnit::getAsyncInputPort(int idx) {
     return nullptr;
 }
 
-template<typename T>
+template <typename T>
 AsyncInputPort<T>* ProcessingUnit::getAsyncInputPort() {
     std::lock_guard<std::mutex> lock(portsMutex_);
     if (asyncInputPorts_.size() == 3) { // 3 because reset and disable ports are defaults
@@ -700,11 +750,12 @@ AsyncInputPort<T>* ProcessingUnit::getAsyncInputPort() {
         }
     }
     std::stringstream errorMessage;
-    errorMessage << "Error in Block " << blockUID_ << " at getAsyncInputPort(), no default port available";
+    errorMessage << "Error in Block " << blockUID_
+                 << " at getAsyncInputPort(), no default port available";
     throw std::runtime_error(errorMessage.str());
 }
 
-template<typename T>
+template <typename T>
 AsyncOutputPort<T>* ProcessingUnit::getAsyncOutputPort(int idx) {
     std::lock_guard<std::mutex> lock(portsMutex_);
     auto it = asyncOutputPorts_.find(idx);
@@ -714,14 +765,15 @@ AsyncOutputPort<T>* ProcessingUnit::getAsyncOutputPort(int idx) {
     return nullptr;
 }
 
-template<typename T>
+template <typename T>
 AsyncOutputPort<T>* ProcessingUnit::getAsyncOutputPort() {
     std::lock_guard<std::mutex> lock(portsMutex_);
     if (asyncOutputPorts_.size() == 1) {
         return static_cast<AsyncOutputPort<T>*>(asyncOutputPorts_.begin()->second);
     } else {
         std::stringstream errorMessage;
-        errorMessage << "Error in Block " << blockUID_ << " at getAsyncOutputPort(), no default port available";
+        errorMessage << "Error in Block " << blockUID_
+                     << " at getAsyncOutputPort(), no default port available";
         throw std::runtime_error(errorMessage.str());
     }
 }

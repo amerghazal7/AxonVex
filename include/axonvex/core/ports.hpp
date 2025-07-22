@@ -14,19 +14,19 @@
 
 #pragma once
 
-#include <memory>
-#include <string>
-#include <vector>
-#include <atomic>
-#include <mutex>
-#include <map>
-#include <functional>
-#include <typeinfo>
-#include <cmath>
-#include <stdexcept>
-#include <sstream>
 #include <algorithm>
+#include <atomic>
 #include <axonvex/core/memoryPool.hpp>
+#include <cmath>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <typeinfo>
+#include <vector>
 
 namespace axonvex::core {
 
@@ -36,43 +36,58 @@ class ProcessingUnit;
 /**
  * @brief Port types for port system
  */
-enum class PortType {
-    SYNC_INPUT,
-    SYNC_OUTPUT,
-    ASYNC_INPUT,
-    ASYNC_OUTPUT
-};
+enum class PortType { SYNC_INPUT, SYNC_OUTPUT, ASYNC_INPUT, ASYNC_OUTPUT };
 
 /**
  * @brief Base port class for the port system
  */
 class BasePort {
-public:
+  public:
     explicit BasePort(int id, const std::string& name, PortType type, ProcessingUnit* owner);
     virtual ~BasePort() = default;
 
     // Port identification
-    int getId() const noexcept { return id_; }
-    const std::string& getName() const noexcept { return name_; }
-    PortType getType() const noexcept { return type_; }
-    ProcessingUnit* getOwner() const noexcept { return owner_; }
+    int getId() const noexcept {
+        return id_;
+    }
+    const std::string& getName() const noexcept {
+        return name_;
+    }
+    PortType getType() const noexcept {
+        return type_;
+    }
+    ProcessingUnit* getOwner() const noexcept {
+        return owner_;
+    }
 
     // Port UID generation (block_uid*256 + port_idx)
     uint32_t getPortUID() const noexcept;
-    void setPortUID(uint32_t uid) noexcept { portUID_ = uid; }
+    void setPortUID(uint32_t uid) noexcept {
+        portUID_ = uid;
+    }
 
     // Type information
     virtual std::string getDataTypeName() const = 0;
     virtual size_t getDataTypeSize() const = 0;
 
     // Statistics
-    uint64_t getTotalMessages() const noexcept { return totalMessages_.load(); }
-    uint64_t getValidMessages() const noexcept { return validMessages_.load(); }
-    uint64_t getInvalidMessages() const noexcept { return invalidMessages_.load(); }
+    uint64_t getTotalMessages() const noexcept {
+        return totalMessages_.load();
+    }
+    uint64_t getValidMessages() const noexcept {
+        return validMessages_.load();
+    }
+    uint64_t getInvalidMessages() const noexcept {
+        return invalidMessages_.load();
+    }
 
     // Debug and validation
-    void setDescription(const std::string& desc) { description_ = desc; }
-    const std::string& getDescription() const noexcept { return description_; }
+    void setDescription(const std::string& desc) {
+        description_ = desc;
+    }
+    const std::string& getDescription() const noexcept {
+        return description_;
+    }
 
     // Thread safety control
     virtual void setThreadSafe(bool threadSafe) = 0;
@@ -85,7 +100,7 @@ public:
     // Reset functionality
     virtual void reset() = 0;
 
-protected:
+  protected:
     int id_;
     std::string name_;
     std::string description_;
@@ -99,20 +114,26 @@ protected:
     std::atomic<uint64_t> invalidMessages_{0};
 
     // Validation helpers
-    template<typename T>
+    template <typename T>
     bool validateData(const T& data);
 
-    void incrementTotalMessages() { totalMessages_++; }
-    void incrementValidMessages() { validMessages_++; }
-    void incrementInvalidMessages() { invalidMessages_++; }
+    void incrementTotalMessages() {
+        totalMessages_++;
+    }
+    void incrementValidMessages() {
+        validMessages_++;
+    }
+    void incrementInvalidMessages() {
+        invalidMessages_++;
+    }
 };
 
 /**
  * @brief Synchronous Input Port
  */
-template<typename T>
+template <typename T>
 class InputPort : public BasePort {
-public:
+  public:
     using ValidationCallback = std::function<bool(const T&)>;
     using DataCallback = std::function<void(const T&)>;
 
@@ -134,15 +155,23 @@ public:
     // Bridge ports for complex routing
     void addBridgedPort(InputPort<T>* bridgedPort);
     void removeBridgedPort(InputPort<T>* bridgedPort);
-    bool isBridgePort() const noexcept { return isBridgePort_; }
+    bool isBridgePort() const noexcept {
+        return isBridgePort_;
+    }
 
     // Port information
-    std::string getDataTypeName() const override { return typeid(T).name(); }
-    size_t getDataTypeSize() const override { return sizeof(T); }
+    std::string getDataTypeName() const override {
+        return typeid(T).name();
+    }
+    size_t getDataTypeSize() const override {
+        return sizeof(T);
+    }
 
     // Thread safety
     void setThreadSafe(bool threadSafe) override;
-    bool isThreadSafe() const noexcept override { return isThreadSafe_; }
+    bool isThreadSafe() const noexcept override {
+        return isThreadSafe_;
+    }
 
     // MemoryPool support
     void setMemoryPoolSize(size_t poolSize) override;
@@ -151,7 +180,7 @@ public:
     // Reset
     void reset() override;
 
-private:
+  private:
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> hasNewData_{false};
@@ -178,9 +207,9 @@ private:
 /**
  * @brief Synchronous Output Port
  */
-template<typename T>
+template <typename T>
 class OutputPort : public BasePort {
-public:
+  public:
     using OutputCallback = std::function<void(const T&)>;
 
     explicit OutputPort(int id, const std::string& name, ProcessingUnit* owner);
@@ -203,12 +232,18 @@ public:
     void setOutputCallback(OutputCallback callback);
 
     // Port information
-    std::string getDataTypeName() const override { return typeid(T).name(); }
-    size_t getDataTypeSize() const override { return sizeof(T); }
+    std::string getDataTypeName() const override {
+        return typeid(T).name();
+    }
+    size_t getDataTypeSize() const override {
+        return sizeof(T);
+    }
 
     // Thread safety
     void setThreadSafe(bool threadSafe) override;
-    bool isThreadSafe() const noexcept override { return isThreadSafe_; }
+    bool isThreadSafe() const noexcept override {
+        return isThreadSafe_;
+    }
 
     // MemoryPool support
     void setMemoryPoolSize(size_t poolSize) override;
@@ -217,7 +252,7 @@ public:
     // Reset
     void reset() override;
 
-private:
+  private:
     mutable std::mutex connectionMutex_;
     std::vector<InputPort<T>*> connectedPorts_;
     std::atomic<bool> isThreadSafe_{false};
@@ -238,9 +273,9 @@ private:
 /**
  * @brief Asynchronous Input Port
  */
-template<typename T>
+template <typename T>
 class AsyncInputPort : public BasePort {
-public:
+  public:
     using ValidationCallback = std::function<bool(const T&)>;
     using DataCallback = std::function<void(const T&)>;
 
@@ -260,15 +295,23 @@ public:
     // Bridge ports for complex routing
     void addBridgedPort(AsyncInputPort<T>* bridgedPort);
     void removeBridgedPort(AsyncInputPort<T>* bridgedPort);
-    bool isBridgePort() const noexcept { return isBridgePort_; }
+    bool isBridgePort() const noexcept {
+        return isBridgePort_;
+    }
 
     // Port information
-    std::string getDataTypeName() const override { return typeid(T).name(); }
-    size_t getDataTypeSize() const override { return sizeof(T); }
+    std::string getDataTypeName() const override {
+        return typeid(T).name();
+    }
+    size_t getDataTypeSize() const override {
+        return sizeof(T);
+    }
 
     // Thread safety
     void setThreadSafe(bool threadSafe) override;
-    bool isThreadSafe() const noexcept override { return isThreadSafe_; }
+    bool isThreadSafe() const noexcept override {
+        return isThreadSafe_;
+    }
 
     // MemoryPool support
     void setMemoryPoolSize(size_t poolSize) override;
@@ -277,7 +320,7 @@ public:
     // Reset
     void reset() override;
 
-private:
+  private:
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> wasUpdated_{false};
@@ -301,9 +344,9 @@ private:
 /**
  * @brief Asynchronous Output Port
  */
-template<typename T>
+template <typename T>
 class AsyncOutputPort : public BasePort {
-public:
+  public:
     using OutputCallback = std::function<void(const T&)>;
 
     explicit AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner);
@@ -326,12 +369,18 @@ public:
     void setOutputCallback(OutputCallback callback);
 
     // Port information
-    std::string getDataTypeName() const override { return typeid(T).name(); }
-    size_t getDataTypeSize() const override { return sizeof(T); }
+    std::string getDataTypeName() const override {
+        return typeid(T).name();
+    }
+    size_t getDataTypeSize() const override {
+        return sizeof(T);
+    }
 
     // Thread safety
     void setThreadSafe(bool threadSafe) override;
-    bool isThreadSafe() const noexcept override { return isThreadSafe_; }
+    bool isThreadSafe() const noexcept override {
+        return isThreadSafe_;
+    }
 
     // MemoryPool support
     void setMemoryPoolSize(size_t poolSize) override;
@@ -341,10 +390,14 @@ public:
     void reset() override;
 
     // Control async write logging
-    void setLogAsyncWriteEvent(bool log) noexcept { logAsyncWriteEvent_ = log; }
-    bool getLogAsyncWriteEvent() const noexcept { return logAsyncWriteEvent_; }
+    void setLogAsyncWriteEvent(bool log) noexcept {
+        logAsyncWriteEvent_ = log;
+    }
+    bool getLogAsyncWriteEvent() const noexcept {
+        return logAsyncWriteEvent_;
+    }
 
-private:
+  private:
     mutable std::mutex connectionMutex_;
     std::vector<AsyncInputPort<T>*> connectedPorts_;
     std::atomic<bool> isThreadSafe_{false};
@@ -358,13 +411,13 @@ private:
 
 // Template implementations
 
-template<typename T>
+template <typename T>
 InputPort<T>::InputPort(int id, const std::string& name, ProcessingUnit* owner)
     : BasePort(id, name, PortType::SYNC_INPUT, owner) {
     data_ = T{};
 }
 
-template<typename T>
+template <typename T>
 T InputPort<T>::read() const {
     if (isThreadSafe_ && memoryPool_) {
         // Use MemoryPool for thread-safe access
@@ -381,17 +434,17 @@ T InputPort<T>::read() const {
     return data_;
 }
 
-template<typename T>
+template <typename T>
 bool InputPort<T>::hasNewData() const noexcept {
     return hasNewData_.load();
 }
 
-template<typename T>
+template <typename T>
 void InputPort<T>::clearNewDataFlag() noexcept {
     hasNewData_.store(false);
 }
 
-template<typename T>
+template <typename T>
 void InputPort<T>::writeData(const T& data) {
     incrementTotalMessages();
 
@@ -450,19 +503,20 @@ void InputPort<T>::writeData(const T& data) {
     }
 }
 
-template<typename T>
+template <typename T>
 void InputPort<T>::setValidationCallback(ValidationCallback callback) {
     validationCallback_ = std::move(callback);
 }
 
-template<typename T>
+template <typename T>
 void InputPort<T>::setDataCallback(DataCallback callback) {
     dataCallback_ = std::move(callback);
 }
 
-template<typename T>
+template <typename T>
 void InputPort<T>::addBridgedPort(InputPort<T>* bridgedPort) {
-    if (!bridgedPort) return;
+    if (!bridgedPort)
+        return;
 
     std::lock_guard<std::mutex> lock(bridgeMutex_);
     auto it = std::find(bridgedPorts_.begin(), bridgedPorts_.end(), bridgedPort);
@@ -472,7 +526,7 @@ void InputPort<T>::addBridgedPort(InputPort<T>* bridgedPort) {
     }
 }
 
-template<typename T>
+template <typename T>
 void InputPort<T>::removeBridgedPort(InputPort<T>* bridgedPort) {
     std::lock_guard<std::mutex> lock(bridgeMutex_);
     auto it = std::find(bridgedPorts_.begin(), bridgedPorts_.end(), bridgedPort);
@@ -482,7 +536,7 @@ void InputPort<T>::removeBridgedPort(InputPort<T>* bridgedPort) {
     }
 }
 
-template<typename T>
+template <typename T>
 void InputPort<T>::setThreadSafe(bool threadSafe) {
     if (threadSafe && !isThreadSafe_) {
         // Initialize MemoryPool when enabling thread safety
@@ -500,7 +554,7 @@ void InputPort<T>::setThreadSafe(bool threadSafe) {
     isThreadSafe_ = threadSafe;
 }
 
-template<typename T>
+template <typename T>
 void InputPort<T>::setMemoryPoolSize(size_t poolSize) {
     poolSize_ = std::max(static_cast<size_t>(16), poolSize);
     if (isThreadSafe_ && memoryPool_) {
@@ -513,12 +567,12 @@ void InputPort<T>::setMemoryPoolSize(size_t poolSize) {
     }
 }
 
-template<typename T>
+template <typename T>
 size_t InputPort<T>::getMemoryPoolSize() const noexcept {
     return poolSize_;
 }
 
-template<typename T>
+template <typename T>
 void InputPort<T>::reset() {
     if (isThreadSafe_ && memoryPool_) {
         // Reset MemoryPool data
@@ -537,7 +591,7 @@ void InputPort<T>::reset() {
 }
 
 // Helper function for NaN validation
-template<typename T>
+template <typename T>
 bool BasePort::validateData(const T& data) {
     if constexpr (std::is_floating_point_v<T>) {
         if (std::isnan(data)) {
@@ -549,13 +603,13 @@ bool BasePort::validateData(const T& data) {
 }
 
 // OutputPort template implementations
-template<typename T>
+template <typename T>
 OutputPort<T>::OutputPort(int id, const std::string& name, ProcessingUnit* owner)
     : BasePort(id, name, PortType::SYNC_OUTPUT, owner) {
     currentData_ = T{};
 }
 
-template<typename T>
+template <typename T>
 void OutputPort<T>::write(const T& data) {
     incrementTotalMessages();
 
@@ -605,9 +659,10 @@ void OutputPort<T>::write(const T& data) {
     }
 }
 
-template<typename T>
+template <typename T>
 void OutputPort<T>::connect(InputPort<T>* inputPort) {
-    if (!inputPort) return;
+    if (!inputPort)
+        return;
 
     std::lock_guard<std::mutex> lock(connectionMutex_);
     auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
@@ -616,7 +671,7 @@ void OutputPort<T>::connect(InputPort<T>* inputPort) {
     }
 }
 
-template<typename T>
+template <typename T>
 void OutputPort<T>::disconnect(InputPort<T>* inputPort) {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
@@ -625,36 +680,36 @@ void OutputPort<T>::disconnect(InputPort<T>* inputPort) {
     }
 }
 
-template<typename T>
+template <typename T>
 void OutputPort<T>::disconnectAll() {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     connectedPorts_.clear();
 }
 
-template<typename T>
+template <typename T>
 bool OutputPort<T>::isConnected() const noexcept {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     return !connectedPorts_.empty();
 }
 
-template<typename T>
+template <typename T>
 size_t OutputPort<T>::getConnectionCount() const noexcept {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     return connectedPorts_.size();
 }
 
-template<typename T>
+template <typename T>
 std::vector<InputPort<T>*> OutputPort<T>::getConnectedPorts() const {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     return connectedPorts_;
 }
 
-template<typename T>
+template <typename T>
 void OutputPort<T>::setOutputCallback(OutputCallback callback) {
     outputCallback_ = std::move(callback);
 }
 
-template<typename T>
+template <typename T>
 void OutputPort<T>::setThreadSafe(bool threadSafe) {
     if (threadSafe && !isThreadSafe_) {
         // Initialize MemoryPool when enabling thread safety
@@ -672,7 +727,7 @@ void OutputPort<T>::setThreadSafe(bool threadSafe) {
     isThreadSafe_ = threadSafe;
 }
 
-template<typename T>
+template <typename T>
 void OutputPort<T>::setMemoryPoolSize(size_t poolSize) {
     poolSize_ = std::max(static_cast<size_t>(16), poolSize);
     if (isThreadSafe_ && memoryPool_) {
@@ -685,12 +740,12 @@ void OutputPort<T>::setMemoryPoolSize(size_t poolSize) {
     }
 }
 
-template<typename T>
+template <typename T>
 size_t OutputPort<T>::getMemoryPoolSize() const noexcept {
     return poolSize_;
 }
 
-template<typename T>
+template <typename T>
 void OutputPort<T>::reset() {
     if (isThreadSafe_ && memoryPool_) {
         // Reset MemoryPool data
@@ -708,13 +763,13 @@ void OutputPort<T>::reset() {
 }
 
 // AsyncInputPort template implementations
-template<typename T>
+template <typename T>
 AsyncInputPort<T>::AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner)
     : BasePort(id, name, PortType::ASYNC_INPUT, owner) {
     data_ = T{};
 }
 
-template<typename T>
+template <typename T>
 void AsyncInputPort<T>::update(const T& data) {
     incrementTotalMessages();
 
@@ -773,12 +828,12 @@ void AsyncInputPort<T>::update(const T& data) {
     }
 }
 
-template<typename T>
+template <typename T>
 bool AsyncInputPort<T>::wasUpdated() const noexcept {
     return wasUpdated_.load();
 }
 
-template<typename T>
+template <typename T>
 void AsyncInputPort<T>::read(T& data) {
     if (!wasUpdated_.load()) {
         std::stringstream errorMessage;
@@ -805,26 +860,27 @@ void AsyncInputPort<T>::read(T& data) {
     }
 }
 
-template<typename T>
+template <typename T>
 T AsyncInputPort<T>::read() {
     T data;
     read(data);
     return data;
 }
 
-template<typename T>
+template <typename T>
 void AsyncInputPort<T>::setValidationCallback(ValidationCallback callback) {
     validationCallback_ = std::move(callback);
 }
 
-template<typename T>
+template <typename T>
 void AsyncInputPort<T>::setDataCallback(DataCallback callback) {
     dataCallback_ = std::move(callback);
 }
 
-template<typename T>
+template <typename T>
 void AsyncInputPort<T>::addBridgedPort(AsyncInputPort<T>* bridgedPort) {
-    if (!bridgedPort) return;
+    if (!bridgedPort)
+        return;
 
     std::lock_guard<std::mutex> lock(bridgeMutex_);
     auto it = std::find(bridgedPorts_.begin(), bridgedPorts_.end(), bridgedPort);
@@ -834,7 +890,7 @@ void AsyncInputPort<T>::addBridgedPort(AsyncInputPort<T>* bridgedPort) {
     }
 }
 
-template<typename T>
+template <typename T>
 void AsyncInputPort<T>::removeBridgedPort(AsyncInputPort<T>* bridgedPort) {
     std::lock_guard<std::mutex> lock(bridgeMutex_);
     auto it = std::find(bridgedPorts_.begin(), bridgedPorts_.end(), bridgedPort);
@@ -844,7 +900,7 @@ void AsyncInputPort<T>::removeBridgedPort(AsyncInputPort<T>* bridgedPort) {
     }
 }
 
-template<typename T>
+template <typename T>
 void AsyncInputPort<T>::setThreadSafe(bool threadSafe) {
     if (threadSafe && !isThreadSafe_) {
         // Initialize MemoryPool when enabling thread safety
@@ -862,7 +918,7 @@ void AsyncInputPort<T>::setThreadSafe(bool threadSafe) {
     isThreadSafe_ = threadSafe;
 }
 
-template<typename T>
+template <typename T>
 void AsyncInputPort<T>::setMemoryPoolSize(size_t poolSize) {
     poolSize_ = std::max(static_cast<size_t>(16), poolSize);
     if (isThreadSafe_ && memoryPool_) {
@@ -875,12 +931,12 @@ void AsyncInputPort<T>::setMemoryPoolSize(size_t poolSize) {
     }
 }
 
-template<typename T>
+template <typename T>
 size_t AsyncInputPort<T>::getMemoryPoolSize() const noexcept {
     return poolSize_;
 }
 
-template<typename T>
+template <typename T>
 void AsyncInputPort<T>::reset() {
     if (isThreadSafe_ && memoryPool_) {
         // Reset MemoryPool data
@@ -898,12 +954,11 @@ void AsyncInputPort<T>::reset() {
 }
 
 // AsyncOutputPort template implementations
-template<typename T>
+template <typename T>
 AsyncOutputPort<T>::AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, PortType::ASYNC_OUTPUT, owner) {
-}
+    : BasePort(id, name, PortType::ASYNC_OUTPUT, owner) {}
 
-template<typename T>
+template <typename T>
 void AsyncOutputPort<T>::write(const T& data) {
     incrementTotalMessages();
 
@@ -926,9 +981,10 @@ void AsyncOutputPort<T>::write(const T& data) {
     }
 }
 
-template<typename T>
+template <typename T>
 void AsyncOutputPort<T>::connect(AsyncInputPort<T>* inputPort) {
-    if (!inputPort) return;
+    if (!inputPort)
+        return;
 
     std::lock_guard<std::mutex> lock(connectionMutex_);
     auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
@@ -937,7 +993,7 @@ void AsyncOutputPort<T>::connect(AsyncInputPort<T>* inputPort) {
     }
 }
 
-template<typename T>
+template <typename T>
 void AsyncOutputPort<T>::disconnect(AsyncInputPort<T>* inputPort) {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
@@ -946,53 +1002,53 @@ void AsyncOutputPort<T>::disconnect(AsyncInputPort<T>* inputPort) {
     }
 }
 
-template<typename T>
+template <typename T>
 void AsyncOutputPort<T>::disconnectAll() {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     connectedPorts_.clear();
 }
 
-template<typename T>
+template <typename T>
 bool AsyncOutputPort<T>::isConnected() const noexcept {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     return !connectedPorts_.empty();
 }
 
-template<typename T>
+template <typename T>
 size_t AsyncOutputPort<T>::getConnectionCount() const noexcept {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     return connectedPorts_.size();
 }
 
-template<typename T>
+template <typename T>
 std::vector<AsyncInputPort<T>*> AsyncOutputPort<T>::getConnectedPorts() const {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     return connectedPorts_;
 }
 
-template<typename T>
+template <typename T>
 void AsyncOutputPort<T>::setOutputCallback(OutputCallback callback) {
     outputCallback_ = std::move(callback);
 }
 
-template<typename T>
+template <typename T>
 void AsyncOutputPort<T>::setThreadSafe(bool threadSafe) {
     isThreadSafe_ = threadSafe;
     // AsyncOutputPort doesn't store data, so no MemoryPool needed
 }
 
-template<typename T>
+template <typename T>
 void AsyncOutputPort<T>::setMemoryPoolSize(size_t poolSize) {
     poolSize_ = std::max(static_cast<size_t>(16), poolSize);
     // AsyncOutputPort doesn't store data, just maintain size for interface consistency
 }
 
-template<typename T>
+template <typename T>
 size_t AsyncOutputPort<T>::getMemoryPoolSize() const noexcept {
     return poolSize_;
 }
 
-template<typename T>
+template <typename T>
 void AsyncOutputPort<T>::reset() {
     // Async output ports don't maintain state
 }

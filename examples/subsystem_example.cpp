@@ -21,14 +21,14 @@
  *   Raw sensor data      →   Filtered data    →   Statistics & Insights
  */
 
+#include <atomic>
 #include <axonvex/axonvex.hpp>
 #include <chrono>
-#include <thread>
-#include <atomic>
-#include <vector>
-#include <random>
-#include <iomanip>
 #include <cmath>
+#include <iomanip>
+#include <random>
+#include <thread>
+#include <vector>
 
 using namespace axonvex;
 using namespace axonvex::Log;
@@ -41,7 +41,7 @@ using namespace axonvex::Log;
  * @brief Sensor Data Generator - simulates real sensor readings
  */
 class SensorDataGenerator : public ProcessingUnit {
-private:
+  private:
     OutputPort<double>* rawDataOut_;
     OutputPort<std::string>* statusOut_;
     std::atomic<uint64_t> sampleCount_{0};
@@ -49,11 +49,11 @@ private:
     std::normal_distribution<double> noiseDistribution_;
     double baseFrequency_;
 
-public:
+  public:
     explicit SensorDataGenerator(const std::string& name, double frequency = 1.0)
-        : ProcessingUnit(name), baseFrequency_(frequency)
-        , generator_(std::chrono::steady_clock::now().time_since_epoch().count())
-        , noiseDistribution_(0.0, 0.1) {
+        : ProcessingUnit(name), baseFrequency_(frequency),
+          generator_(std::chrono::steady_clock::now().time_since_epoch().count()),
+          noiseDistribution_(0.0, 0.1) {
 
         rawDataOut_ = createOutputPort<double>(2000, "raw_data");
         statusOut_ = createOutputPort<std::string>(2001, "sensor_status");
@@ -82,13 +82,18 @@ public:
         sampleCount_.fetch_add(1);
     }
 
-    void processAsync() override { processSync(); }
+    void processAsync() override {
+        processSync();
+    }
 
-    uint64_t getSampleCount() const { return sampleCount_.load(); }
+    uint64_t getSampleCount() const {
+        return sampleCount_.load();
+    }
 
     void finalize() override {
         setState(ExecutionState::STOPPED);
-        Info() << "🌡️  " << getName() << " finalized - generated " << sampleCount_.load() << " samples";
+        Info() << "🌡️  " << getName() << " finalized - generated " << sampleCount_.load()
+               << " samples";
     }
 };
 
@@ -96,7 +101,7 @@ public:
  * @brief Digital Filter - processes raw sensor data
  */
 class DigitalFilter : public ProcessingUnit {
-private:
+  private:
     InputPort<double>* rawDataIn_;
     OutputPort<double>* filteredDataOut_;
     OutputPort<double>* filterMetricsOut_;
@@ -105,7 +110,7 @@ private:
     size_t filterLength_;
     std::atomic<uint64_t> processedSamples_{0};
 
-public:
+  public:
     explicit DigitalFilter(const std::string& name, size_t filterLength = 10)
         : ProcessingUnit(name), filterLength_(filterLength) {
 
@@ -119,7 +124,8 @@ public:
     void initialize() override {
         setState(ExecutionState::INITIALIZED);
         history_.clear();
-        Info() << "🔧 " << getName() << " initialized - " << filterLength_ << "-point moving average filter";
+        Info() << "🔧 " << getName() << " initialized - " << filterLength_
+               << "-point moving average filter";
     }
 
     void processSync() override {
@@ -159,13 +165,18 @@ public:
         }
     }
 
-    void processAsync() override { processSync(); }
+    void processAsync() override {
+        processSync();
+    }
 
-    uint64_t getProcessedSamples() const { return processedSamples_.load(); }
+    uint64_t getProcessedSamples() const {
+        return processedSamples_.load();
+    }
 
     void finalize() override {
         setState(ExecutionState::STOPPED);
-        Info() << "🔧 " << getName() << " finalized - processed " << processedSamples_.load() << " samples";
+        Info() << "🔧 " << getName() << " finalized - processed " << processedSamples_.load()
+               << " samples";
     }
 };
 
@@ -173,7 +184,7 @@ public:
  * @brief Statistical Analyzer - computes analytics on processed data
  */
 class StatisticalAnalyzer : public ProcessingUnit {
-private:
+  private:
     InputPort<double>* dataIn_;
     InputPort<double>* metricsIn_;
     OutputPort<std::string>* analyticsOut_;
@@ -183,9 +194,8 @@ private:
     double runningSum_{0.0};
     double runningSumSquared_{0.0};
 
-public:
-    explicit StatisticalAnalyzer(const std::string& name)
-        : ProcessingUnit(name) {
+  public:
+    explicit StatisticalAnalyzer(const std::string& name) : ProcessingUnit(name) {
 
         dataIn_ = createInputPort<double>(2200, "data_input");
         metricsIn_ = createInputPort<double>(2201, "metrics_input");
@@ -228,10 +238,13 @@ public:
         }
     }
 
-    void processAsync() override { processSync(); }
+    void processAsync() override {
+        processSync();
+    }
 
     void generateAnalyticsReport(double currentMetrics) {
-        if (dataHistory_.empty()) return;
+        if (dataHistory_.empty())
+            return;
 
         size_t n = dataHistory_.size();
         double mean = runningSum_ / n;
@@ -250,8 +263,10 @@ public:
         report << "|Min:" << *minmax.first;
         report << "|Max:" << *minmax.second;
         report << "|FilterQuality:" << currentMetrics;
-        report << "|Timestamp:" << std::chrono::duration_cast<std::chrono::seconds>(
-                     std::chrono::steady_clock::now().time_since_epoch()).count();
+        report << "|Timestamp:"
+               << std::chrono::duration_cast<std::chrono::seconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count();
 
         analyticsOut_->write(report.str());
         analysisCount_.fetch_add(1);
@@ -269,11 +284,14 @@ public:
         }
     }
 
-    uint64_t getAnalysisCount() const { return analysisCount_.load(); }
+    uint64_t getAnalysisCount() const {
+        return analysisCount_.load();
+    }
 
     void finalize() override {
         setState(ExecutionState::STOPPED);
-        Info() << "📊 " << getName() << " finalized - generated " << analysisCount_.load() << " analytics reports";
+        Info() << "📊 " << getName() << " finalized - generated " << analysisCount_.load()
+               << " analytics reports";
     }
 };
 
@@ -281,12 +299,12 @@ public:
  * @brief Results Monitor - displays final system outputs
  */
 class ResultsMonitor : public ProcessingUnit {
-private:
+  private:
     InputPort<std::string>* analyticsIn_;
     InputPort<std::string>* statusIn_;
     std::atomic<uint64_t> reportsProcessed_{0};
 
-public:
+  public:
     explicit ResultsMonitor(const std::string& name) : ProcessingUnit(name) {
         analyticsIn_ = createInputPort<std::string>(2300, "analytics_input");
         statusIn_ = createInputPort<std::string>(2301, "status_input");
@@ -316,13 +334,18 @@ public:
         }
     }
 
-    void processAsync() override { processSync(); }
+    void processAsync() override {
+        processSync();
+    }
 
-    uint64_t getReportsProcessed() const { return reportsProcessed_.load(); }
+    uint64_t getReportsProcessed() const {
+        return reportsProcessed_.load();
+    }
 
     void finalize() override {
         setState(ExecutionState::STOPPED);
-        Info() << "📺 " << getName() << " finalized - processed " << reportsProcessed_.load() << " reports";
+        Info() << "📺 " << getName() << " finalized - processed " << reportsProcessed_.load()
+               << " reports";
     }
 };
 
@@ -367,7 +390,8 @@ std::unique_ptr<AxonVexSystem> createDataSourceSystem() {
     system->assignSystemOutputPort("pressure_data", pressurePtr, 2000);
     system->assignSystemOutputPort("system_status", tempPtr, 2001); // Use temp sensor for status
 
-    Info() << "✅ Created Data Source Subsystem with " << system->getProcessingUnitCount() << " sensors";
+    Info() << "✅ Created Data Source Subsystem with " << system->getProcessingUnitCount()
+           << " sensors";
     Info() << "   System Output Ports: " << system->getSystemOutputPortNames().size();
 
     return system;
@@ -413,7 +437,8 @@ std::unique_ptr<AxonVexSystem> createProcessingSystem() {
     system->assignSystemOutputPort("temp_metrics", tempFilterPtr, 2102);
     system->assignSystemOutputPort("pressure_metrics", pressureFilterPtr, 2102);
 
-    Info() << "✅ Created Processing Subsystem with " << system->getProcessingUnitCount() << " filters";
+    Info() << "✅ Created Processing Subsystem with " << system->getProcessingUnitCount()
+           << " filters";
     Info() << "   System Input Ports: " << system->getSystemInputPortNames().size();
     Info() << "   System Output Ports: " << system->getSystemOutputPortNames().size();
 
@@ -461,8 +486,8 @@ std::unique_ptr<AxonVexSystem> createAnalyticsSystem() {
     auto monitorAnalyticsIn = monitorPtr->getPort(2300);
 
     if (tempAnalyticsOut && monitorAnalyticsIn) {
-        static_cast<OutputPort<std::string>*>(tempAnalyticsOut)->connect(
-            static_cast<InputPort<std::string>*>(monitorAnalyticsIn));
+        static_cast<OutputPort<std::string>*>(tempAnalyticsOut)
+            ->connect(static_cast<InputPort<std::string>*>(monitorAnalyticsIn));
     }
 
     // Assign system ports
@@ -472,7 +497,8 @@ std::unique_ptr<AxonVexSystem> createAnalyticsSystem() {
     system->assignSystemInputPort("pressure_metrics_input", pressureAnalyzerPtr, 2201);
     system->assignSystemInputPort("status_input", monitorPtr, 2301);
 
-    Info() << "✅ Created Analytics Subsystem with " << system->getProcessingUnitCount() << " analyzers";
+    Info() << "✅ Created Analytics Subsystem with " << system->getProcessingUnitCount()
+           << " analyzers";
     Info() << "   System Input Ports: " << system->getSystemInputPortNames().size();
 
     return system;
@@ -511,37 +537,31 @@ int main() {
         Info() << "\n🔗 Connecting Subsystems...";
 
         // DataSource → Processing connections
-        bool conn1 = dataSourceSystem->connectToSystem<double>("temperature_data",
-                                                               processingSystem.get(),
-                                                               "temp_raw_input");
-        bool conn2 = dataSourceSystem->connectToSystem<double>("pressure_data",
-                                                               processingSystem.get(),
-                                                               "pressure_raw_input");
+        bool conn1 = dataSourceSystem->connectToSystem<double>(
+            "temperature_data", processingSystem.get(), "temp_raw_input");
+        bool conn2 = dataSourceSystem->connectToSystem<double>(
+            "pressure_data", processingSystem.get(), "pressure_raw_input");
 
         // Processing → Analytics connections
-        bool conn3 = processingSystem->connectToSystem<double>("temp_filtered_output",
-                                                              analyticsSystem.get(),
-                                                              "temp_data_input");
-        bool conn4 = processingSystem->connectToSystem<double>("pressure_filtered_output",
-                                                              analyticsSystem.get(),
-                                                              "pressure_data_input");
-        bool conn5 = processingSystem->connectToSystem<double>("temp_metrics",
-                                                              analyticsSystem.get(),
-                                                              "temp_metrics_input");
-        bool conn6 = processingSystem->connectToSystem<double>("pressure_metrics",
-                                                              analyticsSystem.get(),
-                                                              "pressure_metrics_input");
+        bool conn3 = processingSystem->connectToSystem<double>(
+            "temp_filtered_output", analyticsSystem.get(), "temp_data_input");
+        bool conn4 = processingSystem->connectToSystem<double>(
+            "pressure_filtered_output", analyticsSystem.get(), "pressure_data_input");
+        bool conn5 = processingSystem->connectToSystem<double>(
+            "temp_metrics", analyticsSystem.get(), "temp_metrics_input");
+        bool conn6 = processingSystem->connectToSystem<double>(
+            "pressure_metrics", analyticsSystem.get(), "pressure_metrics_input");
 
         // Status data flow
-        bool conn7 = dataSourceSystem->connectToSystem<std::string>("system_status",
-                                                                    analyticsSystem.get(),
-                                                                    "status_input");
+        bool conn7 = dataSourceSystem->connectToSystem<std::string>(
+            "system_status", analyticsSystem.get(), "status_input");
 
         // Verify all connections
         std::vector<bool> connections = {conn1, conn2, conn3, conn4, conn5, conn6, conn7};
         int successfulConnections = std::count(connections.begin(), connections.end(), true);
 
-        Info() << "   ✅ Established " << successfulConnections << "/" << connections.size() << " cross-system connections";
+        Info() << "   ✅ Established " << successfulConnections << "/" << connections.size()
+               << " cross-system connections";
 
         if (successfulConnections < static_cast<int>(connections.size())) {
             Warn() << "   ⚠️  Some connections failed - system may not work optimally";
@@ -599,11 +619,11 @@ int main() {
                                          procStats.totalExecutions.load() +
                                          analyticsStats.totalExecutions.load();
         uint64_t totalSuccessfulExecutions = dataStats.successfulExecutions.load() +
-                                            procStats.successfulExecutions.load() +
-                                            analyticsStats.successfulExecutions.load();
+                                             procStats.successfulExecutions.load() +
+                                             analyticsStats.successfulExecutions.load();
 
         double overallSuccessRate = static_cast<double>(totalSuccessfulExecutions) /
-                                   static_cast<double>(totalSystemExecutions);
+                                    static_cast<double>(totalSystemExecutions);
 
         Info() << "🏆 Overall Pipeline Performance:";
         Info() << "     Combined Executions: " << totalSystemExecutions;

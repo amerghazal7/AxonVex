@@ -12,8 +12,8 @@
 
 #include <axonvex/axonvex.hpp>
 #include <iostream>
-#include <string>
 #include <memory>
+#include <string>
 
 // Example data structures for callbacks
 struct SensorData {
@@ -29,17 +29,15 @@ struct LogMessage {
     std::string level;
     std::string message;
 
-    LogMessage(const std::string& lvl, const std::string& msg)
-        : level(lvl), message(msg) {}
+    LogMessage(const std::string& lvl, const std::string& msg) : level(lvl), message(msg) {}
 };
 
 // Example callback implementations
 class SensorProcessor : public axonvex::core::Callback<SensorData> {
-public:
+  public:
     void callbackPerform(const SensorData data) override {
-        std::cout << "[SensorProcessor] Processing sensor " << data.sensor_id
-                  << " with value " << data.value
-                  << " at " << data.timestamp << std::endl;
+        std::cout << "[SensorProcessor] Processing sensor " << data.sensor_id << " with value "
+                  << data.value << " at " << data.timestamp << std::endl;
 
         // Simulate processing
         if (data.value > 100.0) {
@@ -49,31 +47,31 @@ public:
 };
 
 class DataLogger : public axonvex::core::Callback<SensorData> {
-public:
+  public:
     void callbackPerform(const SensorData data) override {
-        std::cout << "[DataLogger] Logging: " << data.sensor_id
-                  << "," << data.value
-                  << "," << data.timestamp << std::endl;
+        std::cout << "[DataLogger] Logging: " << data.sensor_id << "," << data.value << ","
+                  << data.timestamp << std::endl;
     }
 };
 
 class SimpleLogger : public axonvex::core::Callback<LogMessage> {
-public:
+  public:
     void callbackPerform(const LogMessage data) override {
         std::cout << "[" << data.level << "] " << data.message << std::endl;
     }
 };
 
 class FileLogger : public axonvex::core::Callback<LogMessage> {
-public:
+  public:
     void callbackPerform(const LogMessage data) override {
-        std::cout << "[FileLogger] Writing to file: [" << data.level << "] " << data.message << std::endl;
+        std::cout << "[FileLogger] Writing to file: [" << data.level << "] " << data.message
+                  << std::endl;
     }
 };
 
 // Example of a callback that might throw an exception
 class UnstableProcessor : public axonvex::core::Callback<int> {
-public:
+  public:
     void callbackPerform(const int data) override {
         std::cout << "[UnstableProcessor] Processing: " << data << std::endl;
         if (data == 42) {
@@ -84,7 +82,7 @@ public:
 };
 
 class ReliableProcessor : public axonvex::core::Callback<int> {
-public:
+  public:
     void callbackPerform(const int data) override {
         std::cout << "[ReliableProcessor] Reliably processing: " << data << std::endl;
     }
@@ -138,7 +136,7 @@ void demonstrateKeyedCaller() {
     // Register callbacks with different keys
     logCaller.registerKeyedCallback("INFO", &simpleLogger);
     logCaller.registerKeyedCallback("ERROR", &simpleLogger);
-    logCaller.registerKeyedCallback("ERROR", &fileLogger);  // Multiple callbacks for ERROR
+    logCaller.registerKeyedCallback("ERROR", &fileLogger); // Multiple callbacks for ERROR
     logCaller.registerKeyedCallback("DEBUG", &simpleLogger);
 
     std::cout << "Total registered callbacks: " << logCaller.getTotalCallbackCount() << std::endl;
@@ -194,12 +192,13 @@ void demonstrateExceptionSafety() {
     std::cout << "Exceptions caught: " << exceptions << std::endl;
 
     std::cout << "\nCompare with unsafe calling (this would normally crash):" << std::endl;
-    std::cout << "Using callCallbacksSafe ensures all callbacks run even if some throw." << std::endl;
+    std::cout << "Using callCallbacksSafe ensures all callbacks run even if some throw."
+              << std::endl;
 }
 
 // String callback for numeric keyed demo
 class StringCallbackForDemo : public axonvex::core::Callback<std::string> {
-public:
+  public:
     void callbackPerform(const std::string data) override {
         std::cout << "[StringCallback] Received: " << data << std::endl;
     }
@@ -214,7 +213,7 @@ void demonstrateAdvancedKeyedFeatures() {
     // Register callbacks with numeric keys
     numericKeyCaller.registerKeyedCallback(100, &stringLogger);
     numericKeyCaller.registerKeyedCallback(200, &stringLogger);
-    numericKeyCaller.registerKeyedCallback(100, &stringLogger);  // Duplicate key
+    numericKeyCaller.registerKeyedCallback(100, &stringLogger); // Duplicate key
 
     std::cout << "Registered callbacks for key 100: "
               << numericKeyCaller.getCallbackCountForKey(100) << std::endl;
@@ -239,8 +238,8 @@ void demonstrateAdvancedKeyedFeatures() {
     size_t removed = numericKeyCaller.unregisterAllCallbacksForKey(100);
     std::cout << "Removed " << removed << " callbacks" << std::endl;
 
-    std::cout << "Remaining total callbacks: "
-              << numericKeyCaller.getTotalCallbackCount() << std::endl;
+    std::cout << "Remaining total callbacks: " << numericKeyCaller.getTotalCallbackCount()
+              << std::endl;
 }
 
 int main() {
@@ -254,7 +253,8 @@ int main() {
         demonstrateAdvancedKeyedFeatures();
 
         std::cout << "\n=== Demonstration Complete ===" << std::endl;
-        std::cout << "The callback system provides powerful event-driven capabilities:" << std::endl;
+        std::cout << "The callback system provides powerful event-driven capabilities:"
+                  << std::endl;
         std::cout << "• Basic Caller for simple publisher-subscriber patterns" << std::endl;
         std::cout << "• CallerKeyed for sophisticated event routing" << std::endl;
         std::cout << "• Exception safety with *Safe methods" << std::endl;

@@ -1,14 +1,14 @@
 #pragma once
 
-#include <string>
-#include <vector>
 #include <filesystem>
-#include <optional>
-#include <unordered_map>
-#include <memory>
 #include <functional>
-#include <mutex>
 #include <iostream>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace axonvex::core {
 
@@ -60,46 +60,39 @@ namespace axonvex::core {
  * @endcode
  */
 class Path {
-public:
+  public:
     /**
      * @brief Default directory types for AxonVex applications
      */
     enum class DefaultDir {
-        APP,          ///< Main application directory
-        CONFIG,       ///< Configuration files directory
-        LOG,          ///< Log files directory
-        CACHE,        ///< Cache files directory
-        DATA,         ///< Application data directory
-        TEMP,         ///< Temporary files directory
-        PLUGINS,      ///< Plugin files directory
-        TEMPLATES,    ///< Template files directory
-        BACKUP,       ///< Backup files directory
-        EXPORT        ///< Export files directory
+        APP,       ///< Main application directory
+        CONFIG,    ///< Configuration files directory
+        LOG,       ///< Log files directory
+        CACHE,     ///< Cache files directory
+        DATA,      ///< Application data directory
+        TEMP,      ///< Temporary files directory
+        PLUGINS,   ///< Plugin files directory
+        TEMPLATES, ///< Template files directory
+        BACKUP,    ///< Backup files directory
+        EXPORT     ///< Export files directory
     };
 
     /**
      * @brief Path security validation levels
      */
     enum class SecurityLevel {
-        NONE,         ///< No security validation
-        BASIC,        ///< Basic path traversal protection
-        STRICT,       ///< Strict validation with whitelist
-        PARANOID      ///< Maximum security with extensive checks
+        NONE,    ///< No security validation
+        BASIC,   ///< Basic path traversal protection
+        STRICT,  ///< Strict validation with whitelist
+        PARANOID ///< Maximum security with extensive checks
     };
 
     /**
      * @brief File operation modes for atomic operations
      */
-    enum class FileMode {
-        READ_ONLY,
-        WRITE_ONLY,
-        READ_WRITE,
-        APPEND,
-        CREATE_NEW,
-        TRUNCATE
-    };
+    enum class FileMode { READ_ONLY, WRITE_ONLY, READ_WRITE, APPEND, CREATE_NEW, TRUNCATE };
 
-private:
+  private:
     std::filesystem::path path_;
     static std::unordered_map<DefaultDir, std::filesystem::path> default_dirs_;
     static SecurityLevel default_security_level_;
@@ -111,7 +104,7 @@ private:
     static std::filesystem::path getSystemAppDataDirectory();
     static std::filesystem::path getCurrentWorkingDirectory();
 
-public:
+  public:
     //==========================================================================
     // Construction and Assignment
     //==========================================================================
@@ -604,7 +597,7 @@ public:
      * @param validator Validation function
      */
     static void registerValidator(const std::string& name,
-                                 std::function<bool(const Path&)> validator);
+                                  std::function<bool(const Path&)> validator);
 
     /**
      * @brief Validate path using custom validator
@@ -632,8 +625,7 @@ public:
      * @param subdir Optional subdirectory in config dir
      * @return Path to configuration file
      */
-    static Path createConfigPath(const std::string& config_name,
-                                const std::string& subdir = "");
+    static Path createConfigPath(const std::string& config_name, const std::string& subdir = "");
 
     /**
      * @brief Create log file path
@@ -642,8 +634,7 @@ public:
      * @param subdir Optional subdirectory in log dir
      * @return Path to log file
      */
-    static Path createLogPath(const std::string& log_name,
-                             const std::string& subdir = "");
+    static Path createLogPath(const std::string& log_name, const std::string& subdir = "");
 
     /**
      * @brief Create temporary file path
@@ -653,9 +644,9 @@ public:
      * @return Path to unique temporary file
      */
     static Path createTempPath(const std::string& prefix = "axonvex_",
-                              const std::string& extension = ".tmp");
+                               const std::string& extension = ".tmp");
 
-private:
+  private:
     // Security validation helpers
     bool hasDirectoryTraversal() const;
     bool isInWhitelist() const;
@@ -703,15 +694,15 @@ struct PathHash {
 
 // Hash specialization in std namespace
 namespace std {
-    template<>
-    struct hash<axonvex::core::Path> {
-        std::size_t operator()(const axonvex::core::Path& path) const {
-            return axonvex::core::PathHash{}(path);
-        }
-    };
-}
+template <>
+struct hash<axonvex::core::Path> {
+    std::size_t operator()(const axonvex::core::Path& path) const {
+        return axonvex::core::PathHash{}(path);
+    }
+};
+} // namespace std
 
 // Convenient type alias in main namespace
 namespace axonvex {
-    using Path = core::Path;
+using Path = core::Path;
 }
