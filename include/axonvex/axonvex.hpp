@@ -54,6 +54,14 @@
 // System management and orchestration
 #include <axonvex/core/system.hpp>
 
+// Advanced port system
+#include <axonvex/core/ports.hpp>
+
+// Callback system for event-driven programming
+#include <axonvex/core/callback.hpp>
+#include <axonvex/core/caller.hpp>
+#include <axonvex/core/callerKeyed.hpp>
+
 /**
  * @namespace axonvex
  * @brief Main namespace for the AxonVex real-time framework

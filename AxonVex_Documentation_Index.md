@@ -191,6 +191,30 @@ High-level coordination systems managing complex behaviors:
 - **Error Recovery**: Automatic recovery from transient failures
 - **Data Integrity**: Zero data loss during normal operations
 
+## Core Components Documentation
+
+### 🏛️ [Abstract System Architecture](docs/ABSTRACT_SYSTEM_ARCHITECTURE.md)
+**Template Method pattern for clean separation of framework vs application logic**
+
+- **Abstract Base Class**: Pure virtual method enforces proper architecture implementation
+- **Template Method Pattern**: Consistent initialization flow across all systems
+- **Processing Pipeline**: Create, register, and connect ProcessingUnits with ease  
+- **System Port Exposure**: Clean interface for external system communication
+- **Real-time Scheduling**: Automatic timing constraint management and execution
+- **Performance Monitoring**: Built-in statistics collection for all components
+- **Complete Examples**: Signal processing pipeline with full working code
+
+### 📞 [Callback System](docs/CALLBACK_SYSTEM.md)
+**Event-driven programming framework for decoupled component communication**
+
+- **Callback Interface**: Base interface for implementing event handlers
+- **Basic Caller**: Publisher-subscriber pattern implementation  
+- **Keyed Caller**: Advanced key-based event routing system
+- **Exception Safety**: Robust error handling for real-time systems
+- **Integration Examples**: Real-world usage patterns and best practices
+- **Performance Optimization**: Real-time compatible implementation
+- **Type Safety**: Compile-time type checking for all callback operations
+
 ## Community and Support
 
 ### Development Resources

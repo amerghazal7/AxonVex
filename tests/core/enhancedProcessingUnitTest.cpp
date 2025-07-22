@@ -1,25 +1,25 @@
 /**
- * @file processingUnitTest.cpp
- * @brief Unit tests for Advanced Processing Unit
+ * @file enhancedProcessingUnitTest.cpp
+ * @brief Unit tests for Enhanced Processing Unit
  * @author AxonVex Development Team
- * @version 2.0.0
+ * @version 1.0.0
  * @date 2025
  */
 
 #include <gtest/gtest.h>
-#include <axonvex/core/processingUnit.hpp>
+#include <axonvex/core/enhancedProcessingUnit.hpp>
 #include <string>
 #include <chrono>
 #include <thread>
 
 namespace axonvex::core::test {
 
-// Test implementation of ProcessingUnit
-class TestProcessingUnit : public ProcessingUnit {
+// Test implementation of EnhancedProcessingUnit
+class TestEnhancedProcessingUnit : public EnhancedProcessingUnit {
 public:
-    explicit TestProcessingUnit(const std::string& name) : ProcessingUnit(name) {}
+    explicit TestEnhancedProcessingUnit(const std::string& name) : EnhancedProcessingUnit(name) {}
     
-    void processSync() override {
+    void processSyncDerived() override {
         syncExecutionCount_++;
         lastSyncProcessingTime_ = std::chrono::steady_clock::now();
         
@@ -34,7 +34,7 @@ public:
         }
     }
     
-    void processAsync() override {
+    void processAsyncDerived() override {
         asyncExecutionCount_++;
         
         // Handle custom async commands
@@ -58,12 +58,8 @@ public:
         lastAsyncCommand_.clear();
     }
     
-    void initialize() override {
-        setState(ExecutionState::INITIALIZED);
-    }
-    
     std::string getTypeDescription() override {
-        return "TestProcessingUnit";
+        return "TestEnhancedProcessingUnit";
     }
     
     // Test setup helpers
@@ -80,8 +76,8 @@ public:
     int getProcessingFactor() const { return processingFactor_; }
     const std::string& getLastAsyncCommand() const { return lastAsyncCommand_; }
     
-    InputPort<int>* getTestInputPort() { return inputPort_; }
-    OutputPort<int>* getTestOutputPort() { return outputPort_; }
+    SyncInputPort<int>* getTestInputPort() { return inputPort_; }
+    SyncOutputPort<int>* getTestOutputPort() { return outputPort_; }
     AsyncInputPort<std::string>* getTestAsyncPort() { return customAsyncPort_; }
     
 private:
@@ -93,34 +89,34 @@ private:
     std::chrono::steady_clock::time_point lastSyncProcessingTime_;
     
     // Test ports
-    InputPort<int>* inputPort_ = nullptr;
-    OutputPort<int>* outputPort_ = nullptr;
+    SyncInputPort<int>* inputPort_ = nullptr;
+    SyncOutputPort<int>* outputPort_ = nullptr;
     AsyncInputPort<std::string>* customAsyncPort_ = nullptr;
 };
 
 // Basic functionality tests
-class ProcessingUnitTest : public ::testing::Test {
+class EnhancedProcessingUnitTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        unit = std::make_unique<TestProcessingUnit>("TestUnit");
+        unit = std::make_unique<TestEnhancedProcessingUnit>("TestUnit");
         unit->setBlockUID(1);
         unit->setupPorts();
     }
     
-    std::unique_ptr<TestProcessingUnit> unit;
+    std::unique_ptr<TestEnhancedProcessingUnit> unit;
 };
 
-TEST_F(ProcessingUnitTest, Construction) {
+TEST_F(EnhancedProcessingUnitTest, Construction) {
     EXPECT_EQ(unit->getName(), "TestUnit");
     EXPECT_EQ(unit->getInstanceDescription(), "TestUnit");
     EXPECT_EQ(unit->getBlockUID(), 1);
     EXPECT_TRUE(unit->hasBeenAddedToSystem());
-    EXPECT_EQ(unit->getTypeDescription(), "TestProcessingUnit");
-    EXPECT_EQ(unit->getState(), ExecutionState::UNINITIALIZED);
+    EXPECT_EQ(unit->getTypeDescription(), "TestEnhancedProcessingUnit");
+    EXPECT_EQ(unit->getState(), EnhancedExecutionState::UNINITIALIZED);
     EXPECT_FALSE(unit->isDisabled());
 }
 
-TEST_F(ProcessingUnitTest, BuiltInControlPorts) {
+TEST_F(EnhancedProcessingUnitTest, BuiltInControlPorts) {
     // Test built-in reset port (created automatically)
     auto resetPort = unit->getAsyncInputPort<int>(ControlPorts::RESET);
     EXPECT_NE(resetPort, nullptr);
@@ -132,7 +128,7 @@ TEST_F(ProcessingUnitTest, BuiltInControlPorts) {
     EXPECT_EQ(unit->getAsyncInputPortName(ControlPorts::DISABLE), "Disable");
 }
 
-TEST_F(ProcessingUnitTest, PortCreationAndAccess) {
+TEST_F(EnhancedProcessingUnitTest, PortCreationAndAccess) {
     // Test created ports
     EXPECT_NE(unit->getTestInputPort(), nullptr);
     EXPECT_NE(unit->getTestOutputPort(), nullptr);
@@ -150,7 +146,7 @@ TEST_F(ProcessingUnitTest, PortCreationAndAccess) {
     EXPECT_EQ(unit->getAsyncOutputPorts().size(), 0);
 }
 
-TEST_F(ProcessingUnitTest, PortUIDGeneration) {
+TEST_F(EnhancedProcessingUnitTest, PortUIDGeneration) {
     // Verify port UIDs follow formula
     EXPECT_EQ(unit->getTestInputPort()->getPortUID(), 1 * 256 + 1);
     EXPECT_EQ(unit->getTestOutputPort()->getPortUID(), 1 * 256 + 1);
@@ -163,7 +159,7 @@ TEST_F(ProcessingUnitTest, PortUIDGeneration) {
     EXPECT_EQ(disablePort->getPortUID(), 1 * 256 + ControlPorts::DISABLE);
 }
 
-TEST_F(ProcessingUnitTest, SyncProcessing) {
+TEST_F(EnhancedProcessingUnitTest, SyncProcessing) {
     EXPECT_EQ(unit->getSyncExecutionCount(), 0);
     
     // Process without data - should execute but not process anything
@@ -181,7 +177,7 @@ TEST_F(ProcessingUnitTest, SyncProcessing) {
     // For this test, we're just verifying the processing logic was called
 }
 
-TEST_F(ProcessingUnitTest, AsyncProcessing) {
+TEST_F(EnhancedProcessingUnitTest, AsyncProcessing) {
     EXPECT_EQ(unit->getAsyncExecutionCount(), 0);
     
     // Process without async data
@@ -196,7 +192,7 @@ TEST_F(ProcessingUnitTest, AsyncProcessing) {
     EXPECT_EQ(unit->getProcessingFactor(), 2);
 }
 
-TEST_F(ProcessingUnitTest, BuiltInResetFunctionality) {
+TEST_F(EnhancedProcessingUnitTest, BuiltInResetFunctionality) {
     // Execute some processing first
     unit->processSyncBase();
     unit->processAsyncBase();
@@ -211,11 +207,11 @@ TEST_F(ProcessingUnitTest, BuiltInResetFunctionality) {
     unit->processAsyncBase();
     EXPECT_EQ(unit->getResetCount(), resetCountBefore + 1);
     EXPECT_EQ(unit->getSyncExecutionCount(), 0); // Reset by derived reset()
-    // Note: Async execution count is incremented because processAsyncBase() was called to handle the reset
+    // Note: Async execution count is 1 because processAsyncBase() was called to handle the reset
     EXPECT_GE(unit->getAsyncExecutionCount(), 0);
 }
 
-TEST_F(ProcessingUnitTest, BuiltInDisableFunctionality) {
+TEST_F(EnhancedProcessingUnitTest, BuiltInDisableFunctionality) {
     EXPECT_FALSE(unit->isDisabled());
     
     // Disable via built-in port
@@ -224,7 +220,7 @@ TEST_F(ProcessingUnitTest, BuiltInDisableFunctionality) {
     unit->processAsyncBase();
     
     EXPECT_TRUE(unit->isDisabled());
-    EXPECT_EQ(unit->getState(), ExecutionState::DISABLED);
+    EXPECT_EQ(unit->getState(), EnhancedExecutionState::DISABLED);
     
     // Sync processing should be skipped when disabled
     int syncCountBefore = unit->getSyncExecutionCount();
@@ -235,10 +231,10 @@ TEST_F(ProcessingUnitTest, BuiltInDisableFunctionality) {
             disablePort->update(0); // Zero enables
     unit->processAsyncBase();
     EXPECT_FALSE(unit->isDisabled());
-    EXPECT_EQ(unit->getState(), ExecutionState::RUNNING);
+    EXPECT_EQ(unit->getState(), EnhancedExecutionState::RUNNING);
 }
 
-TEST_F(ProcessingUnitTest, DownSamplingFactor) {
+TEST_F(EnhancedProcessingUnitTest, DownSamplingFactor) {
     EXPECT_EQ(unit->getDownSamplingFactor(), 1); // Default
     
     // Set down-sampling factor
@@ -260,8 +256,8 @@ TEST_F(ProcessingUnitTest, DownSamplingFactor) {
     EXPECT_EQ(unit->getSyncExecutionCount(), syncCountBefore + 2);
 }
 
-TEST_F(ProcessingUnitTest, InheritDownSamplingFactor) {
-    auto sourceUnit = std::make_unique<TestProcessingUnit>("SourceUnit");
+TEST_F(EnhancedProcessingUnitTest, InheritDownSamplingFactor) {
+    auto sourceUnit = std::make_unique<TestEnhancedProcessingUnit>("SourceUnit");
     sourceUnit->setDownSamplingFactor(5);
     
     unit->inheritDownSamplingFactor(sourceUnit.get());
@@ -272,7 +268,7 @@ TEST_F(ProcessingUnitTest, InheritDownSamplingFactor) {
     EXPECT_EQ(unit->getDownSamplingFactor(), 5); // Should remain unchanged
 }
 
-TEST_F(ProcessingUnitTest, SamplingPeriod) {
+TEST_F(EnhancedProcessingUnitTest, SamplingPeriod) {
     auto defaultPeriod = unit->getBlockSamplingPeriod();
     EXPECT_EQ(defaultPeriod, std::chrono::milliseconds(10)); // Default
     
@@ -281,7 +277,7 @@ TEST_F(ProcessingUnitTest, SamplingPeriod) {
     EXPECT_EQ(unit->getBlockSamplingPeriod(), newPeriod);
 }
 
-TEST_F(ProcessingUnitTest, URLManagement) {
+TEST_F(EnhancedProcessingUnitTest, URLManagement) {
     EXPECT_TRUE(unit->getRelativeURL().empty());
     EXPECT_TRUE(unit->getAbsoluteURL().empty());
     
@@ -290,8 +286,8 @@ TEST_F(ProcessingUnitTest, URLManagement) {
     EXPECT_EQ(unit->getAbsoluteURL(), "test/path/unit");
 }
 
-TEST_F(ProcessingUnitTest, ParentBlockHierarchy) {
-    auto parentUnit = std::make_unique<TestProcessingUnit>("ParentUnit");
+TEST_F(EnhancedProcessingUnitTest, ParentBlockHierarchy) {
+    auto parentUnit = std::make_unique<TestEnhancedProcessingUnit>("ParentUnit");
     
     EXPECT_EQ(unit->getParentBlock(), nullptr);
     
@@ -299,14 +295,14 @@ TEST_F(ProcessingUnitTest, ParentBlockHierarchy) {
     EXPECT_EQ(unit->getParentBlock(), parentUnit.get());
 }
 
-TEST_F(ProcessingUnitTest, InstanceDescription) {
+TEST_F(EnhancedProcessingUnitTest, InstanceDescription) {
     EXPECT_EQ(unit->getInstanceDescription(), "TestUnit");
     
     unit->updateInstanceDescription("Updated Test Description");
     EXPECT_EQ(unit->getInstanceDescription(), "Updated Test Description");
 }
 
-TEST_F(ProcessingUnitTest, ThreadSafety) {
+TEST_F(EnhancedProcessingUnitTest, ThreadSafety) {
     // Test thread safety setting for all ports
     unit->setPortsThreadSafe(true);
     EXPECT_TRUE(unit->getTestInputPort()->isThreadSafe());
@@ -319,7 +315,7 @@ TEST_F(ProcessingUnitTest, ThreadSafety) {
     EXPECT_FALSE(unit->getTestAsyncPort()->isThreadSafe());
 }
 
-TEST_F(ProcessingUnitTest, ResetFunctionality) {
+TEST_F(EnhancedProcessingUnitTest, ResetFunctionality) {
     // Set up some state
     unit->getTestInputPort()->writeData(42);
             unit->getTestAsyncPort()->update("MULTIPLY_3");
@@ -347,10 +343,10 @@ TEST_F(ProcessingUnitTest, ResetFunctionality) {
             EXPECT_FALSE(unit->getTestAsyncPort()->wasUpdated());
     EXPECT_EQ(unit->getSyncExecutionCount(), 0);
     EXPECT_EQ(unit->getAsyncExecutionCount(), 0);
-    EXPECT_EQ(unit->getState(), ExecutionState::INITIALIZED);
+    EXPECT_EQ(unit->getState(), EnhancedExecutionState::INITIALIZED);
 }
 
-TEST_F(ProcessingUnitTest, ExecutionStatistics) {
+TEST_F(EnhancedProcessingUnitTest, ExecutionStatistics) {
     auto stats = unit->getExecutionStats();
     EXPECT_EQ(stats.syncExecutionCount, 0);
     EXPECT_EQ(stats.asyncExecutionCount, 0);
@@ -374,25 +370,7 @@ TEST_F(ProcessingUnitTest, ExecutionStatistics) {
     EXPECT_EQ(stats.asyncExecutionCount, 0);
 }
 
-TEST_F(ProcessingUnitTest, PerformanceMetricsLegacy) {
-    // Test legacy performance metrics interface
-    auto metrics = unit->getPerformanceMetrics();
-    EXPECT_EQ(metrics.executionCount, 0);
-    
-    // Execute some processing
-    unit->processSyncBase();
-    unit->processAsyncBase();
-    
-    metrics = unit->getPerformanceMetrics();
-    EXPECT_EQ(metrics.executionCount, 2); // 1 sync + 1 async
-    
-    // Reset legacy metrics
-    unit->resetPerformanceMetrics();
-    metrics = unit->getPerformanceMetrics();
-    EXPECT_EQ(metrics.executionCount, 0);
-}
-
-TEST_F(ProcessingUnitTest, InvalidDownSamplingFactor) {
+TEST_F(EnhancedProcessingUnitTest, InvalidDownSamplingFactor) {
     EXPECT_THROW(unit->setDownSamplingFactor(0), std::invalid_argument);
     EXPECT_THROW(unit->setDownSamplingFactor(-1), std::invalid_argument);
     
@@ -405,9 +383,9 @@ TEST_F(ProcessingUnitTest, InvalidDownSamplingFactor) {
 class MultiUnitIntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        producer = std::make_unique<TestProcessingUnit>("Producer");
-        processor = std::make_unique<TestProcessingUnit>("Processor");
-        consumer = std::make_unique<TestProcessingUnit>("Consumer");
+        producer = std::make_unique<TestEnhancedProcessingUnit>("Producer");
+        processor = std::make_unique<TestEnhancedProcessingUnit>("Processor");
+        consumer = std::make_unique<TestEnhancedProcessingUnit>("Consumer");
         
         producer->setBlockUID(1);
         processor->setBlockUID(2);
@@ -422,9 +400,9 @@ protected:
         processor->getTestOutputPort()->connect(consumer->getTestInputPort());
     }
     
-    std::unique_ptr<TestProcessingUnit> producer;
-    std::unique_ptr<TestProcessingUnit> processor;
-    std::unique_ptr<TestProcessingUnit> consumer;
+    std::unique_ptr<TestEnhancedProcessingUnit> producer;
+    std::unique_ptr<TestEnhancedProcessingUnit> processor;
+    std::unique_ptr<TestEnhancedProcessingUnit> consumer;
 };
 
 TEST_F(MultiUnitIntegrationTest, DataPipeline) {

@@ -248,7 +248,25 @@ public:
      * @return true if initialization successful
      */
     bool initialize(const Configuration& config);
-    
+
+protected:
+    /**
+     * @brief Pure virtual method for initializing the processing block layout
+     * 
+     * This method must be implemented by derived classes to define their specific
+     * system architecture. It should contain all logic for:
+     * - Creating and registering ProcessingUnits
+     * - Connecting ProcessingUnits together via their ports
+     * - Assigning system input/output ports from ProcessingUnit ports
+     * 
+     * This method is called during system initialization after core components
+     * are set up but before the system transitions to INITIALIZED state.
+     * 
+     * @return true if block layout initialization successful, false otherwise
+     */
+    virtual bool initializeBlocksLayout() = 0;
+
+public:
     /**
      * @brief Start the system and all registered components
      * 

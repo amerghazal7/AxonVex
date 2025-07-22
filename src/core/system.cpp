@@ -207,6 +207,16 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             return false;
         }
         
+        // Initialize the processing blocks layout (implemented by derived classes)
+        if (!initializeBlocksLayout()) {
+            if (logger_) {
+                logger_->error("System", "Block layout initialization failed");
+            }
+            logStateTransition(SystemState::INITIALIZING, SystemState::ERROR);
+            cleanupComponents();
+            return false;
+        }
+        
         // Start monitoring if enabled
         if (systemConfig_.enablePerformanceMonitoring) {
             monitoringEnabled_.store(true);
@@ -692,19 +702,30 @@ bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName,
         }
     }
     
-    // Get the port from the ProcessingUnit
-    BasePort* port = unit->getPort(unitPortId);
+    // Get the port from the ProcessingUnit (check input ports)
+    BasePort* port = nullptr;
+    
+    // Check input ports first (most likely for system input assignment)
+    auto& inputPorts = unit->getInputPorts();
+    auto it = inputPorts.find(unitPortId);
+    if (it != inputPorts.end()) {
+        port = it->second;
+    } else {
+        // Also check async input ports
+        auto& asyncInputPorts = unit->getAsyncInputPorts();
+        auto asyncIt = asyncInputPorts.find(unitPortId);
+        if (asyncIt != asyncInputPorts.end()) {
+            port = asyncIt->second;
+        }
+    }
+    
     if (!port) {
         if (logger_) {
-            logger_->warning("System", "Port " + std::to_string(unitPortId) + 
+            logger_->warning("System", "Input port " + std::to_string(unitPortId) + 
                            " not found in ProcessingUnit " + unit->getName());
         }
         return false;
     }
-    
-    // Verify it's an input port (by checking if it's not an output port)
-    // This is a simple heuristic - in a real implementation you might want
-    // to add type information to BasePort
     
     std::lock_guard<std::mutex> lock(systemPortsMutex_);
     
@@ -762,11 +783,26 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName,
         }
     }
     
-    // Get the port from the ProcessingUnit
-    BasePort* port = unit->getPort(unitPortId);
+    // Get the port from the ProcessingUnit (check output ports)
+    BasePort* port = nullptr;
+    
+    // Check output ports first (most likely for system output assignment)
+    auto& outputPorts = unit->getOutputPorts();
+    auto it = outputPorts.find(unitPortId);
+    if (it != outputPorts.end()) {
+        port = it->second;
+    } else {
+        // Also check async output ports
+        auto& asyncOutputPorts = unit->getAsyncOutputPorts();
+        auto asyncIt = asyncOutputPorts.find(unitPortId);
+        if (asyncIt != asyncOutputPorts.end()) {
+            port = asyncIt->second;
+        }
+    }
+    
     if (!port) {
         if (logger_) {
-            logger_->warning("System", "Port " + std::to_string(unitPortId) + 
+            logger_->warning("System", "Output port " + std::to_string(unitPortId) + 
                            " not found in ProcessingUnit " + unit->getName());
         }
         return false;

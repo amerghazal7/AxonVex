@@ -1,437 +1,729 @@
+/**
+ * @file processingUnit.hpp
+ * @brief Advanced Processing Unit for AxonVex Framework
+ * @author AxonVex Development Team
+ * @version 2.0.0
+ * @date 2025
+ * 
+ * @copyright Copyright (c) 2025 AxonVex Framework. All rights reserved.
+ * 
+ * Advanced ProcessingUnit Block architecture with
+ * integer-indexed ports, dual sync/async processing, and built-in
+ * control functionality.
+ */
+
 #pragma once
 
 #include <memory>
 #include <string>
+#include <map>
 #include <vector>
 #include <atomic>
-#include <functional>
-#include <typeinfo>
-#include <unordered_map>
-#include <chrono>
-#include <future>
 #include <mutex>
-#include <algorithm>
+#include <functional>
+#include <chrono>
+#include <filesystem>
+#include <stdexcept>
+
+#include "ports.hpp"
 #include <axonvex/core/precisionTimer.hpp>
-#include <axonvex/core/threadSafeQueue.hpp>
-#include <axonvex/core/memoryPool.hpp>
 
 namespace axonvex::core {
 
 // Forward declarations
-class ProcessingUnit;
-class TimingController;
-class PerformanceMonitor;
-class ConfigurationManager;
+class AxonVexSystem;
 
-// Performance metrics structure
-struct PerformanceMetrics {
-    std::chrono::microseconds executionTime{0};
-    std::chrono::microseconds averageExecutionTime{0};
-    std::chrono::microseconds maxExecutionTime{0};
-    std::chrono::microseconds minExecutionTime{std::chrono::microseconds::max()};
-    uint64_t executionCount{0};
-    uint64_t missedDeadlines{0};
-    double cpuUtilization{0.0};
-    double memoryUsage{0.0};
-    double throughput{0.0}; // data items per second
-    
-    void reset() {
-        executionTime = std::chrono::microseconds{0};
-        averageExecutionTime = std::chrono::microseconds{0};
-        maxExecutionTime = std::chrono::microseconds{0};
-        minExecutionTime = std::chrono::microseconds::max();
-        executionCount = 0;
-        missedDeadlines = 0;
-        cpuUtilization = 0.0;
-        memoryUsage = 0.0;
-        throughput = 0.0;
-    }
-};
-
-// Process priority levels
-enum class ProcessPriority {
-    LOW = 0,
-    NORMAL = 1,
-    HIGH = 2,
-    REAL_TIME = 3
-};
-
-// Execution state of processing unit
+/**
+ * @brief Execution state for processing units
+ */
 enum class ExecutionState {
-    UNINITIALIZED,
+    UNINITIALIZED = 0,
     INITIALIZED,
     RUNNING,
-    PAUSED,
-    STOPPED,
+    DISABLED,
     ERROR
 };
 
-// Base port class for type erasure
-class BasePort {
-public:
-    explicit BasePort(int id, const std::string& name, ProcessingUnit* owner);
-    virtual ~BasePort() = default;
-    
-    int getId() const { return id_; }
-    const std::string& getName() const { return name_; }
-    ProcessingUnit* getOwner() const { return owner_; }
-    
-    virtual std::string getDataTypeName() const = 0;
-    virtual bool hasNewData() const = 0;
-    virtual void clearNewDataFlag() = 0;
-    
-protected:
-    int id_;
-    std::string name_;
-    ProcessingUnit* owner_;
-};
+/**
+ * @brief Built-in control port indices (reserved range 100-199)
+ */
+namespace ControlPorts {
+    constexpr int RESET = 100;
+    constexpr int DISABLE = 101;
+    constexpr int ENABLE = 102;
+}
 
-// Input port template class
-template<typename T>
-class InputPort : public BasePort {
-public:
-    using ValidationCallback = std::function<bool(const T&)>;
-    using DataCallback = std::function<void(const T&)>;
-    
-    explicit InputPort(int id, const std::string& name, ProcessingUnit* owner);
-    ~InputPort() override = default;
-    
-    // Data access
-    T read() const;
-    bool hasNewData() const override;
-    void clearNewDataFlag() override;
-    
-    // Validation and callbacks
-    void setValidationCallback(ValidationCallback callback);
-    void setDataCallback(DataCallback callback);
-    
-    // Connection management
-    void writeData(const T& data);
-    
-    // Port information
-    std::string getDataTypeName() const override { return typeid(T).name(); }
-    
-    // Statistics
-    uint64_t getTotalMessages() const { return totalMessages_; }
-    uint64_t getValidMessages() const { return validMessages_; }
-    uint64_t getInvalidMessages() const { return invalidMessages_; }
-    
-private:
-    mutable std::mutex dataMutex_;
-    T data_;
-    std::atomic<bool> hasNewData_{false};
-    ValidationCallback validationCallback_;
-    DataCallback dataCallback_;
-    
-    // Statistics
-    std::atomic<uint64_t> totalMessages_{0};
-    std::atomic<uint64_t> validMessages_{0};
-    std::atomic<uint64_t> invalidMessages_{0};
-};
-
-// Output port template class
-template<typename T>
-class OutputPort : public BasePort {
-public:
-    using OutputCallback = std::function<void(const T&)>;
-    
-    explicit OutputPort(int id, const std::string& name, ProcessingUnit* owner);
-    ~OutputPort() override = default;
-    
-    // Data output
-    void write(const T& data);
-    
-    // Connection management
-    void connect(InputPort<T>* inputPort);
-    void disconnect(InputPort<T>* inputPort);
-    void disconnectAll();
-    bool isConnected() const { return !connectedPorts_.empty(); }
-    size_t getConnectionCount() const { return connectedPorts_.size(); }
-    
-    // Callbacks
-    void setOutputCallback(OutputCallback callback);
-    
-    // Port information
-    std::string getDataTypeName() const override { return typeid(T).name(); }
-    bool hasNewData() const override { return false; } // Output ports don't have new data flag
-    void clearNewDataFlag() override {} // No-op for output ports
-    
-    // Statistics
-    uint64_t getTotalMessages() const { return totalMessages_; }
-    
-private:
-    std::mutex connectionMutex_;
-    std::vector<InputPort<T>*> connectedPorts_;
-    OutputCallback outputCallback_;
-    
-    // Statistics
-    std::atomic<uint64_t> totalMessages_{0};
-};
-
-// Processing unit base class
+/**
+ * @brief Advanced Processing Unit
+ * 
+ * Key improvements over basic ProcessingUnit:
+ * - Integer-indexed ports for O(1) lookup performance
+ * - Separate sync and async processing methods
+ * - Built-in reset and disable functionality
+ * - Down-sampling factor with automatic propagation
+ * - Hierarchical URL/URI addressing system
+ * - Bridge port support for complex routing
+ */
 class ProcessingUnit {
 public:
     explicit ProcessingUnit(const std::string& name);
     virtual ~ProcessingUnit();
     
-    // Core execution interface - to be implemented by derived classes
+    // Non-copyable, movable
+    ProcessingUnit(const ProcessingUnit&) = delete;
+    ProcessingUnit& operator=(const ProcessingUnit&) = delete;
+    ProcessingUnit(ProcessingUnit&&) = default;
+    ProcessingUnit& operator=(ProcessingUnit&&) = default;
+    
+    // =================================================================
+    // CORE PROCESSING INTERFACE
+    // =================================================================
+    
+    /**
+     * @brief Pure virtual synchronous processing method
+     * 
+     * Called at regular intervals based on system timing.
+     * Should be deterministic and real-time safe.
+     */
     virtual void processSync() = 0;
+    
+    /**
+     * @brief Pure virtual asynchronous processing method
+     * 
+     * Called when async input ports receive data.
+     * Used for event-driven processing and control signals.
+     */
     virtual void processAsync() = 0;
+    
+    /**
+     * @brief Pure virtual reset method
+     * 
+     * Called to reset the processing unit to initial state.
+     * Must be implemented by derived classes.
+     */
     virtual void reset() = 0;
+    
+    /**
+     * @brief Pure virtual initialization method
+     * 
+     * Called once during system initialization.
+     * Must be implemented by derived classes.
+     */
     virtual void initialize() = 0;
+    
+    /**
+     * @brief Virtual finalization method
+     * 
+     * Called during cleanup.
+     * Override to perform custom cleanup.
+     */
     virtual void finalize() {} // Optional cleanup
     
-    // Lifecycle management
-    ExecutionState getState() const { return state_; }
+    /**
+     * @brief Get type description for debugging/visualization
+     */
+    virtual std::string getTypeDescription() = 0;
+    
+    // =================================================================
+    // BASE PROCESSING METHODS (internal use)
+    // =================================================================
+    
+    /**
+     * @brief Base synchronous processing with down-sampling
+     * 
+     * Handles down-sampling counter and calls processSync()
+     */
+    void processSyncBase();
+    
+    /**
+     * @brief Base asynchronous processing with built-in controls
+     * 
+     * Handles reset/disable ports and calls processAsync()
+     */
+    void processAsyncBase();
+    
+    // =================================================================
+    // PORT MANAGEMENT
+    // =================================================================
+    
+    /**
+     * @brief Create synchronous input port
+     * 
+     * @param idx Integer index for the port (must be unique)
+     * @param name Descriptive name for the port
+     * @return Pointer to created input port
+     */
+    template<typename T>
+    InputPort<T>* createInputPort(int idx, const std::string& name);
+    
+    /**
+     * @brief Create synchronous output port
+     * 
+     * @param idx Integer index for the port (must be unique)
+     * @param name Descriptive name for the port
+     * @return Pointer to created output port
+     */
+    template<typename T>
+    OutputPort<T>* createOutputPort(int idx, const std::string& name);
+    
+    /**
+     * @brief Create asynchronous input port
+     * 
+     * @param idx Integer index for the port (must be unique)
+     * @param name Descriptive name for the port
+     * @return Pointer to created async input port
+     */
+    template<typename T>
+    AsyncInputPort<T>* createAsyncInputPort(int idx, const std::string& name);
+    
+    /**
+     * @brief Create asynchronous output port
+     * 
+     * @param idx Integer index for the port (must be unique)
+     * @param name Descriptive name for the port
+     * @return Pointer to created async output port
+     */
+    template<typename T>
+    AsyncOutputPort<T>* createAsyncOutputPort(int idx, const std::string& name);
+    
+    /**
+     * @brief Get synchronous input port by index
+     * 
+     * @param idx Port index
+     * @return Pointer to input port or nullptr if not found
+     */
+    template<typename T>
+    InputPort<T>* getInputPort(int idx);
+    
+    /**
+     * @brief Get synchronous input port (default - single port behavior)
+     * 
+     * @return Pointer to the single input port if only one exists
+     * @throws std::runtime_error if multiple ports exist
+     */
+    template<typename T>
+    InputPort<T>* getInputPort();
+    
+    /**
+     * @brief Get synchronous output port by index
+     */
+    template<typename T>
+    OutputPort<T>* getOutputPort(int idx);
+    
+    /**
+     * @brief Get synchronous output port (default - single port behavior)
+     */
+    template<typename T>
+    OutputPort<T>* getOutputPort();
+    
+    /**
+     * @brief Get asynchronous input port by index
+     */
+    template<typename T>
+    AsyncInputPort<T>* getAsyncInputPort(int idx);
+    
+    /**
+     * @brief Get asynchronous input port (default - single port behavior)
+     */
+    template<typename T>
+    AsyncInputPort<T>* getAsyncInputPort();
+    
+    /**
+     * @brief Get asynchronous output port by index
+     */
+    template<typename T>
+    AsyncOutputPort<T>* getAsyncOutputPort(int idx);
+    
+    /**
+     * @brief Get asynchronous output port (default - single port behavior)
+     */
+    template<typename T>
+    AsyncOutputPort<T>* getAsyncOutputPort();
+    
+    // Port name access
+    std::string getInputPortName(int idx) const;
+    std::string getOutputPortName(int idx) const;
+    std::string getAsyncInputPortName(int idx) const;
+    std::string getAsyncOutputPortName(int idx) const;
+    
+    // Port collection access
+    const std::map<int, BasePort*>& getInputPorts() const { return inputPorts_; }
+    const std::map<int, BasePort*>& getOutputPorts() const { return outputPorts_; }
+    const std::map<int, BasePort*>& getAsyncInputPorts() const { return asyncInputPorts_; }
+    const std::map<int, BasePort*>& getAsyncOutputPorts() const { return asyncOutputPorts_; }
+    
+    // =================================================================
+    // DOWN-SAMPLING CONTROL
+    // =================================================================
+    
+    /**
+     * @brief Set down-sampling factor
+     * 
+     * Controls how often processSync() is called relative to
+     * the base system frequency.
+     * 
+     * @param factor Down-sampling factor (1 = every cycle, 2 = every other cycle, etc.)
+     */
+    void setDownSamplingFactor(int factor);
+    
+    /**
+     * @brief Get current down-sampling factor
+     */
+    int getDownSamplingFactor() const noexcept { return downSamplingFactor_; }
+    
+    /**
+     * @brief Inherit down-sampling factor from another processing unit
+     * 
+     * Used during connection to propagate sampling rates through the system.
+     * 
+     * @param source Source processing unit to inherit from
+     */
+    void inheritDownSamplingFactor(const ProcessingUnit* source);
+    
+    /**
+     * @brief Set block sampling period
+     */
+    void setBlockSamplingPeriod(std::chrono::microseconds period);
+    
+    /**
+     * @brief Get block sampling period
+     */
+    std::chrono::microseconds getBlockSamplingPeriod() const noexcept { return samplingPeriod_; }
+    
+    // =================================================================
+    // UNIQUE ID MANAGEMENT
+    // =================================================================
+    
+    /**
+     * @brief Get unique block ID
+     */
+    uint32_t getBlockUID() const noexcept { return blockUID_; }
+    
+    /**
+     * @brief Set unique block ID (called by system)
+     */
+    void setBlockUID(uint32_t uid);
+    
+    /**
+     * @brief Check if block has been added to a system
+     */
+    bool hasBeenAddedToSystem() const noexcept { return hasBeenAddedToSystem_; }
+    
+    // =================================================================
+    // HIERARCHICAL ADDRESSING
+    // =================================================================
+    
+    /**
+     * @brief Set URL/URI for hierarchical addressing
+     */
+    void setURL(const std::string& url);
+    
+    /**
+     * @brief Get relative URL
+     */
+    std::filesystem::path getRelativeURL() const { return relativeURL_; }
+    
+    /**
+     * @brief Get absolute URL
+     */
+    std::filesystem::path getAbsoluteURL() const { return absoluteURL_; }
+    
+    /**
+     * @brief Set parent block for hierarchical systems
+     */
+    void setParentBlock(ProcessingUnit* parent) { parentBlock_ = parent; }
+    
+    /**
+     * @brief Get parent block
+     */
+    ProcessingUnit* getParentBlock() const { return parentBlock_; }
+    
+    // =================================================================
+    // STATE MANAGEMENT
+    // =================================================================
+    
+    /**
+     * @brief Get current execution state
+     */
+    ExecutionState getState() const noexcept { return state_.load(); }
+    
+    /**
+     * @brief Check if unit is initialized
+     */
     bool isInitialized() const { return state_ != ExecutionState::UNINITIALIZED; }
+    
+    /**
+     * @brief Check if unit is running
+     */
     bool isRunning() const { return state_ == ExecutionState::RUNNING; }
     
-    // Port management
-    template<typename T>
-    InputPort<T>* createInputPort(int id, const std::string& name);
+    /**
+     * @brief Enable/disable the processing unit
+     */
+    void setDisabled(bool disabled);
     
-    template<typename T>
-    OutputPort<T>* createOutputPort(int id, const std::string& name);
+    /**
+     * @brief Check if processing unit is disabled
+     */
+    bool isDisabled() const noexcept { return isDisabled_.load(); }
     
-    BasePort* getPort(int id) const;
-    BasePort* getPort(const std::string& name) const;
-    std::vector<BasePort*> getAllPorts() const;
-    // Note: Type-erased port access would require a more sophisticated type registry
-    // For now, use getAllPorts() and cast as needed, or use port names/IDs
+    /**
+     * @brief Reset the processing unit
+     */
+    void resetBlock();
     
-    // Performance monitoring
+    /**
+     * @brief Reset all ports
+     */
+    void resetPorts();
+    
+    /**
+     * @brief Set thread safety for all ports
+     */
+    void setPortsThreadSafe(bool threadSafe);
+    
+    // =================================================================
+    // IDENTIFICATION AND DESCRIPTION
+    // =================================================================
+    
+    /**
+     * @brief Get processing unit name
+     */
+    const std::string& getName() const noexcept { return name_; }
+    
+    /**
+     * @brief Update instance description
+     */
+    void updateInstanceDescription(const std::string& description);
+    
+    /**
+     * @brief Get instance description
+     */
+    const std::string& getInstanceDescription() const noexcept { return instanceDescription_; }
+    
+    // =================================================================
+    // PERFORMANCE MONITORING
+    // =================================================================
+    
+    /**
+     * @brief Get execution statistics
+     */
+    struct ExecutionStats {
+        uint64_t syncExecutionCount{0};
+        uint64_t asyncExecutionCount{0};
+        std::chrono::microseconds totalSyncTime{0};
+        std::chrono::microseconds totalAsyncTime{0};
+        std::chrono::microseconds avgSyncTime{0};
+        std::chrono::microseconds avgAsyncTime{0};
+        std::chrono::microseconds maxSyncTime{0};
+        std::chrono::microseconds maxAsyncTime{0};
+    };
+    
+    ExecutionStats getExecutionStats() const;
+    void resetExecutionStats();
+    
+    // Performance metrics (legacy compatibility)
+    struct PerformanceMetrics {
+        std::chrono::microseconds executionTime{0};
+        std::chrono::microseconds averageExecutionTime{0};
+        std::chrono::microseconds maxExecutionTime{0};
+        std::chrono::microseconds minExecutionTime{std::chrono::microseconds::max()};
+        uint64_t executionCount{0};
+        uint64_t missedDeadlines{0};
+        double cpuUtilization{0.0};
+        double memoryUsage{0.0};
+        double throughput{0.0}; // data items per second
+        
+        void reset() {
+            executionTime = std::chrono::microseconds{0};
+            averageExecutionTime = std::chrono::microseconds{0};
+            maxExecutionTime = std::chrono::microseconds{0};
+            minExecutionTime = std::chrono::microseconds::max();
+            executionCount = 0;
+            missedDeadlines = 0;
+            cpuUtilization = 0.0;
+            memoryUsage = 0.0;
+            throughput = 0.0;
+        }
+    };
+    
     PerformanceMetrics getPerformanceMetrics() const;
     void resetPerformanceMetrics();
     
-    // Configuration
-    const std::string& getName() const { return name_; }
-    void setProcessPriority(ProcessPriority priority) { priority_ = priority; }
-    ProcessPriority getProcessPriority() const { return priority_; }
+    // =================================================================
+    // EXECUTION TIMING
+    // =================================================================
     
-    // Execution timing
     void setExecutionPeriod(std::chrono::microseconds period) { executionPeriod_ = period; }
     std::chrono::microseconds getExecutionPeriod() const { return executionPeriod_; }
     
-    // Error handling
+    // =================================================================
+    // ERROR HANDLING
+    // =================================================================
+    
     bool hasError() const { return state_ == ExecutionState::ERROR; }
     const std::string& getLastError() const { return lastError_; }
     
-    // Debug and diagnostics
+    // =================================================================
+    // DEBUG AND DIAGNOSTICS
+    // =================================================================
+    
     void setDebugMode(bool enable) { debugMode_ = enable; }
     bool isDebugMode() const { return debugMode_; }
-    
+
 protected:
     // Core utility members for real-time performance
-    // High-precision timer for profiling processing steps
     mutable PrecisionTimer executionTimer_{PrecisionTimer::DEFAULT_MAX_SAMPLES};
-    // Thread-safe queue for input/output buffering (optional, can be used by derived classes or ports)
-    // Example: ThreadSafeQueue<std::vector<uint8_t>> inputQueue_;
-    // Example: ThreadSafeQueue<std::vector<uint8_t>> outputQueue_;
-    // For generic use, leave as void* or template in derived classes
-    // Memory pool for real-time safe temporary allocations
-    // Example: MemoryPool<std::vector<uint8_t>> tempBufferPool_;
-    // These can be initialized in derived classes as needed
-    // Usage hooks:
-    // - Use executionTimer_ to time processSync/processAsync
-    // - Use ThreadSafeQueue for port or internal buffering
-    // - Use MemoryPool for temporary object/buffer allocation
-    // Helper methods for derived classes
-    void setState(ExecutionState state) { state_ = state; }
-    void setError(const std::string& error);
-    void updatePerformanceMetrics(std::chrono::microseconds executionTime);
     
-    // System integration
-    TimingController* getTimingController() const { return timingController_; }
-    PerformanceMonitor* getPerformanceMonitor() const { return performanceMonitor_; }
-    ConfigurationManager* getConfigurationManager() const { return configManager_; }
-    
-    // Allow system to set these
+    // Allow system to access protected members
     friend class AxonVexSystem;
-    void setTimingController(TimingController* controller) { timingController_ = controller; }
-    void setPerformanceMonitor(PerformanceMonitor* monitor) { performanceMonitor_ = monitor; }
-    void setConfigurationManager(ConfigurationManager* manager) { configManager_ = manager; }
+    
+    // State management
+    void setState(ExecutionState state) { state_.store(state); }
+    void setError(const std::string& error);
+    
+    // Performance tracking
+    void updateSyncExecutionStats(std::chrono::microseconds executionTime);
+    void updateAsyncExecutionStats(std::chrono::microseconds executionTime);
     
 private:
+    // Basic information
     std::string name_;
+    std::string instanceDescription_;
+    uint32_t blockUID_{0};
+    bool hasBeenAddedToSystem_{false};
+    
+    // State management
     std::atomic<ExecutionState> state_{ExecutionState::UNINITIALIZED};
-    ProcessPriority priority_{ProcessPriority::NORMAL};
-    std::chrono::microseconds executionPeriod_{std::chrono::milliseconds{10}}; // Default 10ms
-    
-    // Ports
-    mutable std::mutex portsMutex_;
-    std::unordered_map<int, std::unique_ptr<BasePort>> portsById_;
-    std::unordered_map<std::string, BasePort*> portsByName_;
-    
-    // Performance metrics
-    mutable std::mutex metricsMutex_;
-    PerformanceMetrics metrics_;
-    
-    // Error handling
+    std::atomic<bool> isDisabled_{false};
     std::string lastError_;
     bool debugMode_{false};
     
-    // System integration
-    TimingController* timingController_{nullptr};
-    PerformanceMonitor* performanceMonitor_{nullptr};
-    ConfigurationManager* configManager_{nullptr};
+    // Execution timing
+    std::chrono::microseconds executionPeriod_{std::chrono::milliseconds(10)};
+    
+    // Down-sampling
+    int downSamplingFactor_{1};
+    int intraSampleCounter_{0};
+    std::chrono::microseconds samplingPeriod_{std::chrono::milliseconds(10)};
+    
+    // Hierarchical addressing
+    std::filesystem::path relativeURL_;
+    std::filesystem::path absoluteURL_;
+    ProcessingUnit* parentBlock_{nullptr};
+    bool hasURLBeenSet_{false};
+    
+    // Port management
+    mutable std::mutex portsMutex_;
+    std::map<int, BasePort*> inputPorts_;
+    std::map<int, BasePort*> outputPorts_;
+    std::map<int, BasePort*> asyncInputPorts_;
+    std::map<int, BasePort*> asyncOutputPorts_;
+    
+    // Port name mappings
+    std::map<int, std::string> inputPortNames_;
+    std::map<int, std::string> outputPortNames_;
+    std::map<int, std::string> asyncInputPortNames_;
+    std::map<int, std::string> asyncOutputPortNames_;
+    
+    // Built-in control ports
+    AsyncInputPort<int>* resetPort_{nullptr};
+    AsyncInputPort<int>* disablePort_{nullptr};
+    
+    // Performance statistics
+    mutable std::mutex statsMutex_;
+    ExecutionStats stats_;
+    
+    // Port ownership (for automatic cleanup)
+    std::vector<std::unique_ptr<BasePort>> ownedPorts_;
 };
 
 // Template implementations
 
 template<typename T>
-InputPort<T>::InputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, owner) {
-}
-
-template<typename T>
-T InputPort<T>::read() const {
-    std::lock_guard<std::mutex> lock(dataMutex_);
-    return data_;
-}
-
-template<typename T>
-bool InputPort<T>::hasNewData() const {
-    return hasNewData_.load();
-}
-
-template<typename T>
-void InputPort<T>::clearNewDataFlag() {
-    hasNewData_.store(false);
-}
-
-template<typename T>
-void InputPort<T>::setValidationCallback(ValidationCallback callback) {
-    validationCallback_ = std::move(callback);
-}
-
-template<typename T>
-void InputPort<T>::setDataCallback(DataCallback callback) {
-    dataCallback_ = std::move(callback);
-}
-
-template<typename T>
-void InputPort<T>::writeData(const T& data) {
-    totalMessages_++;
+InputPort<T>* ProcessingUnit::createInputPort(int idx, const std::string& name) {
+    std::lock_guard<std::mutex> lock(portsMutex_);
     
-    // Validate data if callback is set
-    if (validationCallback_ && !validationCallback_(data)) {
-        invalidMessages_++;
-        return;
+    // Check if port with this index already exists
+    if (inputPorts_.find(idx) != inputPorts_.end()) {
+        throw std::runtime_error("Input port with index " + std::to_string(idx) + " already exists");
     }
     
-    validMessages_++;
+    // Create the port
+    auto port = std::make_unique<InputPort<T>>(idx, name, this);
+    auto* portPtr = port.get();
     
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        data_ = data;
+    // Store in maps
+    inputPorts_[idx] = portPtr;
+    inputPortNames_[idx] = name;
+    
+    // Transfer ownership
+    ownedPorts_.push_back(std::move(port));
+    
+    // Set port UID if block UID is available
+    if (blockUID_ != 0) {
+        portPtr->setPortUID(blockUID_ * 256 + idx);
     }
     
-    hasNewData_.store(true);
+    return portPtr;
+}
+
+template<typename T>
+OutputPort<T>* ProcessingUnit::createOutputPort(int idx, const std::string& name) {
+    std::lock_guard<std::mutex> lock(portsMutex_);
     
-    // Call data callback if set
-    if (dataCallback_) {
-        dataCallback_(data);
+    if (outputPorts_.find(idx) != outputPorts_.end()) {
+        throw std::runtime_error("Output port with index " + std::to_string(idx) + " already exists");
+    }
+    
+    auto port = std::make_unique<OutputPort<T>>(idx, name, this);
+    auto* portPtr = port.get();
+    
+    outputPorts_[idx] = portPtr;
+    outputPortNames_[idx] = name;
+    ownedPorts_.push_back(std::move(port));
+    
+    if (blockUID_ != 0) {
+        portPtr->setPortUID(blockUID_ * 256 + idx);
+    }
+    
+    return portPtr;
+}
+
+template<typename T>
+AsyncInputPort<T>* ProcessingUnit::createAsyncInputPort(int idx, const std::string& name) {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    
+    if (asyncInputPorts_.find(idx) != asyncInputPorts_.end()) {
+        throw std::runtime_error("Async input port with index " + std::to_string(idx) + " already exists");
+    }
+    
+    auto port = std::make_unique<AsyncInputPort<T>>(idx, name, this);
+    auto* portPtr = port.get();
+    
+    asyncInputPorts_[idx] = portPtr;
+    asyncInputPortNames_[idx] = name;
+    ownedPorts_.push_back(std::move(port));
+    
+    if (blockUID_ != 0) {
+        portPtr->setPortUID(blockUID_ * 256 + idx);
+    }
+    
+    return portPtr;
+}
+
+template<typename T>
+AsyncOutputPort<T>* ProcessingUnit::createAsyncOutputPort(int idx, const std::string& name) {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    
+    if (asyncOutputPorts_.find(idx) != asyncOutputPorts_.end()) {
+        throw std::runtime_error("Async output port with index " + std::to_string(idx) + " already exists");
+    }
+    
+    auto port = std::make_unique<AsyncOutputPort<T>>(idx, name, this);
+    auto* portPtr = port.get();
+    
+    asyncOutputPorts_[idx] = portPtr;
+    asyncOutputPortNames_[idx] = name;
+    ownedPorts_.push_back(std::move(port));
+    
+    if (blockUID_ != 0) {
+        portPtr->setPortUID(blockUID_ * 256 + idx);
+    }
+    
+    return portPtr;
+}
+
+template<typename T>
+InputPort<T>* ProcessingUnit::getInputPort(int idx) {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    auto it = inputPorts_.find(idx);
+    if (it != inputPorts_.end()) {
+        return static_cast<InputPort<T>*>(it->second);
+    }
+    return nullptr;
+}
+
+template<typename T>
+InputPort<T>* ProcessingUnit::getInputPort() {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    if (inputPorts_.size() == 1) {
+        return static_cast<InputPort<T>*>(inputPorts_.begin()->second);
+    } else {
+        std::stringstream errorMessage;
+        errorMessage << "Error in Block " << blockUID_ << " at getInputPort(), no default port available";
+        throw std::runtime_error(errorMessage.str());
     }
 }
 
 template<typename T>
-OutputPort<T>::OutputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, owner) {
+OutputPort<T>* ProcessingUnit::getOutputPort(int idx) {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    auto it = outputPorts_.find(idx);
+    if (it != outputPorts_.end()) {
+        return static_cast<OutputPort<T>*>(it->second);
+    }
+    return nullptr;
 }
 
 template<typename T>
-void OutputPort<T>::write(const T& data) {
-    totalMessages_++;
-    
-    // Call output callback if set
-    if (outputCallback_) {
-        outputCallback_(data);
+OutputPort<T>* ProcessingUnit::getOutputPort() {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    if (outputPorts_.size() == 1) {
+        return static_cast<OutputPort<T>*>(outputPorts_.begin()->second);
+    } else {
+        std::stringstream errorMessage;
+        errorMessage << "Error in Block " << blockUID_ << " at getOutputPort(), no default port available";
+        throw std::runtime_error(errorMessage.str());
     }
-    
-    // Send data to all connected input ports
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    for (auto* inputPort : connectedPorts_) {
-        if (inputPort) {
-            inputPort->writeData(data);
+}
+
+template<typename T>
+AsyncInputPort<T>* ProcessingUnit::getAsyncInputPort(int idx) {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    auto it = asyncInputPorts_.find(idx);
+    if (it != asyncInputPorts_.end()) {
+        return static_cast<AsyncInputPort<T>*>(it->second);
+    }
+    return nullptr;
+}
+
+template<typename T>
+AsyncInputPort<T>* ProcessingUnit::getAsyncInputPort() {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    if (asyncInputPorts_.size() == 3) { // 3 because reset and disable ports are defaults
+        // Find the non-control port
+        for (auto& [idx, port] : asyncInputPorts_) {
+            if (idx != ControlPorts::RESET && idx != ControlPorts::DISABLE) {
+                return static_cast<AsyncInputPort<T>*>(port);
+            }
         }
     }
+    std::stringstream errorMessage;
+    errorMessage << "Error in Block " << blockUID_ << " at getAsyncInputPort(), no default port available";
+    throw std::runtime_error(errorMessage.str());
 }
 
 template<typename T>
-void OutputPort<T>::connect(InputPort<T>* inputPort) {
-    if (!inputPort) return;
-    
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it == connectedPorts_.end()) {
-        connectedPorts_.push_back(inputPort);
-    }
-}
-
-template<typename T>
-void OutputPort<T>::disconnect(InputPort<T>* inputPort) {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it != connectedPorts_.end()) {
-        connectedPorts_.erase(it);
-    }
-}
-
-template<typename T>
-void OutputPort<T>::disconnectAll() {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    connectedPorts_.clear();
-}
-
-template<typename T>
-void OutputPort<T>::setOutputCallback(OutputCallback callback) {
-    outputCallback_ = std::move(callback);
-}
-
-template<typename T>
-InputPort<T>* ProcessingUnit::createInputPort(int id, const std::string& name) {
+AsyncOutputPort<T>* ProcessingUnit::getAsyncOutputPort(int idx) {
     std::lock_guard<std::mutex> lock(portsMutex_);
-    
-    // Check if port with this ID already exists
-    if (portsById_.find(id) != portsById_.end()) {
-        throw std::runtime_error("Port with ID " + std::to_string(id) + " already exists");
+    auto it = asyncOutputPorts_.find(idx);
+    if (it != asyncOutputPorts_.end()) {
+        return static_cast<AsyncOutputPort<T>*>(it->second);
     }
-    
-    // Check if port with this name already exists
-    if (portsByName_.find(name) != portsByName_.end()) {
-        throw std::runtime_error("Port with name '" + name + "' already exists");
-    }
-    
-    auto port = std::make_unique<InputPort<T>>(id, name, this);
-    auto* portPtr = port.get();
-    
-    portsById_[id] = std::move(port);
-    portsByName_[name] = portPtr;
-    
-    return portPtr;
+    return nullptr;
 }
 
 template<typename T>
-OutputPort<T>* ProcessingUnit::createOutputPort(int id, const std::string& name) {
+AsyncOutputPort<T>* ProcessingUnit::getAsyncOutputPort() {
     std::lock_guard<std::mutex> lock(portsMutex_);
-    
-    // Check if port with this ID already exists
-    if (portsById_.find(id) != portsById_.end()) {
-        throw std::runtime_error("Port with ID " + std::to_string(id) + " already exists");
+    if (asyncOutputPorts_.size() == 1) {
+        return static_cast<AsyncOutputPort<T>*>(asyncOutputPorts_.begin()->second);
+    } else {
+        std::stringstream errorMessage;
+        errorMessage << "Error in Block " << blockUID_ << " at getAsyncOutputPort(), no default port available";
+        throw std::runtime_error(errorMessage.str());
     }
-    
-    // Check if port with this name already exists
-    if (portsByName_.find(name) != portsByName_.end()) {
-        throw std::runtime_error("Port with name '" + name + "' already exists");
-    }
-    
-    auto port = std::make_unique<OutputPort<T>>(id, name, this);
-    auto* portPtr = port.get();
-    
-    portsById_[id] = std::move(port);
-    portsByName_[name] = portPtr;
-    
-    return portPtr;
 }
 
 } // namespace axonvex::core 
