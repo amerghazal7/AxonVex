@@ -4,9 +4,9 @@
  * @author AxonVex Development Team
  * @version 1.0.0
  * @date 2025
- * 
+ *
  * @copyright Copyright (c) 2025 AxonVex Framework. All rights reserved.
- * 
+ *
  * This is the main header file for the AxonVex real-time framework.
  * Include this file to access all core AxonVex functionality.
  */
@@ -19,9 +19,9 @@
  * @author AxonVex Development Team
  * @version 1.0.0
  * @date 2025
- * 
+ *
  * @copyright Copyright (c) 2025 AxonVex Framework. All rights reserved.
- * 
+ *
  * This is the main header file for the AxonVex real-time framework.
  * Include this file to access all core AxonVex functionality.
  */
@@ -65,19 +65,19 @@
 /**
  * @namespace axonvex
  * @brief Main namespace for the AxonVex real-time framework
- * 
+ *
  * The AxonVex framework provides high-performance, real-time capable
  * utilities and data structures for building scalable, deterministic systems.
- * 
+ *
  * Key features:
  * - Microsecond-precision timing
- * - Lock-free data structures  
+ * - Lock-free data structures
  * - Real-time memory management
  * - High-performance async logging
  * - Comprehensive configuration management
  * - Thread-safe operations throughout
  * - Centralized system orchestration and lifecycle management
- * 
+ *
  * All components are designed for minimal overhead and maximum performance
  * while maintaining ease of use and robust error handling.
  */
@@ -86,7 +86,7 @@ namespace axonvex {
 /**
  * @namespace axonvex::core
  * @brief Core utilities and fundamental building blocks
- * 
+ *
  * Contains the essential components that form the foundation of the
  * AxonVex framework, including timing, memory management, logging,
  * configuration, system management, and high-performance data structures.
@@ -105,4 +105,4 @@ inline void printWelcome() {
     std::cout << "Ready for real-time processing..." << std::endl;
 }
 
-} // namespace axonvex 
+} // namespace axonvex

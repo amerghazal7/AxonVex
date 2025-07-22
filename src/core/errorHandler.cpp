@@ -12,7 +12,7 @@ std::string ErrorInfo::getFormattedMessage() const {
     oss << "[" << getSeverityString() << "] ";
     oss << "[" << component_name << "] ";
     oss << message;
-    
+
     if (!source_file.empty()) {
         oss << " (" << source_file << ":" << source_line;
         if (!source_function.empty()) {
@@ -20,7 +20,7 @@ std::string ErrorInfo::getFormattedMessage() const {
         }
         oss << ")";
     }
-    
+
     return oss.str();
 }
 
@@ -60,15 +60,15 @@ ErrorHandler::ErrorHandler(const std::string& component_name, size_t max_errors)
 
 void ErrorHandler::reportError(const ErrorInfo& error) {
     std::lock_guard<std::mutex> lock(errors_mutex_);
-    
+
     error_count_++;
     if (error.isCritical()) {
         critical_error_count_++;
     }
-    
+
     errors_.push_back(error);
     trimErrorsIfNeeded();
-    
+
     if (error_callback_) {
         error_callback_(error);
     }
@@ -110,11 +110,11 @@ size_t ErrorHandler::getErrorCount() const noexcept {
 std::string ErrorHandler::getErrorReport() const {
     std::lock_guard<std::mutex> lock(errors_mutex_);
     std::ostringstream oss;
-    
+
     oss << "=== Error Report for " << component_name_ << " ===\n";
     oss << "Total Errors: " << error_count_.load() << "\n";
     oss << "Critical Errors: " << critical_error_count_.load() << "\n";
-    
+
     if (!errors_.empty()) {
         oss << "\nRecent Errors:\n";
         size_t count = 0;
@@ -122,7 +122,7 @@ std::string ErrorHandler::getErrorReport() const {
             oss << "  " << (count + 1) << ". " << it->getFormattedMessage() << "\n";
         }
     }
-    
+
     return oss.str();
 }
 
@@ -188,4 +188,4 @@ void ErrorContext::reportError(ErrorSeverity severity, const std::string& messag
     handler_.reportError(error);
 }
 
-} // namespace axonvex::core 
+} // namespace axonvex::core

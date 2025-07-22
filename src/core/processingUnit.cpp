@@ -45,12 +45,12 @@ void ProcessingUnit::processAsyncBase() {
             resetBlock();
         }
     }
-    
+
             if (disablePort_->wasUpdated()) {
             int msg = disablePort_->read();
         setDisabled(msg != 0);
     }
-    
+
     if (!isDisabled_.load()) {
         executionTimer_.start();
         processAsync();
@@ -81,7 +81,7 @@ void ProcessingUnit::setBlockSamplingPeriod(std::chrono::microseconds period) {
 void ProcessingUnit::setBlockUID(uint32_t uid) {
     blockUID_ = uid;
     hasBeenAddedToSystem_ = true;
-    
+
     // Update all port UIDs
     std::lock_guard<std::mutex> lock(portsMutex_);
     for (auto& [idx, port] : inputPorts_) {
@@ -195,7 +195,7 @@ void ProcessingUnit::resetExecutionStats() {
 ProcessingUnit::PerformanceMetrics ProcessingUnit::getPerformanceMetrics() const {
     auto stats = getExecutionStats();
     PerformanceMetrics metrics;
-    
+
     // Convert execution stats to legacy format
     metrics.executionCount = stats.syncExecutionCount + stats.asyncExecutionCount;
     if (metrics.executionCount > 0) {
@@ -208,7 +208,7 @@ ProcessingUnit::PerformanceMetrics ProcessingUnit::getPerformanceMetrics() const
             stats.maxAsyncTime > std::chrono::microseconds{0} ? stats.maxAsyncTime : std::chrono::microseconds::max()
         );
     }
-    
+
     return metrics;
 }
 
@@ -241,4 +241,4 @@ void ProcessingUnit::updateAsyncExecutionStats(std::chrono::microseconds executi
     }
 }
 
-} // namespace axonvex::core 
+} // namespace axonvex::core

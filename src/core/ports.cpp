@@ -25,4 +25,4 @@ uint32_t BasePort::getPortUID() const noexcept {
     return portUID_;
 }
 
-} // namespace axonvex::core 
+} // namespace axonvex::core
