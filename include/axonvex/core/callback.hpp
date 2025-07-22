@@ -37,7 +37,7 @@ namespace axonvex::core {
  */
 template <typename T>
 class Callback {
-public:
+  public:
     /**
      * @brief Virtual destructor for proper cleanup
      */

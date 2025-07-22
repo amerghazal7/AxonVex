@@ -6,18 +6,18 @@
  * @date 2025
  */
 
-#include <gtest/gtest.h>
+#include <atomic>
 #include <axonvex/core/circularBuffer.hpp>
+#include <chrono>
+#include <gtest/gtest.h>
+#include <random>
 #include <thread>
 #include <vector>
-#include <atomic>
-#include <chrono>
-#include <random>
 
 using namespace axonvex::core;
 
 class CircularBufferTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         // Set up test fixtures
     }
@@ -40,11 +40,11 @@ protected:
 // Test basic buffer construction
 TEST_F(CircularBufferTest, Construction) {
     CircularBuffer<int> buffer;
-    EXPECT_EQ(buffer.capacity(), 1024);  // Default capacity
+    EXPECT_EQ(buffer.capacity(), 1024); // Default capacity
     EXPECT_EQ(buffer.size(), 0);
     EXPECT_TRUE(buffer.isEmpty());
     EXPECT_FALSE(buffer.isFull());
-    EXPECT_EQ(buffer.available(), 1023);  // capacity - 1
+    EXPECT_EQ(buffer.available(), 1023); // capacity - 1
 }
 
 // Test custom capacity construction
@@ -57,11 +57,11 @@ TEST_F(CircularBufferTest, CustomCapacityConstruction) {
 
     // Test power-of-2 rounding
     CircularBuffer<int> buffer2(500);
-    EXPECT_EQ(buffer2.capacity(), 512);  // Rounded up to next power of 2
+    EXPECT_EQ(buffer2.capacity(), 512); // Rounded up to next power of 2
 
     // Test minimum capacity
     CircularBuffer<int> buffer3(8);
-    EXPECT_EQ(buffer3.capacity(), 16);  // Minimum capacity
+    EXPECT_EQ(buffer3.capacity(), 16); // Minimum capacity
 }
 
 // Test basic write and read operations
@@ -153,7 +153,7 @@ TEST_F(CircularBufferTest, PeekOperation) {
     auto peeked = buffer.peek();
     ASSERT_TRUE(peeked.has_value());
     EXPECT_EQ(peeked.value(), 100);
-    EXPECT_EQ(buffer.size(), 2);  // Size unchanged
+    EXPECT_EQ(buffer.size(), 2); // Size unchanged
 
     // Read first element
     auto read_value = buffer.read();
@@ -165,7 +165,7 @@ TEST_F(CircularBufferTest, PeekOperation) {
     peeked = buffer.peek();
     ASSERT_TRUE(peeked.has_value());
     EXPECT_EQ(peeked.value(), 200);
-    EXPECT_EQ(buffer.size(), 1);  // Size unchanged
+    EXPECT_EQ(buffer.size(), 1); // Size unchanged
 }
 
 // Test writeMany and readMany operations
@@ -202,7 +202,7 @@ TEST_F(CircularBufferTest, PartialBulkOperations) {
     // Try to write more than available space
     std::vector<int> write_data = createTestData(10);
     size_t written = buffer.writeMany(write_data.data(), write_data.size());
-    EXPECT_EQ(written, 1);  // Only 1 slot available
+    EXPECT_EQ(written, 1); // Only 1 slot available
     EXPECT_TRUE(buffer.isFull());
 
     // Read some data
@@ -229,7 +229,7 @@ TEST_F(CircularBufferTest, UtilizationCalculation) {
     for (int i = 32; i < 63; ++i) {
         EXPECT_TRUE(buffer.write(i));
     }
-    EXPECT_DOUBLE_EQ(buffer.getUtilization(), 63.0/64.0);
+    EXPECT_DOUBLE_EQ(buffer.getUtilization(), 63.0 / 64.0);
 }
 
 // Test statistics collection
@@ -254,13 +254,13 @@ TEST_F(CircularBufferTest, StatisticsCollection) {
 
     // Try to read beyond available elements
     auto value = buffer.read();
-    EXPECT_TRUE(value.has_value());  // Should get the last element
+    EXPECT_TRUE(value.has_value()); // Should get the last element
 
     value = buffer.read();
-    EXPECT_TRUE(value.has_value());  // Should get the 10th element
+    EXPECT_TRUE(value.has_value()); // Should get the 10th element
 
     value = buffer.read();
-    EXPECT_FALSE(value.has_value());  // Should fail
+    EXPECT_FALSE(value.has_value()); // Should fail
 
     // Check statistics
     const auto& stats = buffer.getStatistics();
@@ -278,7 +278,7 @@ TEST_F(CircularBufferTest, StatisticsReset) {
     // Generate some statistics
     buffer.write(1);
     buffer.read();
-    buffer.read();  // This should fail
+    buffer.read(); // This should fail
 
     const auto& stats = buffer.getStatistics();
     EXPECT_GT(stats.getWriteCount(), 0);
@@ -310,7 +310,7 @@ TEST_F(CircularBufferTest, ClearOperation) {
     EXPECT_EQ(buffer.size(), 0);
     EXPECT_TRUE(buffer.isEmpty());
     EXPECT_FALSE(buffer.isFull());
-    EXPECT_EQ(buffer.available(), 63);  // capacity - 1
+    EXPECT_EQ(buffer.available(), 63); // capacity - 1
 }
 
 // Test thread safety with single producer/consumer
@@ -364,7 +364,7 @@ TEST_F(CircularBufferTest, SingleProducerConsumerThreadSafety) {
 // Performance test
 TEST_F(CircularBufferTest, PerformanceTest) {
     CircularBuffer<int> buffer(8192);
-    const int NUM_OPERATIONS = 4096;  // Use less than buffer capacity for pure performance test
+    const int NUM_OPERATIONS = 4096; // Use less than buffer capacity for pure performance test
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -384,7 +384,8 @@ TEST_F(CircularBufferTest, PerformanceTest) {
 
     auto end_time = std::chrono::high_resolution_clock::now();
 
-    auto write_duration = std::chrono::duration_cast<std::chrono::microseconds>(mid_time - start_time);
+    auto write_duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(mid_time - start_time);
     auto read_duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - mid_time);
 
     double write_ops_per_sec = NUM_OPERATIONS / (write_duration.count() / 1e6);
@@ -393,12 +394,14 @@ TEST_F(CircularBufferTest, PerformanceTest) {
     std::cout << "CircularBuffer Performance:\n";
     std::cout << "  Write operations per second: " << write_ops_per_sec << "\n";
     std::cout << "  Read operations per second: " << read_ops_per_sec << "\n";
-    std::cout << "  Write time per operation: " << (write_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
-    std::cout << "  Read time per operation: " << (read_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
+    std::cout << "  Write time per operation: "
+              << (write_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
+    std::cout << "  Read time per operation: "
+              << (read_duration.count() / static_cast<double>(NUM_OPERATIONS)) << " μs\n";
 
     // Performance expectations (should be very fast)
-    EXPECT_GT(write_ops_per_sec, 10000000);  // At least 10M ops/sec
-    EXPECT_GT(read_ops_per_sec, 10000000);   // At least 10M ops/sec
+    EXPECT_GT(write_ops_per_sec, 10000000); // At least 10M ops/sec
+    EXPECT_GT(read_ops_per_sec, 10000000);  // At least 10M ops/sec
 }
 
 // Test with complex data types

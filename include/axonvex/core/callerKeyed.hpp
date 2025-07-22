@@ -13,12 +13,12 @@
 
 #pragma once
 
-#include <map>
-#include <vector>
+#include "callback.hpp"
+
 #include <algorithm>
 #include <functional>
-
-#include "callback.hpp"
+#include <map>
+#include <vector>
 
 namespace axonvex::core {
 
@@ -51,7 +51,7 @@ namespace axonvex::core {
  */
 template <typename KeyType, typename DataType>
 class CallerKeyed {
-private:
+  private:
     std::multimap<KeyType, Callback<DataType>*> keyed_callbacks_;
 
     /**
@@ -69,7 +69,7 @@ private:
         return result;
     }
 
-public:
+  public:
     /**
      * @brief Default constructor
      */

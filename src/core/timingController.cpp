@@ -1,32 +1,32 @@
-#include <axonvex/core/timingController.hpp>
-#include <axonvex/core/processingUnit.hpp>
 #include <algorithm>
+#include <axonvex/core/processingUnit.hpp>
+#include <axonvex/core/timingController.hpp>
 #include <cassert>
-#include <fstream>
-#include <sstream>
-#include <iostream>
 #include <cmath>
+#include <fstream>
+#include <iostream>
+#include <sstream>
 
 #ifdef __linux__
-    #include <sched.h>
-    #include <pthread.h>
-    #include <sys/mman.h>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/mman.h>
 #elif _WIN32
-    #include <windows.h>
-    #include <timeapi.h>
+#include <timeapi.h>
+#include <windows.h>
 #endif
 
 // Usage documentation for core utilities:
 // - Use schedulerTimer_ to measure each scheduling cycle and track jitter/latency.
 // - Use ThreadSafeQueue (e.g., commandQueue_) for thread-safe command/event scheduling.
 // - Use MemoryPool (e.g., eventPool_) for real-time safe allocation of timing events/statistics.
-// These members are available in the TimingController base class for use in implementation and extensions.
+// These members are available in the TimingController base class for use in implementation and
+// extensions.
 
 namespace axonvex::core {
 
 // RealTimeScheduler Implementation
-RealTimeScheduler::RealTimeScheduler(SchedulingPolicy policy)
-    : policy_(policy) {
+RealTimeScheduler::RealTimeScheduler(SchedulingPolicy policy) : policy_(policy) {
     // Initialize the task pool with a default capacity
     taskPool_ = std::make_unique<MemoryPool<SchedulerTask>>(128);
 }
@@ -94,7 +94,8 @@ void RealTimeScheduler::removeAllTasks() {
     tasks_.clear();
 }
 
-bool RealTimeScheduler::updateTaskConstraints(uint32_t taskId, const TimingConstraints& constraints) {
+bool RealTimeScheduler::updateTaskConstraints(uint32_t taskId,
+                                              const TimingConstraints& constraints) {
     std::lock_guard<std::mutex> lock(tasksMutex_);
     auto it = tasks_.find(taskId);
     if (it != tasks_.end()) {
@@ -245,7 +246,8 @@ void RealTimeScheduler::schedulerLoop() {
         {
             std::unique_lock<std::mutex> lock(schedulerMutex_);
             if (paused_.load()) {
-                schedulerCondition_.wait(lock, [this] { return !paused_.load() || !running_.load(); });
+                schedulerCondition_.wait(lock,
+                                         [this] { return !paused_.load() || !running_.load(); });
                 continue;
             }
 
@@ -262,7 +264,8 @@ void RealTimeScheduler::schedulerLoop() {
         cycleTimer_.start(); // Restart for the next cycle
 
         // Calculate scheduling jitter
-        auto expectedCycleTime = std::chrono::duration_cast<std::chrono::nanoseconds>(timerResolution_);
+        auto expectedCycleTime =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(timerResolution_);
         auto jitter = std::chrono::abs(cycleTime - expectedCycleTime);
         updateSchedulingJitter(std::chrono::duration_cast<std::chrono::microseconds>(jitter));
 
@@ -292,8 +295,7 @@ void RealTimeScheduler::schedulerLoop() {
         {
             std::lock_guard<std::mutex> lock(tasksMutex_);
             for (auto& [taskId, task] : tasks_) {
-                if (!task->active.load() &&
-                    task->consecutiveFailures > 0 &&
+                if (!task->active.load() && task->consecutiveFailures > 0 &&
                     now >= task->reactivationTime) {
                     task->active.store(true);
                     task->consecutiveFailures = 0; // Reset failure count on reactivation
@@ -465,8 +467,8 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
 
         // Calculate the execution time
         auto executionEnd = std::chrono::steady_clock::now();
-        auto executionTime = std::chrono::duration_cast<std::chrono::microseconds>(
-            executionEnd - executionStart);
+        auto executionTime =
+            std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
 
         // Update task statistics
         updateTaskStatistics(task, executionTime);
@@ -492,7 +494,8 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
                 auto avgCount = statistics_.totalExecutions;
                 auto oldAvg = statistics_.averageExecutionTime.count();
                 auto newAvg = (oldAvg * (avgCount - 1) + executionTime.count()) / avgCount;
-                statistics_.averageExecutionTime = std::chrono::microseconds(static_cast<long long>(newAvg));
+                statistics_.averageExecutionTime =
+                    std::chrono::microseconds(static_cast<long long>(newAvg));
 
                 if (executionTime < statistics_.minExecutionTime) {
                     statistics_.minExecutionTime = executionTime;
@@ -511,11 +514,11 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
     } catch (const std::exception& e) {
         // Handle execution error
         auto executionEnd = std::chrono::steady_clock::now();
-        auto executionTime = std::chrono::duration_cast<std::chrono::microseconds>(
-            executionEnd - executionStart);
+        auto executionTime =
+            std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
 
         std::lock_guard<std::mutex> lock(statsMutex_);
-        statistics_.totalExecutions++;  // Count failed executions in total
+        statistics_.totalExecutions++; // Count failed executions in total
         statistics_.failedExecutions++;
         statistics_.totalExecutionTime += executionTime;
 
@@ -536,8 +539,8 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
             // Log task deactivation
             if (errorCallback_) {
                 std::string msg = "Task temporarily deactivated after " +
-                                std::to_string(MAX_CONSECUTIVE_FAILURES) +
-                                " consecutive failures: " + e.what();
+                                  std::to_string(MAX_CONSECUTIVE_FAILURES) +
+                                  " consecutive failures: " + e.what();
                 errorCallback_(task.unit, msg.c_str());
             }
         }
@@ -560,7 +563,8 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
     task.executing.store(false);
 }
 
-void RealTimeScheduler::updateTaskStatistics(SchedulerTask& task, std::chrono::microseconds executionTime) {
+void RealTimeScheduler::updateTaskStatistics(SchedulerTask& task,
+                                             std::chrono::microseconds executionTime) {
     task.executionCount++;
     task.totalExecutionTime += executionTime;
 
@@ -578,13 +582,15 @@ void RealTimeScheduler::updateSchedulingJitter(std::chrono::microseconds jitter)
     if (avgCount > 0) {
         auto oldAvg = statistics_.averageSchedulingJitter.count();
         auto newAvg = (oldAvg * (avgCount - 1) + jitter.count()) / avgCount;
-        statistics_.averageSchedulingJitter = std::chrono::microseconds(static_cast<long long>(newAvg));
+        statistics_.averageSchedulingJitter =
+            std::chrono::microseconds(static_cast<long long>(newAvg));
     } else {
         statistics_.averageSchedulingJitter = jitter;
     }
 }
 
-std::chrono::steady_clock::time_point RealTimeScheduler::calculateNextExecution(const SchedulerTask& task) const {
+std::chrono::steady_clock::time_point RealTimeScheduler::calculateNextExecution(
+    const SchedulerTask& task) const {
     return task.lastExecution + task.constraints.period;
 }
 
@@ -612,8 +618,9 @@ void RealTimeScheduler::setThreadPriority(std::thread& thread, SchedulerPriority
             // Map our priority enum to valid FIFO range
             int enumPrio = static_cast<int>(priority);
             priorityValue = minPrio + ((enumPrio - static_cast<int>(SchedulerPriority::REAL_TIME)) *
-                                     (maxPrio - minPrio) / (static_cast<int>(SchedulerPriority::CRITICAL) -
-                                                          static_cast<int>(SchedulerPriority::REAL_TIME)));
+                                       (maxPrio - minPrio) /
+                                       (static_cast<int>(SchedulerPriority::CRITICAL) -
+                                        static_cast<int>(SchedulerPriority::REAL_TIME)));
             priorityValue = std::max(minPrio, std::min(maxPrio, priorityValue));
         } else {
             // Fallback to SCHED_OTHER if can't get FIFO range
@@ -645,12 +652,24 @@ void RealTimeScheduler::setThreadPriority(std::thread& thread, SchedulerPriority
     int winPriority = THREAD_PRIORITY_NORMAL;
 
     switch (priority) {
-        case SchedulerPriority::IDLE: winPriority = THREAD_PRIORITY_IDLE; break;
-        case SchedulerPriority::LOW: winPriority = THREAD_PRIORITY_BELOW_NORMAL; break;
-        case SchedulerPriority::NORMAL: winPriority = THREAD_PRIORITY_NORMAL; break;
-        case SchedulerPriority::HIGH: winPriority = THREAD_PRIORITY_ABOVE_NORMAL; break;
-        case SchedulerPriority::REAL_TIME: winPriority = THREAD_PRIORITY_TIME_CRITICAL; break;
-        case SchedulerPriority::CRITICAL: winPriority = THREAD_PRIORITY_TIME_CRITICAL; break;
+        case SchedulerPriority::IDLE:
+            winPriority = THREAD_PRIORITY_IDLE;
+            break;
+        case SchedulerPriority::LOW:
+            winPriority = THREAD_PRIORITY_BELOW_NORMAL;
+            break;
+        case SchedulerPriority::NORMAL:
+            winPriority = THREAD_PRIORITY_NORMAL;
+            break;
+        case SchedulerPriority::HIGH:
+            winPriority = THREAD_PRIORITY_ABOVE_NORMAL;
+            break;
+        case SchedulerPriority::REAL_TIME:
+            winPriority = THREAD_PRIORITY_TIME_CRITICAL;
+            break;
+        case SchedulerPriority::CRITICAL:
+            winPriority = THREAD_PRIORITY_TIME_CRITICAL;
+            break;
     }
 
     SetThreadPriority(nativeHandle, winPriority);
@@ -682,7 +701,8 @@ TimingController::~TimingController() {
     shutdown();
 }
 
-uint32_t TimingController::scheduleProcessingUnit(ProcessingUnit* unit, const TimingConstraints& constraints) {
+uint32_t TimingController::scheduleProcessingUnit(ProcessingUnit* unit,
+                                                  const TimingConstraints& constraints) {
     if (!unit) {
         return 0;
     }
@@ -709,7 +729,7 @@ bool TimingController::removeProcessingUnit(uint32_t taskId) {
         std::lock_guard<std::mutex> lock(unitMapMutex_);
         // Find and remove the unit-to-taskId mapping
         auto it = std::find_if(unitToTaskId_.begin(), unitToTaskId_.end(),
-            [taskId](const auto& pair) { return pair.second == taskId; });
+                               [taskId](const auto& pair) { return pair.second == taskId; });
         if (it != unitToTaskId_.end()) {
             unitToTaskId_.erase(it);
         }
@@ -805,7 +825,8 @@ void TimingController::resetPerformanceMetrics() {
     scheduler_->resetStatistics();
 }
 
-bool TimingController::updateTaskConstraints(uint32_t taskId, const TimingConstraints& constraints) {
+bool TimingController::updateTaskConstraints(uint32_t taskId,
+                                             const TimingConstraints& constraints) {
     return scheduler_->updateTaskConstraints(taskId, constraints);
 }
 
@@ -876,16 +897,17 @@ bool TimingController::validateSchedulability() const {
         auto constraints = getTaskConstraints(taskId);
         if (constraints.period.count() > 0) {
             double utilization = static_cast<double>(constraints.wcet.count()) /
-                               static_cast<double>(constraints.period.count());
+                                 static_cast<double>(constraints.period.count());
             totalUtilization += utilization;
         }
     }
 
     // Liu and Layland bound: U ≤ n(2^(1/n) - 1)
     size_t n = taskIds.size();
-    if (n == 0) return true;
+    if (n == 0)
+        return true;
 
-    double bound = n * (std::pow(2.0, 1.0/n) - 1.0);
+    double bound = n * (std::pow(2.0, 1.0 / n) - 1.0);
     return totalUtilization <= bound;
 }
 

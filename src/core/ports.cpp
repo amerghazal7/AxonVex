@@ -7,9 +7,11 @@
  */
 
 #include "axonvex/core/ports.hpp"
+
 #include "axonvex/core/processingUnit.hpp"
-#include <stdexcept>
+
 #include <sstream>
+#include <stdexcept>
 
 namespace axonvex::core {
 

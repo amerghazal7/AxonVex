@@ -1,24 +1,24 @@
+#include <atomic>
 #include <axonvex/axonvex.hpp>
 #include <chrono>
-#include <atomic>
-#include <thread>
-#include <vector>
 #include <cmath>
 #include <iomanip>
+#include <thread>
+#include <vector>
 
 using namespace axonvex;
 using namespace axonvex::core;
-using namespace axonvex::Log;  // Use framework's Logger
+using namespace axonvex::Log; // Use framework's Logger
 
 // Example Processing Units for demonstration
 class SineWaveGenerator : public ProcessingUnit {
-private:
+  private:
     std::atomic<uint64_t> sampleCount_{0};
     double frequency_{1.0}; // Hz
     double amplitude_{1.0};
     axonvex::core::OutputPort<double>* output_;
 
-public:
+  public:
     explicit SineWaveGenerator(const std::string& name, double frequency = 1.0)
         : ProcessingUnit(name), frequency_(frequency) {
         output_ = createOutputPort<double>(100, "sine_output");
@@ -60,13 +60,13 @@ public:
 };
 
 class DataProcessor : public ProcessingUnit {
-private:
+  private:
     InputPort<double>* input_;
     OutputPort<double>* output_;
     std::atomic<uint64_t> processedSamples_{0};
     std::atomic<double> runningSum_{0.0};
 
-public:
+  public:
     explicit DataProcessor(const std::string& name) : ProcessingUnit(name) {
         input_ = createInputPort<double>(200, "data_input");
         output_ = createOutputPort<double>(201, "processed_output");
@@ -118,11 +118,11 @@ public:
 };
 
 class PerformanceMonitor : public ProcessingUnit {
-private:
+  private:
     std::atomic<uint64_t> monitoringCycles_{0};
     std::chrono::steady_clock::time_point startTime_;
 
-public:
+  public:
     explicit PerformanceMonitor(const std::string& name) : ProcessingUnit(name) {
         initialize();
     }
@@ -194,7 +194,8 @@ void demonstrateBasicScheduling() {
     // Create processing units
     auto sineGen = std::make_unique<SineWaveGenerator>("SineGen1", 2.0);
     auto processor = std::make_unique<DataProcessor>("DataProcessor1");
-    // Note: PerformanceMonitor is a forward declaration only, creating a simple data processor instead
+    // Note: PerformanceMonitor is a forward declaration only, creating a simple data processor
+    // instead
     auto monitor = std::make_unique<DataProcessor>("PerfMonitor1");
 
     // Connect sine generator to processor (using different port IDs)
@@ -206,21 +207,21 @@ void demonstrateBasicScheduling() {
 
     // Define timing constraints
     TimingConstraints highPriorityConstraints;
-    highPriorityConstraints.period = std::chrono::milliseconds(10);     // 100 Hz
-    highPriorityConstraints.deadline = std::chrono::milliseconds(8);    // 8ms deadline
-    highPriorityConstraints.wcet = std::chrono::milliseconds(2);        // 2ms WCET
+    highPriorityConstraints.period = std::chrono::milliseconds(10);  // 100 Hz
+    highPriorityConstraints.deadline = std::chrono::milliseconds(8); // 8ms deadline
+    highPriorityConstraints.wcet = std::chrono::milliseconds(2);     // 2ms WCET
     highPriorityConstraints.priority = SchedulerPriority::HIGH;
     highPriorityConstraints.isRealTime = true;
 
     TimingConstraints mediumPriorityConstraints;
-    mediumPriorityConstraints.period = std::chrono::milliseconds(20);   // 50 Hz
+    mediumPriorityConstraints.period = std::chrono::milliseconds(20); // 50 Hz
     mediumPriorityConstraints.deadline = std::chrono::milliseconds(18);
     mediumPriorityConstraints.wcet = std::chrono::milliseconds(3);
     mediumPriorityConstraints.priority = SchedulerPriority::NORMAL;
     mediumPriorityConstraints.isRealTime = true;
 
     TimingConstraints lowPriorityConstraints;
-    lowPriorityConstraints.period = std::chrono::milliseconds(100);     // 10 Hz
+    lowPriorityConstraints.period = std::chrono::milliseconds(100); // 10 Hz
     lowPriorityConstraints.deadline = std::chrono::milliseconds(90);
     lowPriorityConstraints.wcet = std::chrono::milliseconds(5);
     lowPriorityConstraints.priority = SchedulerPriority::LOW;
@@ -228,8 +229,10 @@ void demonstrateBasicScheduling() {
 
     // Schedule processing units
     uint32_t sineTaskId = controller.scheduleProcessingUnit(sineGen.get(), highPriorityConstraints);
-    uint32_t procTaskId = controller.scheduleProcessingUnit(processor.get(), mediumPriorityConstraints);
-    uint32_t monitorTaskId = controller.scheduleProcessingUnit(monitor.get(), lowPriorityConstraints);
+    uint32_t procTaskId =
+        controller.scheduleProcessingUnit(processor.get(), mediumPriorityConstraints);
+    uint32_t monitorTaskId =
+        controller.scheduleProcessingUnit(monitor.get(), lowPriorityConstraints);
 
     printInfo("Scheduled processing units with different priorities");
     Info() << "  📊 Sine Generator: Task ID " << sineTaskId << " (HIGH priority, 100 Hz)";
@@ -269,9 +272,8 @@ void demonstrateBasicScheduling() {
     // Show processing unit results
     Info() << "\n🎯 Processing Unit Results:";
     Info() << "  Sine Generator: Last value = " << std::fixed << std::setprecision(3)
-              << sineGen->getLastValue() << " (Generated samples)";
-    Info() << "  Data Processor: Processed " << processor->getProcessedSamples()
-              << " samples";
+           << sineGen->getLastValue() << " (Generated samples)";
+    Info() << "  Data Processor: Processed " << processor->getProcessedSamples() << " samples";
     Info() << "  Performance Monitor: monitoring cycles completed";
 
     // Stop scheduler
@@ -281,10 +283,10 @@ void demonstrateBasicScheduling() {
     // Calculate success rate
     if (stats.totalExecutions > 0) {
         double successRate = (static_cast<double>(stats.successfulExecutions) /
-                            static_cast<double>(stats.totalExecutions)) * 100.0;
-        Info() << "\n🎉 Success Rate: " << std::fixed << std::setprecision(1)
-                  << successRate << "% (" << stats.successfulExecutions
-               << "/" << stats.totalExecutions << ")";
+                              static_cast<double>(stats.totalExecutions)) *
+                             100.0;
+        Info() << "\n🎉 Success Rate: " << std::fixed << std::setprecision(1) << successRate
+               << "% (" << stats.successfulExecutions << "/" << stats.totalExecutions << ")";
 
         if (stats.missedDeadlines == 0) {
             printSuccess("Perfect timing - no missed deadlines!");
@@ -299,15 +301,11 @@ void demonstrateSchedulingPolicies() {
     printHeader("Different Scheduling Policies");
 
     std::vector<SchedulingPolicy> policies = {
-        SchedulingPolicy::PRIORITY_BASED,
-        SchedulingPolicy::EARLIEST_DEADLINE_FIRST,
-        SchedulingPolicy::RATE_MONOTONIC,
-        SchedulingPolicy::ROUND_ROBIN
-    };
+        SchedulingPolicy::PRIORITY_BASED, SchedulingPolicy::EARLIEST_DEADLINE_FIRST,
+        SchedulingPolicy::RATE_MONOTONIC, SchedulingPolicy::ROUND_ROBIN};
 
-    std::vector<std::string> policyNames = {
-        "Priority-Based", "Earliest Deadline First", "Rate Monotonic", "Round Robin"
-    };
+    std::vector<std::string> policyNames = {"Priority-Based", "Earliest Deadline First",
+                                            "Rate Monotonic", "Round Robin"};
 
     for (size_t i = 0; i < policies.size(); ++i) {
         Info() << "\nTesting " << policyNames[i] << " Scheduling:";
@@ -352,7 +350,8 @@ void demonstrateCustomScheduler() {
     // Set custom scheduler that alternates between tasks
     static size_t lastIndex = 0;
     controller.setCustomScheduler([](const std::vector<core::SchedulerTask>& tasks) -> uint32_t {
-        if (tasks.empty()) return 0;
+        if (tasks.empty())
+            return 0;
 
         auto now = std::chrono::steady_clock::now();
 
@@ -364,7 +363,8 @@ void demonstrateCustomScheduler() {
             }
         }
 
-        if (readyTasks.empty()) return 0;
+        if (readyTasks.empty())
+            return 0;
 
         // Custom logic: round-robin through ready tasks
         lastIndex = (lastIndex + 1) % readyTasks.size();

@@ -1,9 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
-#include <chrono>
 
 namespace axonvex::core {
 
@@ -14,7 +14,7 @@ namespace axonvex::core {
  * and report performance metrics in a consistent manner.
  */
 class IPerformanceStatistics {
-public:
+  public:
     virtual ~IPerformanceStatistics() = default;
 
     /**
@@ -39,9 +39,9 @@ public:
  * Provides shared functionality and patterns used across all
  * AxonVex statistics implementations.
  */
-template<typename Derived>
+template <typename Derived>
 class PerformanceStatisticsBase : public IPerformanceStatistics {
-public:
+  public:
     /**
      * @brief Get creation timestamp
      */
@@ -68,16 +68,14 @@ public:
      */
     std::chrono::steady_clock::time_point getLastAccessTime() const noexcept {
         auto count = last_access_time_.load();
-        return std::chrono::steady_clock::time_point{
-            std::chrono::steady_clock::duration{count}
-        };
+        return std::chrono::steady_clock::time_point{std::chrono::steady_clock::duration{count}};
     }
 
-protected:
+  protected:
     /**
      * @brief Helper to safely load atomic counter
      */
-    template<typename T>
+    template <typename T>
     static T safeLoad(const std::atomic<T>& atomic_value) noexcept {
         return atomic_value.load(std::memory_order_relaxed);
     }
@@ -85,7 +83,7 @@ protected:
     /**
      * @brief Helper to safely increment atomic counter
      */
-    template<typename T>
+    template <typename T>
     static void safeIncrement(std::atomic<T>& atomic_value, T increment = 1) noexcept {
         atomic_value.fetch_add(increment, std::memory_order_relaxed);
     }
@@ -93,7 +91,7 @@ protected:
     /**
      * @brief Helper to safely store atomic value
      */
-    template<typename T>
+    template <typename T>
     static void safeStore(std::atomic<T>& atomic_value, T value) noexcept {
         atomic_value.store(value, std::memory_order_relaxed);
     }
@@ -101,12 +99,11 @@ protected:
     /**
      * @brief Helper to safely update maximum value
      */
-    template<typename T>
+    template <typename T>
     static void updateMaximum(std::atomic<T>& atomic_max, T new_value) noexcept {
         T current_max = atomic_max.load(std::memory_order_relaxed);
-        while (new_value > current_max &&
-               !atomic_max.compare_exchange_weak(current_max, new_value,
-                                                std::memory_order_relaxed)) {
+        while (new_value > current_max && !atomic_max.compare_exchange_weak(
+                                              current_max, new_value, std::memory_order_relaxed)) {
             // Loop until successful update or a higher value is found
         }
     }
@@ -148,16 +145,17 @@ protected:
         return denominator > 0 ? (static_cast<double>(numerator) / denominator) * 100.0 : 0.0;
     }
 
-private:
+  private:
     const std::chrono::steady_clock::time_point creation_time_{std::chrono::steady_clock::now()};
-    std::atomic<int64_t> last_access_time_{std::chrono::steady_clock::now().time_since_epoch().count()};
+    std::atomic<int64_t> last_access_time_{
+        std::chrono::steady_clock::now().time_since_epoch().count()};
 };
 
 /**
  * @brief Enhanced statistics for components with throughput metrics
  */
 class ThroughputStatistics : public PerformanceStatisticsBase<ThroughputStatistics> {
-public:
+  public:
     std::atomic<uint64_t> total_operations{0};
     std::atomic<uint64_t> successful_operations{0};
     std::atomic<uint64_t> failed_operations{0};
@@ -196,9 +194,8 @@ public:
     std::chrono::nanoseconds getAverageProcessingTime() const noexcept {
         uint64_t operations = safeLoad(successful_operations);
         uint64_t total_time = safeLoad(total_processing_time_ns);
-        return operations > 0 ?
-            std::chrono::nanoseconds{total_time / operations} :
-            std::chrono::nanoseconds{0};
+        return operations > 0 ? std::chrono::nanoseconds{total_time / operations}
+                              : std::chrono::nanoseconds{0};
     }
 
     /**
@@ -240,7 +237,7 @@ public:
  * @brief Enhanced statistics for memory-related components
  */
 class MemoryStatistics : public PerformanceStatisticsBase<MemoryStatistics> {
-public:
+  public:
     std::atomic<uint64_t> allocations{0};
     std::atomic<uint64_t> deallocations{0};
     std::atomic<uint64_t> allocation_failures{0};

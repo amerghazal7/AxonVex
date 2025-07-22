@@ -1,8 +1,8 @@
-#include <axonvex/core/errorHandler.hpp>
-#include <sstream>
-#include <iomanip>
 #include <algorithm>
+#include <axonvex/core/errorHandler.hpp>
 #include <ctime>
+#include <iomanip>
+#include <sstream>
 
 namespace axonvex::core {
 
@@ -26,37 +26,55 @@ std::string ErrorInfo::getFormattedMessage() const {
 
 std::string ErrorInfo::getSeverityString() const {
     switch (severity) {
-        case ErrorSeverity::DEBUG_LEVEL: return "DEBUG";
-        case ErrorSeverity::INFO: return "INFO";
-        case ErrorSeverity::WARNING: return "WARNING";
-        case ErrorSeverity::ERROR: return "ERROR";
-        case ErrorSeverity::CRITICAL: return "CRITICAL";
-        case ErrorSeverity::FATAL: return "FATAL";
-        default: return "UNKNOWN";
+        case ErrorSeverity::DEBUG_LEVEL:
+            return "DEBUG";
+        case ErrorSeverity::INFO:
+            return "INFO";
+        case ErrorSeverity::WARNING:
+            return "WARNING";
+        case ErrorSeverity::ERROR:
+            return "ERROR";
+        case ErrorSeverity::CRITICAL:
+            return "CRITICAL";
+        case ErrorSeverity::FATAL:
+            return "FATAL";
+        default:
+            return "UNKNOWN";
     }
 }
 
 std::string ErrorInfo::getCategoryString() const {
     switch (category) {
-        case ErrorCategory::NONE: return "NONE";
-        case ErrorCategory::CONFIGURATION: return "CONFIGURATION";
-        case ErrorCategory::INITIALIZATION: return "INITIALIZATION";
-        case ErrorCategory::RUNTIME: return "RUNTIME";
-        case ErrorCategory::MEMORY: return "MEMORY";
-        case ErrorCategory::TIMING: return "TIMING";
-        case ErrorCategory::COMMUNICATION: return "COMMUNICATION";
-        case ErrorCategory::RESOURCE: return "RESOURCE";
-        case ErrorCategory::VALIDATION: return "VALIDATION";
-        case ErrorCategory::SYSTEM: return "SYSTEM";
-        case ErrorCategory::UNKNOWN: return "UNKNOWN";
-        default: return "UNKNOWN";
+        case ErrorCategory::NONE:
+            return "NONE";
+        case ErrorCategory::CONFIGURATION:
+            return "CONFIGURATION";
+        case ErrorCategory::INITIALIZATION:
+            return "INITIALIZATION";
+        case ErrorCategory::RUNTIME:
+            return "RUNTIME";
+        case ErrorCategory::MEMORY:
+            return "MEMORY";
+        case ErrorCategory::TIMING:
+            return "TIMING";
+        case ErrorCategory::COMMUNICATION:
+            return "COMMUNICATION";
+        case ErrorCategory::RESOURCE:
+            return "RESOURCE";
+        case ErrorCategory::VALIDATION:
+            return "VALIDATION";
+        case ErrorCategory::SYSTEM:
+            return "SYSTEM";
+        case ErrorCategory::UNKNOWN:
+            return "UNKNOWN";
+        default:
+            return "UNKNOWN";
     }
 }
 
 // ErrorHandler implementations
 ErrorHandler::ErrorHandler(const std::string& component_name, size_t max_errors)
-    : component_name_(component_name), max_errors_(max_errors) {
-}
+    : component_name_(component_name), max_errors_(max_errors) {}
 
 void ErrorHandler::reportError(const ErrorInfo& error) {
     std::lock_guard<std::mutex> lock(errors_mutex_);
@@ -75,8 +93,8 @@ void ErrorHandler::reportError(const ErrorInfo& error) {
 }
 
 void ErrorHandler::reportError(ErrorSeverity severity, const std::string& message,
-                             ErrorCategory category, const std::string& source_file,
-                             int line_number, const std::string& function_name) {
+                               ErrorCategory category, const std::string& source_file,
+                               int line_number, const std::string& function_name) {
     ErrorInfo error;
     error.severity = severity;
     error.category = category;
@@ -165,8 +183,8 @@ ErrorInfo ErrorHandler::getLastError() const {
 
 // ErrorContext implementations
 ErrorContext::ErrorContext(ErrorHandler& handler, const std::string& operation_name)
-    : handler_(handler), operation_name_(operation_name), start_time_(std::chrono::steady_clock::now()) {
-}
+    : handler_(handler), operation_name_(operation_name),
+      start_time_(std::chrono::steady_clock::now()) {}
 
 ErrorContext::~ErrorContext() {
     // Destructor implementation - could add auto error reporting here if needed
@@ -179,7 +197,8 @@ void ErrorContext::addContext(const std::string& key, const std::string& value) 
     context_data_ += key + "=" + value;
 }
 
-void ErrorContext::reportError(ErrorSeverity severity, const std::string& message, ErrorCategory category) {
+void ErrorContext::reportError(ErrorSeverity severity, const std::string& message,
+                               ErrorCategory category) {
     ErrorInfo error;
     error.severity = severity;
     error.category = category;

@@ -14,14 +14,14 @@
  * - Error handling and edge cases
  */
 
+#include <atomic>
 #include <axonvex/axonvex.hpp>
+#include <chrono>
+#include <future>
 #include <iostream>
+#include <random>
 #include <thread>
 #include <vector>
-#include <random>
-#include <chrono>
-#include <atomic>
-#include <future>
 
 using namespace axonvex::core;
 
@@ -37,8 +37,7 @@ struct TestMessage {
 };
 
 // Producer function
-void producer(ThreadSafeQueue<TestMessage>& queue,
-              int producer_id, int message_count,
+void producer(ThreadSafeQueue<TestMessage>& queue, int producer_id, int message_count,
               std::atomic<int>& messages_produced) {
 
     std::random_device rd;
@@ -46,9 +45,8 @@ void producer(ThreadSafeQueue<TestMessage>& queue,
     std::uniform_int_distribution<> delay_dist(1, 10);
 
     for (int i = 0; i < message_count; ++i) {
-        TestMessage msg(producer_id * 1000 + i,
-                       "Producer " + std::to_string(producer_id) +
-                       " Message " + std::to_string(i));
+        TestMessage msg(producer_id * 1000 + i, "Producer " + std::to_string(producer_id) +
+                                                    " Message " + std::to_string(i));
 
         bool success = queue.enqueue(std::move(msg));
         if (success) {
@@ -61,10 +59,8 @@ void producer(ThreadSafeQueue<TestMessage>& queue,
 }
 
 // Consumer function
-void consumer(ThreadSafeQueue<TestMessage>& queue,
-              int consumer_id, int expected_messages,
-              std::atomic<int>& messages_consumed,
-              std::atomic<bool>& should_stop) {
+void consumer(ThreadSafeQueue<TestMessage>& queue, int consumer_id, int expected_messages,
+              std::atomic<int>& messages_consumed, std::atomic<bool>& should_stop) {
 
     while (!should_stop.load() || !queue.isEmpty()) {
         auto msg = queue.dequeue();
@@ -73,17 +69,16 @@ void consumer(ThreadSafeQueue<TestMessage>& queue,
 
             // Calculate message latency
             auto now = std::chrono::high_resolution_clock::now();
-            auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
-                now - msg->timestamp).count();
+            auto latency =
+                std::chrono::duration_cast<std::chrono::microseconds>(now - msg->timestamp).count();
 
             // Simulate processing time
             std::this_thread::sleep_for(std::chrono::microseconds(5));
 
             // Print occasional status
             if (msg->id % 100 == 0) {
-                std::cout << "Consumer " << consumer_id
-                         << " processed message " << msg->id
-                         << " (latency: " << latency << " μs)" << std::endl;
+                std::cout << "Consumer " << consumer_id << " processed message " << msg->id
+                          << " (latency: " << latency << " μs)" << std::endl;
             }
         } else {
             // Brief pause when queue is empty
@@ -93,9 +88,8 @@ void consumer(ThreadSafeQueue<TestMessage>& queue,
 }
 
 // Performance benchmark function
-template<typename T>
-void benchmarkQueue(ThreadSafeQueue<T>& queue,
-                   int iterations, const std::string& type_name) {
+template <typename T>
+void benchmarkQueue(ThreadSafeQueue<T>& queue, int iterations, const std::string& type_name) {
 
     std::cout << "\n=== Performance Benchmark: " << type_name << " ===\n";
 
@@ -183,8 +177,8 @@ int main() {
         std::atomic<int> messages_consumed{0};
         std::atomic<bool> should_stop{false};
 
-        std::cout << "Starting " << num_producers << " producers and "
-                  << num_consumers << " consumers...\n";
+        std::cout << "Starting " << num_producers << " producers and " << num_consumers
+                  << " consumers...\n";
         std::cout << "Total messages to process: " << total_messages << "\n";
 
         auto start_time = std::chrono::high_resolution_clock::now();
@@ -192,18 +186,16 @@ int main() {
         // Start producers
         std::vector<std::future<void>> producers;
         for (int i = 0; i < num_producers; ++i) {
-            producers.push_back(std::async(std::launch::async, producer,
-                                         std::ref(mt_queue), i, messages_per_producer,
-                                         std::ref(messages_produced)));
+            producers.push_back(std::async(std::launch::async, producer, std::ref(mt_queue), i,
+                                           messages_per_producer, std::ref(messages_produced)));
         }
 
         // Start consumers
         std::vector<std::future<void>> consumers;
         for (int i = 0; i < num_consumers; ++i) {
-            consumers.push_back(std::async(std::launch::async, consumer,
-                                         std::ref(mt_queue), i, total_messages,
-                                         std::ref(messages_consumed),
-                                         std::ref(should_stop)));
+            consumers.push_back(std::async(std::launch::async, consumer, std::ref(mt_queue), i,
+                                           total_messages, std::ref(messages_consumed),
+                                           std::ref(should_stop)));
         }
 
         // Wait for all producers to finish
@@ -211,7 +203,8 @@ int main() {
             future.wait();
         }
 
-        std::cout << "All producers finished. Produced: " << messages_produced.load() << " messages\n";
+        std::cout << "All producers finished. Produced: " << messages_produced.load()
+                  << " messages\n";
 
         // Wait for consumers to finish all messages
         while (messages_consumed.load() < total_messages && !mt_queue.isEmpty()) {
@@ -226,12 +219,14 @@ int main() {
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-            end_time - start_time).count();
+        auto total_time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
 
-        std::cout << "All consumers finished. Consumed: " << messages_consumed.load() << " messages\n";
+        std::cout << "All consumers finished. Consumed: " << messages_consumed.load()
+                  << " messages\n";
         std::cout << "Total execution time: " << total_time << " ms\n";
-        std::cout << "Throughput: " << (total_messages * 1000.0 / total_time) << " messages/second\n";
+        std::cout << "Throughput: " << (total_messages * 1000.0 / total_time)
+                  << " messages/second\n";
 
         // Display queue statistics
         const auto& stats = mt_queue.getStatistics();

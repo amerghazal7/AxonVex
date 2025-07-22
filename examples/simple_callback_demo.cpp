@@ -14,7 +14,7 @@
 
 // Simple data processor
 class DataProcessor : public axonvex::core::Callback<int> {
-public:
+  public:
     void callbackPerform(const int data) override {
         std::cout << "Processing data: " << data << " -> result: " << (data * 2) << std::endl;
     }
@@ -22,7 +22,7 @@ public:
 
 // Simple logger
 class Logger : public axonvex::core::Callback<int> {
-public:
+  public:
     void callbackPerform(const int data) override {
         std::cout << "Log: Received value " << data << std::endl;
     }
@@ -30,7 +30,7 @@ public:
 
 // String processor for keyed demo
 class MessageHandler : public axonvex::core::Callback<std::string> {
-public:
+  public:
     void callbackPerform(const std::string data) override {
         std::cout << "Handling message: " << data << std::endl;
     }

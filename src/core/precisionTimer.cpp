@@ -11,8 +11,8 @@
  * with nanosecond accuracy and minimal overhead.
  */
 
-#include <axonvex/core/precisionTimer.hpp>
 #include <algorithm>
+#include <axonvex/core/precisionTimer.hpp>
 #include <numeric>
 #include <stdexcept>
 #include <thread>
@@ -20,13 +20,9 @@
 namespace axonvex::core {
 
 PrecisionTimer::PrecisionTimer(size_t max_samples)
-    : start_time_(ClockType::now())
-    , stop_time_(ClockType::now())
-    , running_(false)
-    , statistics_enabled_(false)
-    , total_measurements_(0)
-    , last_measurement_(DurationType::zero())
-    , max_samples_(max_samples) {
+    : start_time_(ClockType::now()), stop_time_(ClockType::now()), running_(false),
+      statistics_enabled_(false), total_measurements_(0), last_measurement_(DurationType::zero()),
+      max_samples_(max_samples) {
     samples_.reserve(max_samples);
 }
 
@@ -267,7 +263,8 @@ PrecisionTimer::DurationType PrecisionTimer::calculatePercentileImpl(
     auto lower_value = sorted_samples[lower_index];
     auto upper_value = sorted_samples[upper_index];
 
-    auto interpolated = lower_value +
+    auto interpolated =
+        lower_value +
         DurationType(static_cast<long long>(weight * (upper_value - lower_value).count()));
 
     return interpolated;

@@ -12,11 +12,11 @@
  */
 
 #include <axonvex/axonvex.hpp>
+#include <chrono>
+#include <cmath>
 #include <iostream>
 #include <thread>
-#include <chrono>
 #include <vector>
-#include <cmath>
 
 using namespace axonvex::core;
 
@@ -59,9 +59,12 @@ int main() {
         std::cout << "Test 2: Clock information\n";
         std::cout << "-------------------------\n";
 
-        std::cout << "Clock is steady: " << (PrecisionTimer::isClockSteady() ? "Yes" : "No") << "\n";
-        std::cout << "Clock resolution: " << PrecisionTimer::getClockResolution().count() << " ns\n";
-        std::cout << "Timer overhead: " << PrecisionTimer::estimateOverhead(1000).count() << " ns\n";
+        std::cout << "Clock is steady: " << (PrecisionTimer::isClockSteady() ? "Yes" : "No")
+                  << "\n";
+        std::cout << "Clock resolution: " << PrecisionTimer::getClockResolution().count()
+                  << " ns\n";
+        std::cout << "Timer overhead: " << PrecisionTimer::estimateOverhead(1000).count()
+                  << " ns\n";
         std::cout << "\n";
 
         // Test 3: Statistics collection
@@ -134,8 +137,10 @@ int main() {
         auto endTime = std::chrono::high_resolution_clock::now();
         auto totalTime = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);
 
-        std::cout << "Timer overhead per operation: " << (totalTime.count() / iterations) << " ns\n";
-        std::cout << "Total time for " << iterations << " operations: " << totalTime.count() << " ns\n";
+        std::cout << "Timer overhead per operation: " << (totalTime.count() / iterations)
+                  << " ns\n";
+        std::cout << "Total time for " << iterations << " operations: " << totalTime.count()
+                  << " ns\n";
 
         std::cout << "\n";
         std::cout << "=== Example completed successfully! ===\n";

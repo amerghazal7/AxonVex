@@ -18,13 +18,13 @@
  * - Configuration management
  */
 
+#include <atomic>
 #include <axonvex/axonvex.hpp>
 #include <chrono>
-#include <thread>
-#include <atomic>
-#include <vector>
-#include <random>
 #include <iomanip>
+#include <random>
+#include <thread>
+#include <vector>
 
 using namespace axonvex;
 
@@ -36,18 +36,18 @@ using namespace axonvex;
  * @brief Data Generator ProcessingUnit
  */
 class DataGenerator : public ProcessingUnit {
-private:
+  private:
     OutputPort<double>* output_;
     std::atomic<uint64_t> generatedCount_{0};
     double frequency_;
     std::mt19937 generator_;
     std::uniform_real_distribution<> distribution_;
 
-public:
+  public:
     explicit DataGenerator(const std::string& name, double freq = 1.0)
-        : ProcessingUnit(name), frequency_(freq)
-        , generator_(std::chrono::steady_clock::now().time_since_epoch().count())
-        , distribution_(-10.0, 10.0) {
+        : ProcessingUnit(name), frequency_(freq),
+          generator_(std::chrono::steady_clock::now().time_since_epoch().count()),
+          distribution_(-10.0, 10.0) {
         output_ = createOutputPort<double>(1000, "data_out");
     }
 
@@ -77,7 +77,9 @@ public:
         setState(ExecutionState::INITIALIZED);
     }
 
-    uint64_t getGeneratedCount() const { return generatedCount_.load(); }
+    uint64_t getGeneratedCount() const {
+        return generatedCount_.load();
+    }
 
     void finalize() override {
         setState(ExecutionState::STOPPED);
@@ -88,14 +90,14 @@ public:
  * @brief Data Processor ProcessingUnit
  */
 class DataProcessor : public ProcessingUnit {
-private:
+  private:
     InputPort<double>* input_;
     OutputPort<double>* output_;
     std::atomic<uint64_t> processedCount_{0};
     double runningSum_{0.0};
     size_t windowSize_;
 
-public:
+  public:
     explicit DataProcessor(const std::string& name, size_t windowSize = 100)
         : ProcessingUnit(name), windowSize_(windowSize) {
         input_ = createInputPort<double>(1001, "data_in");
@@ -120,8 +122,8 @@ public:
                 runningSum_ -= value; // Simplified for demonstration
             }
 
-            double average = runningSum_ / std::min(processedCount_.load(),
-                                                  static_cast<uint64_t>(windowSize_));
+            double average =
+                runningSum_ / std::min(processedCount_.load(), static_cast<uint64_t>(windowSize_));
             output_->write(average);
 
             input_->clearNewDataFlag();
@@ -139,7 +141,9 @@ public:
         setState(ExecutionState::INITIALIZED);
     }
 
-    uint64_t getProcessedCount() const { return processedCount_.load(); }
+    uint64_t getProcessedCount() const {
+        return processedCount_.load();
+    }
 
     void finalize() override {
         setState(ExecutionState::STOPPED);
@@ -150,12 +154,12 @@ public:
  * @brief System Monitor ProcessingUnit
  */
 class SystemMonitor : public ProcessingUnit {
-private:
+  private:
     InputPort<double>* input_;
     AxonVexSystem* system_;
     std::atomic<uint64_t> monitoringCycles_{0};
 
-public:
+  public:
     explicit SystemMonitor(const std::string& name, AxonVexSystem* sys)
         : ProcessingUnit(name), system_(sys) {
         input_ = createInputPort<double>(1003, "monitor_in");
@@ -196,7 +200,9 @@ public:
         setState(ExecutionState::INITIALIZED);
     }
 
-    uint64_t getMonitoringCycles() const { return monitoringCycles_.load(); }
+    uint64_t getMonitoringCycles() const {
+        return monitoringCycles_.load();
+    }
 
     void finalize() override {
         setState(ExecutionState::STOPPED);
@@ -218,7 +224,8 @@ void demonstrateSystemLifecycle() {
     config.name = "LifecycleDemo";
     config.maxProcessingUnits = 10;
     config.enableStatistics = true;
-    config.statisticsUpdateInterval = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds(500));
+    config.statisticsUpdateInterval =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds(500));
     config.enableRealTimeScheduling = false; // Disable for demo
 
     auto system = std::make_unique<AxonVexSystem>(config);
@@ -328,9 +335,9 @@ void demonstrateProcessingUnitOrchestration() {
 
         // Print periodic status
         LOG_INFO("Cycle " + std::to_string(i + 1) +
-                " - Generated: " + std::to_string(genPtr->getGeneratedCount()) +
-                ", Processed: " + std::to_string(procPtr->getProcessedCount()) +
-                ", Monitored: " + std::to_string(monPtr->getMonitoringCycles()));
+                 " - Generated: " + std::to_string(genPtr->getGeneratedCount()) +
+                 ", Processed: " + std::to_string(procPtr->getProcessedCount()) +
+                 ", Monitored: " + std::to_string(monPtr->getMonitoringCycles()));
     }
 
     auto endTime = std::chrono::steady_clock::now();
@@ -357,8 +364,8 @@ void demonstrateEventSystem() {
     std::atomic<int> eventCount{0};
     system->registerEventCallback([&eventCount](const SystemEvent& event) {
         eventCount.fetch_add(1);
-        LOG_INFO("Event received: " + std::to_string(static_cast<int>(event.type)) +
-                " from " + event.source);
+        LOG_INFO("Event received: " + std::to_string(static_cast<int>(event.type)) + " from " +
+                 event.source);
     });
 
     // Register units to generate events
@@ -401,9 +408,7 @@ void demonstrateErrorHandling() {
         system->stop();
         LOG_INFO("Error handling demonstration completed");
 
-    } catch (const std::exception& e) {
-        LOG_ERROR("System error: " + std::string(e.what()));
-    }
+    } catch (const std::exception& e) { LOG_ERROR("System error: " + std::string(e.what())); }
 }
 
 /**
@@ -437,7 +442,7 @@ void demonstratePerformanceMonitoring() {
 
         auto stats = system->getStatistics();
         LOG_INFO("Performance Stats - Uptime: " + std::to_string(stats.uptimeMilliseconds) +
-                " ms, Active Units: " + std::to_string(stats.activeProcessingUnits));
+                 " ms, Active Units: " + std::to_string(stats.activeProcessingUnits));
     }
 
     system->stop();

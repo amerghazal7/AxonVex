@@ -116,6 +116,8 @@ endif()
 
 # Find dependencies
 find_package(Threads REQUIRED)
+find_package(nlohmann_json REQUIRED)
+find_package(TBB REQUIRED)
 
 # Conan integration (if using Conan)
 if(EXISTS "${CMAKE_CURRENT_BINARY_DIR}/conan_paths.cmake")
@@ -147,6 +149,8 @@ target_include_directories(axonvex
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+        ${TBB_INCLUDE_DIRS}
+        ${nlohmann_json_INCLUDE_DIRS}
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -155,6 +159,8 @@ target_include_directories(axonvex
 target_link_libraries(axonvex
     PUBLIC
         Threads::Threads
+        TBB::tbb
+        nlohmann_json::nlohmann_json
     PRIVATE
         $<$<PLATFORM_ID:Linux>:rt>      # Real-time library on Linux
         $<$<PLATFORM_ID:Windows>:winmm> # Windows multimedia library

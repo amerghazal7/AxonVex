@@ -17,18 +17,18 @@
  * - Thread safety testing
  */
 
-#include <gtest/gtest.h>
 #include <axonvex/core/configuration.hpp>
-#include <thread>
 #include <chrono>
-#include <fstream>
-#include <vector>
 #include <cstdlib>
+#include <fstream>
+#include <gtest/gtest.h>
+#include <thread>
+#include <vector>
 
 using namespace axonvex::core;
 
 class ConfigurationTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         // Create test configuration
         config = std::make_unique<Configuration>(true, true);
@@ -238,7 +238,8 @@ TEST_F(ConfigurationTest, CallbackTest) {
     std::vector<std::string> old_values;
     std::vector<std::string> new_values;
 
-    auto callback = [&](const std::string& key, const ConfigValue& old_val, const ConfigValue& new_val) {
+    auto callback = [&](const std::string& key, const ConfigValue& old_val,
+                        const ConfigValue& new_val) {
         callback_keys.push_back(key);
         old_values.push_back(old_val.is_null() ? "null" : old_val.dump());
         new_values.push_back(new_val.dump());
@@ -477,18 +478,18 @@ TEST_F(ConfigurationTest, ThreadSafetyTest) {
                         }
                     } else if (i % 3 == 1) {
                         // Write operation
-                        std::string key = "thread." + std::to_string(t) + ".key" + std::to_string(i);
+                        std::string key =
+                            "thread." + std::to_string(t) + ".key" + std::to_string(i);
                         if (!config->set(key, i)) {
                             errors.fetch_add(1);
                         }
                     } else {
                         // Check operation
-                        std::string key = "thread." + std::to_string(t) + ".key" + std::to_string(i-1);
+                        std::string key =
+                            "thread." + std::to_string(t) + ".key" + std::to_string(i - 1);
                         config->has(key);
                     }
-                } catch (const std::exception&) {
-                    errors.fetch_add(1);
-                }
+                } catch (const std::exception&) { errors.fetch_add(1); }
             }
         });
     }
@@ -524,7 +525,8 @@ TEST_F(ConfigurationTest, PerformanceBenchmarkTest) {
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
-    auto read_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
+    auto read_duration =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
 
     // Benchmark configuration writes
     start_time = std::chrono::high_resolution_clock::now();
@@ -535,15 +537,18 @@ TEST_F(ConfigurationTest, PerformanceBenchmarkTest) {
     }
 
     end_time = std::chrono::high_resolution_clock::now();
-    auto write_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
+    auto write_duration =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
 
     // Calculate average times
     double avg_read_time_ns = static_cast<double>(read_duration.count()) / num_operations;
     double avg_write_time_ns = static_cast<double>(write_duration.count()) / num_operations;
 
     // Performance targets (these are reasonable for configuration access)
-    EXPECT_LT(avg_read_time_ns, 1000.0) << "Average read time: " << avg_read_time_ns << " ns (target: <1000ns)";
-    EXPECT_LT(avg_write_time_ns, 10000.0) << "Average write time: " << avg_write_time_ns << " ns (target: <10000ns)";
+    EXPECT_LT(avg_read_time_ns, 1000.0)
+        << "Average read time: " << avg_read_time_ns << " ns (target: <1000ns)";
+    EXPECT_LT(avg_write_time_ns, 10000.0)
+        << "Average write time: " << avg_write_time_ns << " ns (target: <10000ns)";
 
     // Output performance results
     std::cout << "\n=== Configuration Performance Results ===" << std::endl;
@@ -554,7 +559,8 @@ TEST_F(ConfigurationTest, PerformanceBenchmarkTest) {
 
     // Verify final state
     EXPECT_EQ(config->get<int>("benchmark.key0"), 0);
-    EXPECT_EQ(config->get<int>("benchmark.key" + std::to_string(num_operations - 1)), num_operations - 1);
+    EXPECT_EQ(config->get<int>("benchmark.key" + std::to_string(num_operations - 1)),
+              num_operations - 1);
 }
 
 //==============================================================================

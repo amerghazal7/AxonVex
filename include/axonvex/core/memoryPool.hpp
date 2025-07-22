@@ -1,12 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
-#include <memory>
 #include <cstddef>
+#include <cstring>
+#include <memory>
 #include <new>
 #include <optional>
-#include <cstring>
-#include <algorithm>
 
 namespace axonvex::core {
 
@@ -22,13 +22,27 @@ struct MemoryPoolStatistics {
     std::atomic<uint64_t> peak_usage{0};
     std::atomic<uint64_t> current_usage{0};
 
-    uint64_t getAllocations() const noexcept { return allocations.load(); }
-    uint64_t getDeallocations() const noexcept { return deallocations.load(); }
-    uint64_t getAllocationFailures() const noexcept { return allocation_failures.load(); }
-    uint64_t getDeallocationFailures() const noexcept { return deallocation_failures.load(); }
-    uint64_t getPoolExhausted() const noexcept { return pool_exhausted.load(); }
-    uint64_t getPeakUsage() const noexcept { return peak_usage.load(); }
-    uint64_t getCurrentUsage() const noexcept { return current_usage.load(); }
+    uint64_t getAllocations() const noexcept {
+        return allocations.load();
+    }
+    uint64_t getDeallocations() const noexcept {
+        return deallocations.load();
+    }
+    uint64_t getAllocationFailures() const noexcept {
+        return allocation_failures.load();
+    }
+    uint64_t getDeallocationFailures() const noexcept {
+        return deallocation_failures.load();
+    }
+    uint64_t getPoolExhausted() const noexcept {
+        return pool_exhausted.load();
+    }
+    uint64_t getPeakUsage() const noexcept {
+        return peak_usage.load();
+    }
+    uint64_t getCurrentUsage() const noexcept {
+        return current_usage.load();
+    }
 
     void reset() noexcept {
         allocations.store(0);
@@ -66,9 +80,9 @@ struct MemoryPoolStatistics {
  *
  * @tparam T Element type for the memory pool
  */
-template<typename T>
+template <typename T>
 class MemoryPool {
-public:
+  public:
     static constexpr size_t DEFAULT_POOL_SIZE = 1024;
     static constexpr size_t MIN_POOL_SIZE = 16;
     static constexpr size_t MAX_POOL_SIZE = 1024 * 1024;
@@ -206,7 +220,7 @@ public:
      */
     void clear() noexcept;
 
-private:
+  private:
     // Memory block structure for free list management
     struct alignas(64) Block {
         std::atomic<Block*> next{nullptr};
@@ -256,11 +270,10 @@ private:
 };
 
 // Implementation
-template<typename T>
+template <typename T>
 MemoryPool<T>::MemoryPool(size_t pool_size)
-    : pool_size_(std::max(MIN_POOL_SIZE, std::min(MAX_POOL_SIZE, nextPowerOf2(pool_size))))
-    , pool_mask_(pool_size_ - 1)
-    , blocks_(std::make_unique<Block[]>(pool_size_)) {
+    : pool_size_(std::max(MIN_POOL_SIZE, std::min(MAX_POOL_SIZE, nextPowerOf2(pool_size)))),
+      pool_mask_(pool_size_ - 1), blocks_(std::make_unique<Block[]>(pool_size_)) {
 
     // Initialize free list - link all blocks together
     for (size_t i = 0; i < pool_size_ - 1; ++i) {
@@ -274,12 +287,12 @@ MemoryPool<T>::MemoryPool(size_t pool_size)
     free_head_.store(&blocks_[0], relaxed);
 }
 
-template<typename T>
+template <typename T>
 MemoryPool<T>::~MemoryPool() {
     clear();
 }
 
-template<typename T>
+template <typename T>
 T* MemoryPool<T>::allocate() noexcept {
     try {
         Block* head = free_head_.load(acquire);
@@ -287,25 +300,25 @@ T* MemoryPool<T>::allocate() noexcept {
         while (head != nullptr) {
             Block* next = head->next.load(relaxed);
 
-                            // Try to claim this block
-                if (free_head_.compare_exchange_weak(head, next, acq_rel, relaxed)) {
-                    // Successfully claimed block, mark as allocated
-                    head->is_allocated.store(true, relaxed);
+            // Try to claim this block
+            if (free_head_.compare_exchange_weak(head, next, acq_rel, relaxed)) {
+                // Successfully claimed block, mark as allocated
+                head->is_allocated.store(true, relaxed);
 
-                    size_t current_count = allocated_count_.fetch_add(1, relaxed) + 1;
+                size_t current_count = allocated_count_.fetch_add(1, relaxed) + 1;
 
-                    // Update peak usage
-                    size_t peak = stats_.peak_usage.load(relaxed);
-                    while (current_count > peak &&
-                           !stats_.peak_usage.compare_exchange_weak(peak, current_count, relaxed)) {
-                        // Loop until we successfully update peak or find a higher value
-                    }
-
-                    stats_.current_usage.store(current_count, relaxed);
-                    stats_.allocations.fetch_add(1, relaxed);
-
-                    return head->data();
+                // Update peak usage
+                size_t peak = stats_.peak_usage.load(relaxed);
+                while (current_count > peak &&
+                       !stats_.peak_usage.compare_exchange_weak(peak, current_count, relaxed)) {
+                    // Loop until we successfully update peak or find a higher value
                 }
+
+                stats_.current_usage.store(current_count, relaxed);
+                stats_.allocations.fetch_add(1, relaxed);
+
+                return head->data();
+            }
 
             // CAS failed, reload head and try again
             head = free_head_.load(acquire);
@@ -322,7 +335,7 @@ T* MemoryPool<T>::allocate() noexcept {
     }
 }
 
-template<typename T>
+template <typename T>
 T* MemoryPool<T>::allocateObject() noexcept {
     T* ptr = allocate();
     if (ptr != nullptr) {
@@ -338,7 +351,7 @@ T* MemoryPool<T>::allocateObject() noexcept {
     return nullptr;
 }
 
-template<typename T>
+template <typename T>
 T* MemoryPool<T>::allocateObject(const T& value) noexcept {
     T* ptr = allocate();
     if (ptr != nullptr) {
@@ -354,7 +367,7 @@ T* MemoryPool<T>::allocateObject(const T& value) noexcept {
     return nullptr;
 }
 
-template<typename T>
+template <typename T>
 T* MemoryPool<T>::allocateObject(T&& value) noexcept {
     T* ptr = allocate();
     if (ptr != nullptr) {
@@ -370,7 +383,7 @@ T* MemoryPool<T>::allocateObject(T&& value) noexcept {
     return nullptr;
 }
 
-template<typename T>
+template <typename T>
 bool MemoryPool<T>::deallocate(T* ptr) noexcept {
     try {
         if (!isValidPointer(ptr)) {
@@ -382,7 +395,8 @@ bool MemoryPool<T>::deallocate(T* ptr) noexcept {
 
         // Check if block is already deallocated (double deallocation detection)
         bool expected_allocated = true;
-        if (!block->is_allocated.compare_exchange_strong(expected_allocated, false, acq_rel, relaxed)) {
+        if (!block->is_allocated.compare_exchange_strong(expected_allocated, false, acq_rel,
+                                                         relaxed)) {
             // Block was not allocated - double deallocation
             stats_.deallocation_failures.fetch_add(1, relaxed);
             return false;
@@ -407,7 +421,7 @@ bool MemoryPool<T>::deallocate(T* ptr) noexcept {
     }
 }
 
-template<typename T>
+template <typename T>
 bool MemoryPool<T>::deallocateObject(T* ptr) noexcept {
     if (ptr != nullptr) {
         try {
@@ -421,47 +435,47 @@ bool MemoryPool<T>::deallocateObject(T* ptr) noexcept {
     return false;
 }
 
-template<typename T>
+template <typename T>
 size_t MemoryPool<T>::getUsage() const noexcept {
     return allocated_count_.load(acquire);
 }
 
-template<typename T>
+template <typename T>
 size_t MemoryPool<T>::getCapacity() const noexcept {
     return pool_size_;
 }
 
-template<typename T>
+template <typename T>
 size_t MemoryPool<T>::getAvailable() const noexcept {
     return pool_size_ - allocated_count_.load(acquire);
 }
 
-template<typename T>
+template <typename T>
 bool MemoryPool<T>::isEmpty() const noexcept {
     return allocated_count_.load(acquire) == pool_size_;
 }
 
-template<typename T>
+template <typename T>
 bool MemoryPool<T>::isFull() const noexcept {
     return allocated_count_.load(acquire) == 0;
 }
 
-template<typename T>
+template <typename T>
 double MemoryPool<T>::getUtilization() const noexcept {
     return static_cast<double>(allocated_count_.load(acquire)) / static_cast<double>(pool_size_);
 }
 
-template<typename T>
+template <typename T>
 const MemoryPoolStatistics& MemoryPool<T>::getStatistics() const noexcept {
     return stats_;
 }
 
-template<typename T>
+template <typename T>
 void MemoryPool<T>::resetStatistics() noexcept {
     stats_.reset();
 }
 
-template<typename T>
+template <typename T>
 bool MemoryPool<T>::validate() const noexcept {
     try {
         // Check if usage count is consistent
@@ -481,12 +495,10 @@ bool MemoryPool<T>::validate() const noexcept {
         // Check if free + allocated == total
         return (free_count + allocated == pool_size_);
 
-    } catch (...) {
-        return false;
-    }
+    } catch (...) { return false; }
 }
 
-template<typename T>
+template <typename T>
 void MemoryPool<T>::clear() noexcept {
     // Reset free list
     for (size_t i = 0; i < pool_size_ - 1; ++i) {
@@ -503,9 +515,10 @@ void MemoryPool<T>::clear() noexcept {
     stats_.current_usage.store(0, relaxed);
 }
 
-template<typename T>
+template <typename T>
 size_t MemoryPool<T>::nextPowerOf2(size_t value) noexcept {
-    if (value == 0) return 1;
+    if (value == 0)
+        return 1;
     --value;
     value |= value >> 1;
     value |= value >> 2;
@@ -516,9 +529,10 @@ size_t MemoryPool<T>::nextPowerOf2(size_t value) noexcept {
     return ++value;
 }
 
-template<typename T>
+template <typename T>
 bool MemoryPool<T>::isValidPointer(const T* ptr) const noexcept {
-    if (ptr == nullptr) return false;
+    if (ptr == nullptr)
+        return false;
 
     // Check if pointer is within our memory range
     const char* char_ptr = reinterpret_cast<const char*>(ptr);
@@ -528,7 +542,7 @@ bool MemoryPool<T>::isValidPointer(const T* ptr) const noexcept {
     return (char_ptr >= blocks_start && char_ptr < blocks_end);
 }
 
-template<typename T>
+template <typename T>
 typename MemoryPool<T>::Block* MemoryPool<T>::getBlockFromPointer(const T* ptr) const noexcept {
     // Calculate block index based on pointer offset
     const char* char_ptr = reinterpret_cast<const char*>(ptr);

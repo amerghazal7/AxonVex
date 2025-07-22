@@ -24,7 +24,7 @@
 #include <axonvex/axonvex.hpp>
 
 using namespace axonvex;
-using namespace axonvex::Log;  // Use framework's Logger
+using namespace axonvex::Log; // Use framework's Logger
 
 void printHeader(const std::string& title) {
     Info() << "\n=== " << title << " ===";
@@ -95,26 +95,21 @@ void demonstrateSecurityFeatures() {
 
     Info() << "🔒 Security Validation:";
     Info() << "  Safe config: " << safe_config << " → "
-              << (safe_config.isSecure() ? "SECURE" : "UNSAFE");
-    Info() << "  Safe log:    " << safe_log << " → "
-              << (safe_log.isSecure() ? "SECURE" : "UNSAFE");
+           << (safe_config.isSecure() ? "SECURE" : "UNSAFE");
+    Info() << "  Safe log:    " << safe_log << " → " << (safe_log.isSecure() ? "SECURE" : "UNSAFE");
 
     // Dangerous paths (directory traversal attempts)
     std::vector<std::string> dangerous_paths = {
-        "../../../etc/passwd",
-        "config/../../../sensitive.txt",
-        "..\\..\\..\\windows\\system32\\config",
-        "/etc/shadow",
-        "C:\\Windows\\System32\\config\\SAM"
-    };
+        "../../../etc/passwd", "config/../../../sensitive.txt",
+        "..\\..\\..\\windows\\system32\\config", "/etc/shadow",
+        "C:\\Windows\\System32\\config\\SAM"};
 
     Info() << "\n⚠️  Security Threats Detected:";
     for (const auto& dangerous : dangerous_paths) {
         Path threat_path(dangerous);
         bool is_secure = threat_path.isSecure();
 
-        Info() << "  " << dangerous << " → "
-                  << (is_secure ? "ALLOWED" : "BLOCKED");
+        Info() << "  " << dangerous << " → " << (is_secure ? "ALLOWED" : "BLOCKED");
 
         if (!is_secure) {
             auto errors = threat_path.validateSecurity();
@@ -172,9 +167,12 @@ void demonstrateFileOperations() {
         "name": "AxonVex Path Demo",
         "version": "1.0.0",
         "paths": {
-            "config_dir": ")" << config_dir.toGenericString() << R"(",
-            "log_file": ")" << log_file.toGenericString() << R"(",
-            "data_dir": ")" << data_dir.toGenericString() << R"("
+            "config_dir": ")"
+                  << config_dir.toGenericString() << R"(",
+            "log_file": ")"
+                  << log_file.toGenericString() << R"(",
+            "data_dir": ")"
+                  << data_dir.toGenericString() << R"("
         }
     }
 })";
@@ -272,16 +270,24 @@ void demonstrateConfigurationIntegration() {
             "version": "1.0.0"
         },
         "paths": {
-            "config_dir": ")" + Path::getDefaultConfigDir().toGenericString() + R"(",
-            "log_dir": ")" + Path::getDefaultLogDir().toGenericString() + R"(",
-            "data_dir": ")" + Path::getDefaultDataDir().toGenericString() + R"(",
-            "cache_dir": ")" + Path::getDefaultCacheDir().toGenericString() + R"(",
-            "temp_dir": ")" + Path::getDefaultTempDir().toGenericString() + R"("
+            "config_dir": ")" +
+                              Path::getDefaultConfigDir().toGenericString() + R"(",
+            "log_dir": ")" + Path::getDefaultLogDir().toGenericString() +
+                              R"(",
+            "data_dir": ")" + Path::getDefaultDataDir().toGenericString() +
+                              R"(",
+            "cache_dir": ")" + Path::getDefaultCacheDir().toGenericString() +
+                              R"(",
+            "temp_dir": ")" + Path::getDefaultTempDir().toGenericString() +
+                              R"("
         },
         "files": {
-            "main_config": ")" + app_config.toGenericString() + R"(",
-            "system_config": ")" + system_config.toGenericString() + R"(",
-            "user_config": ")" + user_config.toGenericString() + R"("
+            "main_config": ")" +
+                              app_config.toGenericString() + R"(",
+            "system_config": ")" +
+                              system_config.toGenericString() + R"(",
+            "user_config": ")" +
+                              user_config.toGenericString() + R"("
         }
     })";
 
@@ -302,9 +308,12 @@ void demonstrateConfigurationIntegration() {
     Path log_dir_path(log_dir_str);
     Path main_config_path(main_config_str);
 
-    Info() << "  Config Dir:     " << config_dir_path << " (Secure: " << (config_dir_path.isSecure() ? "✓" : "✗") << ")";
-    Info() << "  Log Dir:        " << log_dir_path << " (Exists: " << (log_dir_path.exists() ? "✓" : "✗") << ")";
-    Info() << "  Main Config:    " << main_config_path << " (Writable: " << (main_config_path.parent().isWritable() ? "✓" : "✗") << ")";
+    Info() << "  Config Dir:     " << config_dir_path
+           << " (Secure: " << (config_dir_path.isSecure() ? "✓" : "✗") << ")";
+    Info() << "  Log Dir:        " << log_dir_path
+           << " (Exists: " << (log_dir_path.exists() ? "✓" : "✗") << ")";
+    Info() << "  Main Config:    " << main_config_path
+           << " (Writable: " << (main_config_path.parent().isWritable() ? "✓" : "✗") << ")";
 
     // Demonstrate path composition with configuration values
     Path runtime_log = log_dir_path / "runtime.log";
@@ -335,7 +344,8 @@ void demonstrateAdvancedFeatures() {
 
     // Custom validators
     Path::registerValidator("config_file_validator", [](const Path& path) {
-        return path.extension() == ".json" || path.extension() == ".yaml" || path.extension() == ".yml";
+        return path.extension() == ".json" || path.extension() == ".yaml" ||
+               path.extension() == ".yml";
     });
 
     Path::registerValidator("log_file_validator", [](const Path& path) {
@@ -345,19 +355,14 @@ void demonstrateAdvancedFeatures() {
     Info() << "🔍 Custom Validators:";
 
     std::vector<std::pair<std::string, std::string>> test_files = {
-        {"config.json", "config_file_validator"},
-        {"settings.yaml", "config_file_validator"},
-        {"data.xml", "config_file_validator"},
-        {"application.log", "log_file_validator"},
-        {"debug.txt", "log_file_validator"},
-        {"binary.exe", "log_file_validator"}
-    };
+        {"config.json", "config_file_validator"}, {"settings.yaml", "config_file_validator"},
+        {"data.xml", "config_file_validator"},    {"application.log", "log_file_validator"},
+        {"debug.txt", "log_file_validator"},      {"binary.exe", "log_file_validator"}};
 
     for (const auto& [filename, validator] : test_files) {
         Path test_path(filename);
         bool valid = test_path.validateWith(validator);
-        Info() << "  " << filename << " → " << validator << ": "
-                  << (valid ? "VALID" : "INVALID");
+        Info() << "  " << filename << " → " << validator << ": " << (valid ? "VALID" : "INVALID");
     }
 
     // System information
@@ -380,7 +385,8 @@ void demonstrateAdvancedFeatures() {
         stream << "Temporary file " << i << " created by AxonVex Path demo";
         stream.close();
 
-        Info() << "  Created: " << temp_file.filename() << " (Size: " << temp_file.size() << " bytes)";
+        Info() << "  Created: " << temp_file.filename() << " (Size: " << temp_file.size()
+               << " bytes)";
     }
 
     // Cleanup temporary files
@@ -420,16 +426,19 @@ void demonstratePerformance() {
     double throughput = 1e9 / avg_time_ns;
 
     Info() << "\n📊 Performance Results:";
-    Info() << "  Average operation time: " << std::fixed << std::setprecision(2) << avg_time_ns << " ns";
+    Info() << "  Average operation time: " << std::fixed << std::setprecision(2) << avg_time_ns
+           << " ns";
     Info() << "  Throughput: " << std::fixed << std::setprecision(0) << throughput << " ops/sec";
     Info() << "  Total test time: " << duration.count() / 1e6 << " ms";
 
     // Performance target validation
     const double target_ns = 1000.0; // Target: under 1 microsecond per operation
     if (avg_time_ns < target_ns) {
-        printSuccess("Performance exceeds target (<" + std::to_string((int)target_ns) + "ns per operation)");
+        printSuccess("Performance exceeds target (<" + std::to_string((int)target_ns) +
+                     "ns per operation)");
     } else {
-        printWarning("Performance below target (" + std::to_string(avg_time_ns) + "ns > " + std::to_string((int)target_ns) + "ns)");
+        printWarning("Performance below target (" + std::to_string(avg_time_ns) + "ns > " +
+                     std::to_string((int)target_ns) + "ns)");
     }
 }
 

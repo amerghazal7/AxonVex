@@ -1,19 +1,19 @@
 #pragma once
 
-#include <memory>
-#include <vector>
 #include <atomic>
-#include <thread>
-#include <chrono>
-#include <functional>
-#include <mutex>
-#include <condition_variable>
-#include <unordered_map>
-#include <queue>
-#include <string>
+#include <axonvex/core/memoryPool.hpp>
 #include <axonvex/core/precisionTimer.hpp>
 #include <axonvex/core/threadSafeQueue.hpp>
-#include <axonvex/core/memoryPool.hpp>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
 namespace axonvex::core {
 
@@ -41,11 +41,11 @@ enum class SchedulingPolicy {
 
 // Timing constraints structure
 struct TimingConstraints {
-    std::chrono::microseconds period{0};           // Execution period (0 = use default from frequency)
-    std::chrono::microseconds deadline{0};         // Execution deadline (0 = same as period)
-    std::chrono::microseconds wcet{0};             // Worst-case execution time (0 = auto-calculate)
+    std::chrono::microseconds period{0};   // Execution period (0 = use default from frequency)
+    std::chrono::microseconds deadline{0}; // Execution deadline (0 = same as period)
+    std::chrono::microseconds wcet{0};     // Worst-case execution time (0 = auto-calculate)
     SchedulerPriority priority{SchedulerPriority::NORMAL};
-    bool isRealTime{false};                        // Real-time task flag
+    bool isRealTime{false}; // Real-time task flag
 
     void reset() {
         period = std::chrono::microseconds{0};
@@ -69,7 +69,7 @@ struct SchedulerStatistics {
     std::chrono::microseconds minExecutionTime{std::chrono::microseconds::max()};
     double cpuUtilization{0.0};
     double schedulabilityRatio{0.0};
-    std::chrono::microseconds schedulingJitter{0}; // New statistic
+    std::chrono::microseconds schedulingJitter{0};        // New statistic
     std::chrono::microseconds averageSchedulingJitter{0}; // New statistic
 
     void reset() {
@@ -114,20 +114,13 @@ struct SchedulerTask {
     SchedulerTask() = default;
 
     SchedulerTask(const SchedulerTask& other)
-        : unit(other.unit)
-        , constraints(other.constraints)
-        , nextExecution(other.nextExecution)
-        , lastExecution(other.lastExecution)
-        , active(other.active.load())
-        , executing(other.executing.load())
-        , taskId(other.taskId)
-        , name(other.name)
-        , executionCount(other.executionCount)
-        , missedDeadlines(other.missedDeadlines)
-        , totalExecutionTime(other.totalExecutionTime)
-        , consecutiveFailures(other.consecutiveFailures)
-        , lastFailureTime(other.lastFailureTime)
-        , reactivationTime(other.reactivationTime) {}
+        : unit(other.unit), constraints(other.constraints), nextExecution(other.nextExecution),
+          lastExecution(other.lastExecution), active(other.active.load()),
+          executing(other.executing.load()), taskId(other.taskId), name(other.name),
+          executionCount(other.executionCount), missedDeadlines(other.missedDeadlines),
+          totalExecutionTime(other.totalExecutionTime),
+          consecutiveFailures(other.consecutiveFailures), lastFailureTime(other.lastFailureTime),
+          reactivationTime(other.reactivationTime) {}
 
     SchedulerTask& operator=(const SchedulerTask& other) {
         if (this != &other) {
@@ -150,20 +143,13 @@ struct SchedulerTask {
     }
 
     SchedulerTask(SchedulerTask&& other) noexcept
-        : unit(other.unit)
-        , constraints(std::move(other.constraints))
-        , nextExecution(other.nextExecution)
-        , lastExecution(other.lastExecution)
-        , active(other.active.load())
-        , executing(other.executing.load())
-        , taskId(other.taskId)
-        , name(std::move(other.name))
-        , executionCount(other.executionCount)
-        , missedDeadlines(other.missedDeadlines)
-        , totalExecutionTime(other.totalExecutionTime)
-        , consecutiveFailures(other.consecutiveFailures)
-        , lastFailureTime(other.lastFailureTime)
-        , reactivationTime(other.reactivationTime) {}
+        : unit(other.unit), constraints(std::move(other.constraints)),
+          nextExecution(other.nextExecution), lastExecution(other.lastExecution),
+          active(other.active.load()), executing(other.executing.load()), taskId(other.taskId),
+          name(std::move(other.name)), executionCount(other.executionCount),
+          missedDeadlines(other.missedDeadlines), totalExecutionTime(other.totalExecutionTime),
+          consecutiveFailures(other.consecutiveFailures), lastFailureTime(other.lastFailureTime),
+          reactivationTime(other.reactivationTime) {}
 
     SchedulerTask& operator=(SchedulerTask&& other) noexcept {
         if (this != &other) {
@@ -188,7 +174,7 @@ struct SchedulerTask {
 
 // Real-time scheduler class
 class RealTimeScheduler {
-public:
+  public:
     explicit RealTimeScheduler(SchedulingPolicy policy = SchedulingPolicy::PRIORITY_BASED);
     ~RealTimeScheduler();
 
@@ -203,8 +189,12 @@ public:
     void stop();
     void pause();
     void resume();
-    bool isRunning() const { return running_.load(); }
-    bool isPaused() const { return paused_.load(); }
+    bool isRunning() const {
+        return running_.load();
+    }
+    bool isPaused() const {
+        return paused_.load();
+    }
 
     // Configuration
     void setSchedulingPolicy(SchedulingPolicy policy);
@@ -229,7 +219,7 @@ public:
     using ErrorCallback = std::function<void(ProcessingUnit*, const std::string&)>;
     void setErrorCallback(ErrorCallback callback);
 
-private:
+  private:
     // Scheduler thread function
     void schedulerLoop();
 
@@ -290,8 +280,9 @@ private:
     // Performance optimization
     std::chrono::steady_clock::time_point lastScheduleTime_;
     std::priority_queue<std::pair<std::chrono::steady_clock::time_point, uint32_t>,
-                       std::vector<std::pair<std::chrono::steady_clock::time_point, uint32_t>>,
-                       std::greater<>> taskQueue_;
+                        std::vector<std::pair<std::chrono::steady_clock::time_point, uint32_t>>,
+                        std::greater<>>
+        taskQueue_;
 
     // Helper methods
     void updateSchedulingJitter(std::chrono::microseconds jitter);
@@ -299,12 +290,13 @@ private:
 
 // Main TimingController class
 class TimingController {
-public:
+  public:
     explicit TimingController(SchedulingPolicy policy = SchedulingPolicy::PRIORITY_BASED);
     ~TimingController();
 
     // Processing unit management
-    uint32_t scheduleProcessingUnit(ProcessingUnit* unit, const TimingConstraints& constraints = {});
+    uint32_t scheduleProcessingUnit(ProcessingUnit* unit,
+                                    const TimingConstraints& constraints = {});
     bool removeProcessingUnit(uint32_t taskId);
     bool removeProcessingUnit(ProcessingUnit* unit);
 
@@ -332,10 +324,18 @@ public:
     TimingConstraints getTaskConstraints(uint32_t taskId) const;
 
     // State queries
-    bool isRunning() const { return scheduler_->isRunning(); }
-    bool isPaused() const { return scheduler_->isPaused(); }
-    bool isRealTimeEnabled() const { return realTimeEnabled_; }
-    double getExecutionFrequency() const { return executionFrequency_; }
+    bool isRunning() const {
+        return scheduler_->isRunning();
+    }
+    bool isPaused() const {
+        return scheduler_->isPaused();
+    }
+    bool isRealTimeEnabled() const {
+        return realTimeEnabled_;
+    }
+    double getExecutionFrequency() const {
+        return executionFrequency_;
+    }
 
     // Advanced features
     void setCustomScheduler(RealTimeScheduler::CustomSchedulerCallback callback);
@@ -352,7 +352,7 @@ public:
     void emergencyStop();
     void setFailsafeCallback(std::function<void(const std::string&)> callback);
 
-protected:
+  protected:
     // Core utility members for real-time performance
     // High-precision timer for measuring scheduling jitter, cycle time, and latency
     mutable PrecisionTimer schedulerTimer_{PrecisionTimer::DEFAULT_MAX_SAMPLES};
@@ -365,7 +365,7 @@ protected:
     // - Use ThreadSafeQueue for command/event scheduling
     // - Use MemoryPool for timing event/statistics allocation
 
-private:
+  private:
     // Helper methods
     void initialize();
     void shutdown();

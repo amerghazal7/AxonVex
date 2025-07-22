@@ -22,16 +22,16 @@
  */
 
 #include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <thread>
 #include <vector>
-#include <fstream>
-#include <cstdlib>
 
 // Include the full AxonVex framework with Logger
 #include <axonvex/axonvex.hpp>
 
 using namespace axonvex::core;
-using namespace axonvex::Log;  // Use framework's Logger
+using namespace axonvex::Log; // Use framework's Logger
 
 void printHeader(const std::string& title) {
     Info() << "\n=== " << title << " ===";
@@ -148,7 +148,7 @@ void demonstrateBasicUsage() {
     printHeader("Basic Configuration Usage");
 
     // Create configuration instance
-    Configuration config(true, true);  // Enable monitoring and validation
+    Configuration config(true, true); // Enable monitoring and validation
 
     // Load configuration from string
     if (config.loadFromString(SAMPLE_CONFIG)) {
@@ -179,7 +179,8 @@ void demonstrateBasicUsage() {
     std::cout << "  Missing Number: " << missing_number << std::endl;
 
     // Set new values
-    if (config.set("runtime.timestamp", std::chrono::system_clock::now().time_since_epoch().count())) {
+    if (config.set("runtime.timestamp",
+                   std::chrono::system_clock::now().time_since_epoch().count())) {
         printSuccess("Runtime timestamp set");
     }
 
@@ -189,8 +190,10 @@ void demonstrateBasicUsage() {
 
     // Check if keys exist
     std::cout << "\nKey Existence:" << std::endl;
-    std::cout << "  'system.name' exists: " << (config.has("system.name") ? "Yes" : "No") << std::endl;
-    std::cout << "  'nonexistent.key' exists: " << (config.has("nonexistent.key") ? "Yes" : "No") << std::endl;
+    std::cout << "  'system.name' exists: " << (config.has("system.name") ? "Yes" : "No")
+              << std::endl;
+    std::cout << "  'nonexistent.key' exists: " << (config.has("nonexistent.key") ? "Yes" : "No")
+              << std::endl;
 
     // Get configuration statistics
     const auto& stats = config.getStatistics();
@@ -228,7 +231,8 @@ void demonstrateSchemaValidation() {
     if (errors.empty()) {
         printSuccess("Configuration is valid according to schema");
     } else {
-        printWarning("Configuration validation found " + std::to_string(errors.size()) + " errors:");
+        printWarning("Configuration validation found " + std::to_string(errors.size()) +
+                     " errors:");
         for (const auto& error : errors) {
             std::cout << "  - " << error.key << ": " << error.message << std::endl;
         }
@@ -278,16 +282,18 @@ void demonstrateCallbacks() {
     std::vector<std::string> callback_log;
 
     // Register callback for system configuration changes
-    auto system_callback = [&](const std::string& key, const ConfigValue& old_val, const ConfigValue& new_val) {
+    auto system_callback = [&](const std::string& key, const ConfigValue& old_val,
+                               const ConfigValue& new_val) {
         std::string log_entry = "System config changed: " + key +
-                               " (old: " + (old_val.is_null() ? "null" : old_val.dump()) +
-                               ", new: " + new_val.dump() + ")";
+                                " (old: " + (old_val.is_null() ? "null" : old_val.dump()) +
+                                ", new: " + new_val.dump() + ")";
         callback_log.push_back(log_entry);
         std::cout << "  📢 " << log_entry << std::endl;
     };
 
     // Register callback for performance metrics
-    auto perf_callback = [&](const std::string& key, const ConfigValue& old_val, const ConfigValue& new_val) {
+    auto perf_callback = [&](const std::string& key, const ConfigValue& old_val,
+                             const ConfigValue& new_val) {
         std::string log_entry = "Performance metric updated: " + key + " = " + new_val.dump();
         callback_log.push_back(log_entry);
         std::cout << "  📊 " << log_entry << std::endl;
@@ -339,8 +345,10 @@ void demonstrateCallbacks() {
         printSuccess("Bulk updates applied successfully");
 
         // Verify updates
-        std::cout << "  New frequency: " << config.get<double>("system.execution.frequency") << " Hz" << std::endl;
-        std::cout << "  New priority: " << config.get<std::string>("system.execution.priority") << std::endl;
+        std::cout << "  New frequency: " << config.get<double>("system.execution.frequency")
+                  << " Hz" << std::endl;
+        std::cout << "  New priority: " << config.get<std::string>("system.execution.priority")
+                  << std::endl;
         std::cout << "  New timeout: " << config.get<int>("network.timeout") << " ms" << std::endl;
     }
 }
@@ -365,7 +373,8 @@ void demonstrateTemplates() {
     config.set("system.execution.frequency", 500.0);
     config.set("performance.monitoring.update_rate", 10);
 
-    if (config.saveTemplate("development_template", "Development configuration with debug logging")) {
+    if (config.saveTemplate("development_template",
+                            "Development configuration with debug logging")) {
         printSuccess("Configuration saved as 'development_template'");
     }
 
@@ -375,7 +384,8 @@ void demonstrateTemplates() {
     config.set("performance.optimization.zero_copy", true);
     config.set("performance.optimization.lock_free", true);
 
-    if (config.saveTemplate("high_performance_template", "High-performance real-time configuration")) {
+    if (config.saveTemplate("high_performance_template",
+                            "High-performance real-time configuration")) {
         printSuccess("Configuration saved as 'high_performance_template'");
     }
 
@@ -395,15 +405,19 @@ void demonstrateTemplates() {
 
     if (config.loadTemplate("development_template")) {
         printSuccess("Development template loaded");
-        std::cout << "  Logging level: " << config.get<std::string>("system.logging.level") << std::endl;
-        std::cout << "  Execution frequency: " << config.get<double>("system.execution.frequency") << " Hz" << std::endl;
+        std::cout << "  Logging level: " << config.get<std::string>("system.logging.level")
+                  << std::endl;
+        std::cout << "  Execution frequency: " << config.get<double>("system.execution.frequency")
+                  << " Hz" << std::endl;
     }
 
     printInfo("Switching to production template...");
     if (config.loadTemplate("production_template")) {
         printSuccess("Production template loaded");
-        std::cout << "  Logging level: " << config.get<std::string>("system.logging.level") << std::endl;
-        std::cout << "  Execution frequency: " << config.get<double>("system.execution.frequency") << " Hz" << std::endl;
+        std::cout << "  Logging level: " << config.get<std::string>("system.logging.level")
+                  << std::endl;
+        std::cout << "  Execution frequency: " << config.get<double>("system.execution.frequency")
+                  << " Hz" << std::endl;
     }
 }
 
@@ -427,9 +441,11 @@ void demonstrateSnapshotsAndRollback() {
     config.set("experimental.feature.enabled", true);
 
     std::cout << "\nAfter modifications:" << std::endl;
-    std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz" << std::endl;
+    std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz"
+              << std::endl;
     std::cout << "  Log level: " << config.get<std::string>("system.logging.level") << std::endl;
-    std::cout << "  Experimental feature: " << config.get<bool>("experimental.feature.enabled") << std::endl;
+    std::cout << "  Experimental feature: " << config.get<bool>("experimental.feature.enabled")
+              << std::endl;
 
     // Create snapshot after changes
     std::string modified_snapshot = config.createSnapshot("modified_state");
@@ -440,7 +456,8 @@ void demonstrateSnapshotsAndRollback() {
     config.set("system.name", std::string("Modified System"));
 
     std::cout << "\nAfter more modifications:" << std::endl;
-    std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz" << std::endl;
+    std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz"
+              << std::endl;
     std::cout << "  System name: " << config.get<std::string>("system.name") << std::endl;
 
     // List available snapshots
@@ -456,10 +473,13 @@ void demonstrateSnapshotsAndRollback() {
         printSuccess("Rollback successful");
 
         std::cout << "\nAfter rollback to initial state:" << std::endl;
-        std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz" << std::endl;
-        std::cout << "  Log level: " << config.get<std::string>("system.logging.level") << std::endl;
+        std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz"
+                  << std::endl;
+        std::cout << "  Log level: " << config.get<std::string>("system.logging.level")
+                  << std::endl;
         std::cout << "  System name: " << config.get<std::string>("system.name") << std::endl;
-        std::cout << "  Experimental feature exists: " << (config.has("experimental.feature.enabled") ? "Yes" : "No") << std::endl;
+        std::cout << "  Experimental feature exists: "
+                  << (config.has("experimental.feature.enabled") ? "Yes" : "No") << std::endl;
     }
 
     // Rollback to modified state
@@ -468,9 +488,12 @@ void demonstrateSnapshotsAndRollback() {
         printSuccess("Rollback to modified state successful");
 
         std::cout << "\nAfter rollback to modified state:" << std::endl;
-        std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz" << std::endl;
-        std::cout << "  Log level: " << config.get<std::string>("system.logging.level") << std::endl;
-        std::cout << "  Experimental feature: " << config.get<bool>("experimental.feature.enabled") << std::endl;
+        std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz"
+                  << std::endl;
+        std::cout << "  Log level: " << config.get<std::string>("system.logging.level")
+                  << std::endl;
+        std::cout << "  Experimental feature: " << config.get<bool>("experimental.feature.enabled")
+                  << std::endl;
     }
 
     // Clean up snapshots
@@ -482,7 +505,7 @@ void demonstrateSnapshotsAndRollback() {
 void demonstratePerformance() {
     printHeader("Performance Benchmarking");
 
-    Configuration config(true, false);  // Disable validation for performance testing
+    Configuration config(true, false); // Disable validation for performance testing
 
     if (!config.loadFromString(SAMPLE_CONFIG)) {
         printError("Failed to load configuration");
@@ -491,7 +514,8 @@ void demonstratePerformance() {
 
     const int num_operations = 100000;
 
-    printInfo("Running performance benchmarks with " + std::to_string(num_operations) + " operations...");
+    printInfo("Running performance benchmarks with " + std::to_string(num_operations) +
+              " operations...");
 
     // Benchmark configuration reads
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -501,7 +525,8 @@ void demonstratePerformance() {
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
-    auto read_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
+    auto read_duration =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
 
     // Benchmark configuration writes
     start_time = std::chrono::high_resolution_clock::now();
@@ -511,7 +536,8 @@ void demonstratePerformance() {
     }
 
     end_time = std::chrono::high_resolution_clock::now();
-    auto write_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
+    auto write_duration =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
 
     // Calculate performance metrics
     double avg_read_time_ns = static_cast<double>(read_duration.count()) / num_operations;
@@ -520,26 +546,35 @@ void demonstratePerformance() {
     double read_throughput = 1e9 / avg_read_time_ns;
     double write_throughput = 1e9 / avg_write_time_ns;
 
-    std::cout << "\n" << "Performance Results:" << std::endl;
-    std::cout << "  📖 Average read time:   " << std::fixed << std::setprecision(2) << avg_read_time_ns << " ns" << std::endl;
-    std::cout << "  ✏️  Average write time:  " << std::fixed << std::setprecision(2) << avg_write_time_ns << " ns" << std::endl;
-    std::cout << "  🚀 Read throughput:     " << std::fixed << std::setprecision(0) << read_throughput << " ops/sec" << std::endl;
-    std::cout << "  🚀 Write throughput:    " << std::fixed << std::setprecision(0) << write_throughput << " ops/sec" << std::endl;
+    std::cout << "\n"
+              << "Performance Results:" << std::endl;
+    std::cout << "  📖 Average read time:   " << std::fixed << std::setprecision(2)
+              << avg_read_time_ns << " ns" << std::endl;
+    std::cout << "  ✏️  Average write time:  " << std::fixed << std::setprecision(2)
+              << avg_write_time_ns << " ns" << std::endl;
+    std::cout << "  🚀 Read throughput:     " << std::fixed << std::setprecision(0)
+              << read_throughput << " ops/sec" << std::endl;
+    std::cout << "  🚀 Write throughput:    " << std::fixed << std::setprecision(0)
+              << write_throughput << " ops/sec" << std::endl;
 
     // Performance targets
     const double read_target_ns = 1000.0;   // Target: <1μs read time
     const double write_target_ns = 10000.0; // Target: <10μs write time
 
     if (avg_read_time_ns < read_target_ns) {
-        printSuccess("Read performance meets target (<" + std::to_string((int)read_target_ns) + "ns)");
+        printSuccess("Read performance meets target (<" + std::to_string((int)read_target_ns) +
+                     "ns)");
     } else {
-        printWarning("Read performance above target (" + std::to_string(avg_read_time_ns) + "ns > " + std::to_string((int)read_target_ns) + "ns)");
+        printWarning("Read performance above target (" + std::to_string(avg_read_time_ns) +
+                     "ns > " + std::to_string((int)read_target_ns) + "ns)");
     }
 
     if (avg_write_time_ns < write_target_ns) {
-        printSuccess("Write performance meets target (<" + std::to_string((int)write_target_ns) + "ns)");
+        printSuccess("Write performance meets target (<" + std::to_string((int)write_target_ns) +
+                     "ns)");
     } else {
-        printWarning("Write performance above target (" + std::to_string(avg_write_time_ns) + "ns > " + std::to_string((int)write_target_ns) + "ns)");
+        printWarning("Write performance above target (" + std::to_string(avg_write_time_ns) +
+                     "ns > " + std::to_string((int)write_target_ns) + "ns)");
     }
 
     // Display comprehensive statistics
@@ -574,8 +609,10 @@ void demonstrateFileOperations() {
         printSuccess("Configuration loaded from " + config_file);
 
         // Verify loaded values
-        std::cout << "  Loaded system name: " << config2.get<std::string>("system.name") << std::endl;
-        std::cout << "  Loaded frequency: " << config2.get<double>("system.execution.frequency") << " Hz" << std::endl;
+        std::cout << "  Loaded system name: " << config2.get<std::string>("system.name")
+                  << std::endl;
+        std::cout << "  Loaded frequency: " << config2.get<double>("system.execution.frequency")
+                  << " Hz" << std::endl;
     } else {
         printError("Failed to load configuration from file");
     }
@@ -613,11 +650,18 @@ void demonstrateEnvironmentVariables() {
         printSuccess("Configuration loaded from environment variables");
 
         std::cout << "\nValues from environment:" << std::endl;
-        std::cout << "  System Name: " << config.get<std::string>("system.name", "not found") << std::endl;
-        std::cout << "  Execution Frequency: " << config.get<double>("system.execution.frequency", 0.0) << " Hz" << std::endl;
-        std::cout << "  Execution Enabled: " << (config.get<bool>("system.execution.enabled", false) ? "Yes" : "No") << std::endl;
-        std::cout << "  Network Timeout: " << config.get<int>("network.timeout", 0) << " ms" << std::endl;
-        std::cout << "  Monitoring Enabled: " << (config.get<bool>("performance.monitoring.enabled", true) ? "Yes" : "No") << std::endl;
+        std::cout << "  System Name: " << config.get<std::string>("system.name", "not found")
+                  << std::endl;
+        std::cout << "  Execution Frequency: "
+                  << config.get<double>("system.execution.frequency", 0.0) << " Hz" << std::endl;
+        std::cout << "  Execution Enabled: "
+                  << (config.get<bool>("system.execution.enabled", false) ? "Yes" : "No")
+                  << std::endl;
+        std::cout << "  Network Timeout: " << config.get<int>("network.timeout", 0) << " ms"
+                  << std::endl;
+        std::cout << "  Monitoring Enabled: "
+                  << (config.get<bool>("performance.monitoring.enabled", true) ? "Yes" : "No")
+                  << std::endl;
     } else {
         printError("Failed to load configuration from environment variables");
     }
@@ -629,14 +673,18 @@ void demonstrateEnvironmentVariables() {
         printSuccess("Base configuration loaded");
     }
 
-    if (config.loadFromEnvironment("AXONVEX_", true)) {  // merge = true
+    if (config.loadFromEnvironment("AXONVEX_", true)) { // merge = true
         printSuccess("Environment variables merged with base configuration");
 
         std::cout << "\nAfter merging:" << std::endl;
-        std::cout << "  System Name (from env): " << config.get<std::string>("system.name") << std::endl;
-        std::cout << "  System Version (from base): " << config.get<std::string>("system.version") << std::endl;
-        std::cout << "  Frequency (from env): " << config.get<double>("system.execution.frequency") << " Hz" << std::endl;
-        std::cout << "  Priority (from base): " << config.get<std::string>("system.execution.priority") << std::endl;
+        std::cout << "  System Name (from env): " << config.get<std::string>("system.name")
+                  << std::endl;
+        std::cout << "  System Version (from base): " << config.get<std::string>("system.version")
+                  << std::endl;
+        std::cout << "  Frequency (from env): " << config.get<double>("system.execution.frequency")
+                  << " Hz" << std::endl;
+        std::cout << "  Priority (from base): "
+                  << config.get<std::string>("system.execution.priority") << std::endl;
     }
 
     // Clean up environment variables
@@ -689,7 +737,8 @@ void demonstrateThreadSafety() {
                         }
                     } else if (i % 3 == 1) {
                         // Write operation
-                        std::string key = "thread" + std::to_string(t) + ".operation" + std::to_string(i);
+                        std::string key =
+                            "thread" + std::to_string(t) + ".operation" + std::to_string(i);
                         if (config.set(key, i * t)) {
                             successful_operations.fetch_add(1);
                             write_operations.fetch_add(1);
@@ -715,7 +764,8 @@ void demonstrateThreadSafety() {
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
-    auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    auto total_duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
     // Calculate results
     int total_ops = total_operations.load();
@@ -726,19 +776,24 @@ void demonstrateThreadSafety() {
     double success_rate = (static_cast<double>(successful_ops) / total_ops) * 100.0;
     double throughput = static_cast<double>(total_ops) / total_duration.count() * 1000.0; // ops/sec
 
-    std::cout << "\n" << "Thread Safety Results:" << std::endl;
+    std::cout << "\n"
+              << "Thread Safety Results:" << std::endl;
     std::cout << "  📊 Total operations: " << total_ops << std::endl;
     std::cout << "  ✅ Successful operations: " << successful_ops << std::endl;
     std::cout << "  📖 Read operations: " << read_ops << std::endl;
     std::cout << "  ✏️  Write operations: " << write_ops << std::endl;
-    std::cout << "  📈 Success rate: " << std::fixed << std::setprecision(2) << success_rate << "%" << std::endl;
-    std::cout << "  🚀 Throughput: " << std::fixed << std::setprecision(0) << throughput << " ops/sec" << std::endl;
+    std::cout << "  📈 Success rate: " << std::fixed << std::setprecision(2) << success_rate << "%"
+              << std::endl;
+    std::cout << "  🚀 Throughput: " << std::fixed << std::setprecision(0) << throughput
+              << " ops/sec" << std::endl;
     std::cout << "  ⏱️  Total time: " << total_duration.count() << " ms" << std::endl;
 
     if (success_rate > 99.0) {
-        printSuccess("Thread safety test passed with " + std::to_string(success_rate) + "% success rate");
+        printSuccess("Thread safety test passed with " + std::to_string(success_rate) +
+                     "% success rate");
     } else {
-        printWarning("Thread safety test completed with " + std::to_string(success_rate) + "% success rate");
+        printWarning("Thread safety test completed with " + std::to_string(success_rate) +
+                     "% success rate");
     }
 
     // Verify data integrity

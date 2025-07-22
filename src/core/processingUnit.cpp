@@ -7,13 +7,13 @@
  */
 
 #include "axonvex/core/processingUnit.hpp"
-#include <iostream>
+
 #include <algorithm>
+#include <iostream>
 
 namespace axonvex::core {
 
-ProcessingUnit::ProcessingUnit(const std::string& name)
-    : name_(name), instanceDescription_(name) {
+ProcessingUnit::ProcessingUnit(const std::string& name) : name_(name), instanceDescription_(name) {
     // Create built-in control ports
     resetPort_ = createAsyncInputPort<int>(ControlPorts::RESET, "Reset");
     disablePort_ = createAsyncInputPort<int>(ControlPorts::DISABLE, "Disable");
@@ -31,7 +31,8 @@ void ProcessingUnit::processSyncBase() {
             processSync();
             executionTimer_.stop();
             auto duration = executionTimer_.getElapsedNanoseconds();
-            updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(duration));
+            updateSyncExecutionStats(
+                std::chrono::duration_cast<std::chrono::microseconds>(duration));
         }
         intraSampleCounter_ = 0;
     }
@@ -39,15 +40,15 @@ void ProcessingUnit::processSyncBase() {
 
 void ProcessingUnit::processAsyncBase() {
     // Handle built-in control ports
-            if (resetPort_->wasUpdated()) {
-            int msg = resetPort_->read();
+    if (resetPort_->wasUpdated()) {
+        int msg = resetPort_->read();
         if (msg != 0) {
             resetBlock();
         }
     }
 
-            if (disablePort_->wasUpdated()) {
-            int msg = disablePort_->read();
+    if (disablePort_->wasUpdated()) {
+        int msg = disablePort_->read();
         setDisabled(msg != 0);
     }
 
@@ -204,9 +205,10 @@ ProcessingUnit::PerformanceMetrics ProcessingUnit::getPerformanceMetrics() const
         metrics.averageExecutionTime = totalTime / metrics.executionCount;
         metrics.maxExecutionTime = std::max(stats.maxSyncTime, stats.maxAsyncTime);
         metrics.minExecutionTime = std::min(
-            stats.maxSyncTime > std::chrono::microseconds{0} ? stats.maxSyncTime : std::chrono::microseconds::max(),
-            stats.maxAsyncTime > std::chrono::microseconds{0} ? stats.maxAsyncTime : std::chrono::microseconds::max()
-        );
+            stats.maxSyncTime > std::chrono::microseconds{0} ? stats.maxSyncTime
+                                                             : std::chrono::microseconds::max(),
+            stats.maxAsyncTime > std::chrono::microseconds{0} ? stats.maxAsyncTime
+                                                              : std::chrono::microseconds::max());
     }
 
     return metrics;

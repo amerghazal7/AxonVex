@@ -6,18 +6,18 @@
  * @date 2025
  */
 
-#include <gtest/gtest.h>
+#include <atomic>
 #include <axonvex/core/precisionTimer.hpp>
+#include <chrono>
+#include <cmath>
+#include <gtest/gtest.h>
 #include <thread>
 #include <vector>
-#include <chrono>
-#include <atomic>
-#include <cmath>
 
 using namespace axonvex::core;
 
 class PrecisionTimerTest : public ::testing::Test {
-protected:
+  protected:
     void SetUp() override {
         // Set up test fixtures
     }
@@ -77,7 +77,7 @@ TEST_F(PrecisionTimerTest, BasicStartStop) {
 
     // Check that we got a reasonable measurement
     auto elapsed = timer.getElapsedNanoseconds();
-    EXPECT_GT(elapsed.count(), 500000); // At least 0.5ms
+    EXPECT_GT(elapsed.count(), 500000);  // At least 0.5ms
     EXPECT_LT(elapsed.count(), 5000000); // Less than 5ms
 }
 
@@ -327,7 +327,8 @@ TEST_F(PrecisionTimerTest, ThreadSafety) {
 
     // Start multiple threads, each with its own timer
     for (int t = 0; t < num_threads; ++t) {
-        threads.emplace_back([this, &completed_measurements, &total_measurements_from_all_timers, measurements_per_thread]() {
+        threads.emplace_back([this, &completed_measurements, &total_measurements_from_all_timers,
+                              measurements_per_thread]() {
             // Each thread gets its own timer instance for proper thread safety
             PrecisionTimer thread_timer;
             thread_timer.enableStatistics(true);
@@ -376,7 +377,8 @@ TEST_F(PrecisionTimerTest, PerformanceTest) {
     std::cout << "  Operations: " << num_operations << "\n";
     std::cout << "  Total time: " << total_time.count() << " ns\n";
     std::cout << "  Overhead per operation: " << overhead_per_operation << " ns\n";
-    std::cout << "  Operations per second: " << (num_operations / (total_time.count() / 1e9)) << "\n";
+    std::cout << "  Operations per second: " << (num_operations / (total_time.count() / 1e9))
+              << "\n";
 
     // Performance expectations
     EXPECT_LT(overhead_per_operation, 100.0); // Should be less than 100ns per operation
