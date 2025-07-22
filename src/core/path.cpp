@@ -4,9 +4,9 @@
  * @author AxonVex Development Team
  * @version 1.0.0
  * @date 2025
- * 
+ *
  * @copyright Copyright (c) 2025 AxonVex Framework. All rights reserved.
- * 
+ *
  * This file implements the comprehensive Path class for cross-platform
  * file and directory path management with security, validation, and
  * integration with AxonVex framework components.
@@ -86,7 +86,7 @@ void Path::initializeDefaultDirs() {
         auto home_dir = getHomeDirectory();
         auto app_data_dir = getSystemAppDataDirectory();
         auto cwd = getCurrentWorkingDirectory();
-        
+
         // Set default directories with cross-platform logic
 #ifdef _WIN32
         // Windows paths
@@ -113,7 +113,7 @@ void Path::initializeDefaultDirs() {
         default_dirs_[DefaultDir::BACKUP] = default_dirs_[DefaultDir::DATA] / "backup";
         default_dirs_[DefaultDir::EXPORT] = default_dirs_[DefaultDir::DATA] / "export";
 #endif
-        
+
     } catch (const std::exception&) {
         // Fallback to current working directory
         auto cwd = getCurrentWorkingDirectory();
@@ -131,7 +131,7 @@ std::filesystem::path Path::getHomeDirectory() {
         CoTaskMemFree(profile_path);
         return result;
     }
-    
+
     // Fallback
     const char* home = std::getenv("USERPROFILE");
     if (home) {
@@ -143,13 +143,13 @@ std::filesystem::path Path::getHomeDirectory() {
     if (home) {
         return std::filesystem::path(home);
     }
-    
+
     // Fallback using getpwuid
     struct passwd* pwd = getpwuid(getuid());
     if (pwd && pwd->pw_dir) {
         return std::filesystem::path(pwd->pw_dir);
     }
-    
+
     return std::filesystem::path("/tmp");
 #endif
 }
@@ -162,7 +162,7 @@ std::filesystem::path Path::getSystemAppDataDirectory() {
         CoTaskMemFree(app_data_path);
         return result;
     }
-    
+
     // Fallback
     const char* app_data = std::getenv("APPDATA");
     if (app_data) {
@@ -216,12 +216,12 @@ Path Path::getDefaultDir(DefaultDir dir_type) {
         initializeDefaultDirs();
         initialized_ = true;
     }
-    
+
     auto it = default_dirs_.find(dir_type);
     if (it != default_dirs_.end()) {
         return Path(it->second);
     }
-    
+
     // Fallback
     return Path(".");
 }
@@ -376,40 +376,40 @@ bool Path::isSecure(SecurityLevel level) const {
 
 std::vector<std::string> Path::validateSecurity(SecurityLevel level) const {
     std::vector<std::string> errors;
-    
+
     if (level == SecurityLevel::NONE) {
         return errors;
     }
-    
+
     // Basic security checks
     if (hasDirectoryTraversal()) {
         errors.push_back("Path contains directory traversal sequences (.. or .\\.. or /../)");
     }
-    
+
     if (hasIllegalCharacters()) {
         errors.push_back("Path contains illegal characters");
     }
-    
+
     if (exceedsPathLimits()) {
         errors.push_back("Path exceeds system length limits");
     }
-    
+
     // Additional checks for higher security levels
     if (level >= SecurityLevel::STRICT) {
         if (!isInWhitelist()) {
             errors.push_back("Path is not in allowed directory whitelist");
         }
     }
-    
+
     if (level == SecurityLevel::PARANOID) {
         // Additional paranoid checks
         std::string path_str = toString();
-        
+
         // Check for null bytes
         if (path_str.find('\0') != std::string::npos) {
             errors.push_back("Path contains null bytes");
         }
-        
+
         // Check for control characters
         for (char c : path_str) {
             if (std::iscntrl(c) && c != '\t' && c != '\n' && c != '\r') {
@@ -418,7 +418,7 @@ std::vector<std::string> Path::validateSecurity(SecurityLevel level) const {
             }
         }
     }
-    
+
     return errors;
 }
 
@@ -527,12 +527,12 @@ std::uintmax_t Path::removeAll() const {
 
 std::vector<Path> Path::listDirectory(bool recursive) const {
     std::vector<Path> result;
-    
+
     try {
         if (!isDirectory()) {
             return result;
         }
-        
+
         if (recursive) {
             for (const auto& entry : std::filesystem::recursive_directory_iterator(path_)) {
                 result.emplace_back(entry.path());
@@ -545,24 +545,24 @@ std::vector<Path> Path::listDirectory(bool recursive) const {
     } catch (const std::exception&) {
         // Return empty vector on error
     }
-    
+
     return result;
 }
 
 std::vector<Path> Path::findFiles(const std::string& pattern, bool recursive) const {
     std::vector<Path> result;
-    
+
     try {
         if (!isDirectory()) {
             return result;
         }
-        
+
         // Convert glob pattern to regex
         std::string regex_pattern = pattern;
         std::replace(regex_pattern.begin(), regex_pattern.end(), '*', '.');
         regex_pattern = ".*" + regex_pattern + ".*";
         std::regex pattern_regex(regex_pattern, std::regex_constants::icase);
-        
+
         auto files = listDirectory(recursive);
         for (const auto& file : files) {
             if (file.isFile() && std::regex_match(file.filename(), pattern_regex)) {
@@ -572,7 +572,7 @@ std::vector<Path> Path::findFiles(const std::string& pattern, bool recursive) co
     } catch (const std::exception&) {
         // Return empty vector on error
     }
-    
+
     return result;
 }
 
@@ -585,12 +585,12 @@ bool Path::copyTo(const Path& destination, bool overwrite) const {
         if (!overwrite && destination.exists()) {
             return false;
         }
-        
+
         // Create parent directories if needed
         destination.parent().createDirectories();
-        
-        std::filesystem::copy_file(path_, destination.path_, 
-            overwrite ? std::filesystem::copy_options::overwrite_existing : 
+
+        std::filesystem::copy_file(path_, destination.path_,
+            overwrite ? std::filesystem::copy_options::overwrite_existing :
                        std::filesystem::copy_options::none);
         return true;
     } catch (const std::exception&) {
@@ -602,7 +602,7 @@ bool Path::moveTo(const Path& destination) const {
     try {
         // Create parent directories if needed
         destination.parent().createDirectories();
-        
+
         std::filesystem::rename(path_, destination.path_);
         return true;
     } catch (const std::exception&) {
@@ -612,11 +612,11 @@ bool Path::moveTo(const Path& destination) const {
 
 Path Path::createBackup(const std::string& backup_suffix) const {
     auto backup_path = Path(toString() + backup_suffix);
-    
+
     if (copyTo(backup_path, true)) {
         return backup_path;
     }
-    
+
     return Path(); // Return empty path on failure
 }
 
@@ -624,20 +624,20 @@ Path Path::getUniqueFilename() const {
     if (!exists()) {
         return *this;
     }
-    
+
     auto parent_dir = parent();
     auto file_stem = stem();
     auto file_ext = extension();
-    
+
     int counter = 1;
     Path unique_path;
-    
+
     do {
         std::string unique_name = file_stem + "_" + std::to_string(counter) + file_ext;
         unique_path = parent_dir / unique_name;
         counter++;
     } while (unique_path.exists() && counter < 10000);
-    
+
     return unique_path;
 }
 
@@ -712,11 +712,11 @@ bool Path::validateWith(const std::string& validator_name) const {
 
 std::unordered_map<std::string, std::string> Path::getSystemInfo() {
     std::unordered_map<std::string, std::string> info;
-    
+
     try {
         info["current_path"] = std::filesystem::current_path().string();
         info["temp_directory"] = std::filesystem::temp_directory_path().string();
-        
+
         // Path limits (platform-specific)
 #ifdef _WIN32
         info["max_path_length"] = "260"; // Traditional limit, 32767 with long path support
@@ -727,13 +727,13 @@ std::unordered_map<std::string, std::string> Path::getSystemInfo() {
         info["separator"] = "/";
         info["case_sensitive"] = "true";
 #endif
-        
+
         info["filesystem_space"] = std::to_string(std::filesystem::space(".").available);
-        
+
     } catch (const std::exception& e) {
         info["error"] = e.what();
     }
-    
+
     return info;
 }
 
@@ -743,49 +743,49 @@ std::unordered_map<std::string, std::string> Path::getSystemInfo() {
 
 Path Path::createConfigPath(const std::string& config_name, const std::string& subdir) {
     Path config_dir = getDefaultConfigDir();
-    
+
     if (!subdir.empty()) {
         config_dir /= subdir;
     }
-    
+
     // Ensure .json extension
     std::string filename = config_name;
     if (filename.substr(filename.length() - 5) != ".json") {
         filename += ".json";
     }
-    
+
     return config_dir / filename;
 }
 
 Path Path::createLogPath(const std::string& log_name, const std::string& subdir) {
     Path log_dir = getDefaultLogDir();
-    
+
     if (!subdir.empty()) {
         log_dir /= subdir;
     }
-    
+
     // Ensure .log extension
     std::string filename = log_name;
     if (filename.substr(filename.length() - 4) != ".log") {
         filename += ".log";
     }
-    
+
     return log_dir / filename;
 }
 
 Path Path::createTempPath(const std::string& prefix, const std::string& extension) {
     Path temp_dir = getDefaultTempDir();
-    
+
     // Generate unique filename
     auto now = std::chrono::steady_clock::now();
     auto timestamp = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    
+
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> dis(1000, 9999);
-    
+
     std::string filename = prefix + std::to_string(timestamp) + "_" + std::to_string(dis(gen)) + extension;
-    
+
     return temp_dir / filename;
 }
 
@@ -795,14 +795,14 @@ Path Path::createTempPath(const std::string& prefix, const std::string& extensio
 
 bool Path::hasDirectoryTraversal() const {
     std::string path_str = toString();
-    
+
     // Check for common directory traversal patterns
     if (path_str.find("..") != std::string::npos ||
         path_str.find("./") != std::string::npos ||
         path_str.find(".\\") != std::string::npos) {
         return true;
     }
-    
+
     return false;
 }
 
@@ -810,13 +810,13 @@ bool Path::isInWhitelist() const {
     // For strict security, check if path is within allowed directories
     try {
         auto canonical_path = canonical();
-        
+
         // Check if path is within any of the default directories
         for (const auto& [dir_type, dir_path] : default_dirs_) {
             try {
                 auto canonical_dir = std::filesystem::canonical(dir_path);
                 auto relative = std::filesystem::relative(canonical_path.path_, canonical_dir);
-                
+
                 // If relative path doesn't start with "..", it's within the directory
                 if (!relative.empty() && relative.begin()->string() != "..") {
                     return true;
@@ -825,7 +825,7 @@ bool Path::isInWhitelist() const {
                 continue;
             }
         }
-        
+
         return false;
     } catch (const std::exception&) {
         return false;
@@ -834,7 +834,7 @@ bool Path::isInWhitelist() const {
 
 bool Path::hasIllegalCharacters() const {
     std::string path_str = toString();
-    
+
     // Platform-specific illegal characters
 #ifdef _WIN32
     const std::string illegal_chars = "<>:\"|?*";
@@ -843,14 +843,14 @@ bool Path::hasIllegalCharacters() const {
             return true;
         }
     }
-    
+
     // Check for reserved names
     const std::vector<std::string> reserved_names = {
         "CON", "PRN", "AUX", "NUL",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
     };
-    
+
     for (const auto& reserved : reserved_names) {
         if (path_str.find(reserved) != std::string::npos) {
             return true;
@@ -862,13 +862,13 @@ bool Path::hasIllegalCharacters() const {
         return true;
     }
 #endif
-    
+
     return false;
 }
 
 bool Path::exceedsPathLimits() const {
     std::string path_str = toString();
-    
+
 #ifdef _WIN32
     // Windows traditional limit is 260, but can be higher with long path support
     return path_str.length() > 32767;
@@ -894,4 +894,4 @@ Path operator/(const char* lhs, const Path& rhs) {
     return Path(lhs) / rhs;
 }
 
-} // namespace axonvex::core 
+} // namespace axonvex::core

@@ -26,10 +26,10 @@ namespace MemoryOrdering {
 namespace MathUtils {
     /**
      * @brief Calculate next power of 2 for a given value
-     * 
+     *
      * Commonly used across CircularBuffer, ThreadSafeQueue, and MemoryPool
      * for capacity optimization.
-     * 
+     *
      * @param value Input value
      * @return Next power of 2 >= value
      */
@@ -44,14 +44,14 @@ namespace MathUtils {
         value |= value >> 32;
         return ++value;
     }
-    
+
     /**
      * @brief Check if a number is a power of 2
      */
     constexpr bool isPowerOf2(size_t value) noexcept {
         return value > 0 && (value & (value - 1)) == 0;
     }
-    
+
     /**
      * @brief Clamp a value between min and max
      */
@@ -59,7 +59,7 @@ namespace MathUtils {
     constexpr T clamp(T value, T min_val, T max_val) noexcept {
         return value < min_val ? min_val : (value > max_val ? max_val : value);
     }
-    
+
     /**
      * @brief Align a value to the specified alignment
      */
@@ -78,11 +78,11 @@ namespace AtomicUtils {
      * @brief Safe atomic load with default relaxed ordering
      */
     template<typename T>
-    T safeLoad(const std::atomic<T>& atomic_value, 
+    T safeLoad(const std::atomic<T>& atomic_value,
                std::memory_order order = MemoryOrdering::relaxed) noexcept {
         return atomic_value.load(order);
     }
-    
+
     /**
      * @brief Safe atomic store with default relaxed ordering
      */
@@ -91,7 +91,7 @@ namespace AtomicUtils {
                    std::memory_order order = MemoryOrdering::relaxed) noexcept {
         atomic_value.store(value, order);
     }
-    
+
     /**
      * @brief Safe atomic increment with default relaxed ordering
      */
@@ -100,7 +100,7 @@ namespace AtomicUtils {
                     std::memory_order order = MemoryOrdering::relaxed) noexcept {
         return atomic_value.fetch_add(increment, order);
     }
-    
+
     /**
      * @brief Safe atomic decrement with default relaxed ordering
      */
@@ -109,7 +109,7 @@ namespace AtomicUtils {
                     std::memory_order order = MemoryOrdering::relaxed) noexcept {
         return atomic_value.fetch_sub(decrement, order);
     }
-    
+
     /**
      * @brief Atomic maximum update (commonly used in statistics)
      */
@@ -117,12 +117,12 @@ namespace AtomicUtils {
     void updateMaximum(std::atomic<T>& atomic_max, T new_value,
                        std::memory_order order = MemoryOrdering::relaxed) noexcept {
         T current_max = atomic_max.load(order);
-        while (new_value > current_max && 
+        while (new_value > current_max &&
                !atomic_max.compare_exchange_weak(current_max, new_value, order)) {
             // Loop until successful update or a higher value is found
         }
     }
-    
+
     /**
      * @brief Atomic minimum update
      */
@@ -130,7 +130,7 @@ namespace AtomicUtils {
     void updateMinimum(std::atomic<T>& atomic_min, T new_value,
                        std::memory_order order = MemoryOrdering::relaxed) noexcept {
         T current_min = atomic_min.load(order);
-        while (new_value < current_min && 
+        while (new_value < current_min &&
                !atomic_min.compare_exchange_weak(current_min, new_value, order)) {
             // Loop until successful update or a lower value is found
         }
@@ -145,7 +145,7 @@ namespace AlignmentUtils {
      * @brief Cache line size for alignment (typically 64 bytes on modern CPUs)
      */
     constexpr size_t CACHE_LINE_SIZE = 64;
-    
+
     /**
      * @brief Check if a pointer is aligned to specified boundary
      */
@@ -153,7 +153,7 @@ namespace AlignmentUtils {
     bool isAligned(const void* ptr) noexcept {
         return reinterpret_cast<uintptr_t>(ptr) % Alignment == 0;
     }
-    
+
     /**
      * @brief Align a pointer to specified boundary
      */
@@ -163,7 +163,7 @@ namespace AlignmentUtils {
         addr = (addr + Alignment - 1) & ~(Alignment - 1);
         return reinterpret_cast<void*>(addr);
     }
-    
+
     /**
      * @brief Calculate aligned size
      */
@@ -179,9 +179,9 @@ namespace AlignmentUtils {
 namespace CapacityUtils {
     /**
      * @brief Validate and clamp capacity to reasonable bounds
-     * 
+     *
      * Used by CircularBuffer, ThreadSafeQueue, and MemoryPool
-     * 
+     *
      * @param requested_capacity User-requested capacity
      * @param min_capacity Minimum allowed capacity
      * @param max_capacity Maximum allowed capacity
@@ -195,7 +195,7 @@ namespace CapacityUtils {
         size_t capacity = MathUtils::clamp(requested_capacity, min_capacity, max_capacity);
         return force_power_of_2 ? MathUtils::nextPowerOf2(capacity) : capacity;
     }
-    
+
     /**
      * @brief Common capacity constants
      */
@@ -216,26 +216,26 @@ namespace TypeTraits {
      */
     template<typename T>
     struct is_lockfree_suitable {
-        static constexpr bool value = 
+        static constexpr bool value =
             std::is_trivially_copyable_v<T> &&
             std::is_trivially_destructible_v<T> &&
             (sizeof(T) <= sizeof(void*) * 2); // Reasonable size limit
     };
-    
+
     template<typename T>
     constexpr bool is_lockfree_suitable_v = is_lockfree_suitable<T>::value;
-    
+
     /**
      * @brief Check if type is suitable for memory pool allocation
      */
     template<typename T>
     struct is_pool_suitable {
-        static constexpr bool value = 
+        static constexpr bool value =
             std::is_destructible_v<T> &&
             !std::is_abstract_v<T> &&
             (sizeof(T) >= sizeof(void*)); // Must be at least pointer size
     };
-    
+
     template<typename T>
     constexpr bool is_pool_suitable_v = is_pool_suitable<T>::value;
 }
@@ -249,21 +249,21 @@ namespace TimingUtils {
      */
     using TimePoint = std::chrono::high_resolution_clock::time_point;
     using Duration = std::chrono::nanoseconds;
-    
+
     /**
      * @brief Get current high-resolution timestamp
      */
     inline TimePoint now() noexcept {
         return std::chrono::high_resolution_clock::now();
     }
-    
+
     /**
      * @brief Calculate duration between two time points
      */
     inline Duration elapsed(TimePoint start, TimePoint end = now()) noexcept {
         return std::chrono::duration_cast<Duration>(end - start);
     }
-    
+
     /**
      * @brief Scoped timer for performance measurements
      */
@@ -273,16 +273,16 @@ namespace TimingUtils {
         explicit ScopedTimer(Callback&& callback)
             : callback_(std::forward<Callback>(callback))
             , start_time_(now()) {}
-        
+
         ~ScopedTimer() {
             callback_(elapsed(start_time_));
         }
-        
+
     private:
         Callback callback_;
         TimePoint start_time_;
     };
-    
+
     /**
      * @brief Create a scoped timer with callback
      */
@@ -306,24 +306,24 @@ namespace ResourceUtils {
             : resource_(std::move(resource))
             , deleter_(std::move(deleter))
             , engaged_(true) {}
-        
+
         ~UniqueResource() {
             if (engaged_) {
                 deleter_(resource_);
             }
         }
-        
+
         // Non-copyable but movable
         UniqueResource(const UniqueResource&) = delete;
         UniqueResource& operator=(const UniqueResource&) = delete;
-        
+
         UniqueResource(UniqueResource&& other) noexcept
             : resource_(std::move(other.resource_))
             , deleter_(std::move(other.deleter_))
             , engaged_(other.engaged_) {
             other.engaged_ = false;
         }
-        
+
         UniqueResource& operator=(UniqueResource&& other) noexcept {
             if (this != &other) {
                 if (engaged_) {
@@ -336,27 +336,27 @@ namespace ResourceUtils {
             }
             return *this;
         }
-        
+
         Resource& get() noexcept { return resource_; }
         const Resource& get() const noexcept { return resource_; }
-        
+
         void release() noexcept { engaged_ = false; }
-        
+
         explicit operator bool() const noexcept { return engaged_; }
-        
+
     private:
         Resource resource_;
         Deleter deleter_;
         bool engaged_;
     };
-    
+
     /**
      * @brief Create a unique resource with automatic cleanup
      */
     template<typename Resource, typename Deleter>
     auto makeUniqueResource(Resource&& resource, Deleter&& deleter) {
         return UniqueResource<std::decay_t<Resource>, std::decay_t<Deleter>>(
-            std::forward<Resource>(resource), 
+            std::forward<Resource>(resource),
             std::forward<Deleter>(deleter)
         );
     }
@@ -371,7 +371,7 @@ namespace DebugUtils {
 #else
     constexpr bool DEBUG_ENABLED = false;
 #endif
-    
+
     /**
      * @brief Conditional debug assertion
      */
@@ -385,7 +385,7 @@ namespace DebugUtils {
             }
         }
     }
-    
+
     /**
      * @brief Debug-only execution
      */
@@ -397,4 +397,4 @@ namespace DebugUtils {
     }
 }
 
-} // namespace axonvex::core 
+} // namespace axonvex::core

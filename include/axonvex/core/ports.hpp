@@ -4,9 +4,9 @@
  * @author AxonVex Development Team
  * @version 2.0.0
  * @date 2025
- * 
+ *
  * @copyright Copyright (c) 2025 AxonVex Framework. All rights reserved.
- * 
+ *
  * Advanced port system integer indexing,
  * async ports, and advanced connection patterns while maintaining
  * AxonVex's modern C++ design principles.
@@ -50,38 +50,38 @@ class BasePort {
 public:
     explicit BasePort(int id, const std::string& name, PortType type, ProcessingUnit* owner);
     virtual ~BasePort() = default;
-    
+
     // Port identification
     int getId() const noexcept { return id_; }
     const std::string& getName() const noexcept { return name_; }
     PortType getType() const noexcept { return type_; }
     ProcessingUnit* getOwner() const noexcept { return owner_; }
-    
+
     // Port UID generation (block_uid*256 + port_idx)
     uint32_t getPortUID() const noexcept;
     void setPortUID(uint32_t uid) noexcept { portUID_ = uid; }
-    
+
     // Type information
     virtual std::string getDataTypeName() const = 0;
     virtual size_t getDataTypeSize() const = 0;
-    
+
     // Statistics
     uint64_t getTotalMessages() const noexcept { return totalMessages_.load(); }
     uint64_t getValidMessages() const noexcept { return validMessages_.load(); }
     uint64_t getInvalidMessages() const noexcept { return invalidMessages_.load(); }
-    
+
     // Debug and validation
     void setDescription(const std::string& desc) { description_ = desc; }
     const std::string& getDescription() const noexcept { return description_; }
-    
+
     // Thread safety control
     virtual void setThreadSafe(bool threadSafe) = 0;
     virtual bool isThreadSafe() const noexcept = 0;
-    
+
     // MemoryPool support for thread-safe data storage
     virtual void setMemoryPoolSize(size_t poolSize) = 0;
     virtual size_t getMemoryPoolSize() const noexcept = 0;
-    
+
     // Reset functionality
     virtual void reset() = 0;
 
@@ -92,16 +92,16 @@ protected:
     PortType type_;
     ProcessingUnit* owner_;
     uint32_t portUID_{0};
-    
+
     // Statistics
     std::atomic<uint64_t> totalMessages_{0};
     std::atomic<uint64_t> validMessages_{0};
     std::atomic<uint64_t> invalidMessages_{0};
-    
+
     // Validation helpers
     template<typename T>
     bool validateData(const T& data);
-    
+
     void incrementTotalMessages() { totalMessages_++; }
     void incrementValidMessages() { validMessages_++; }
     void incrementInvalidMessages() { invalidMessages_++; }
@@ -115,62 +115,62 @@ class InputPort : public BasePort {
 public:
     using ValidationCallback = std::function<bool(const T&)>;
     using DataCallback = std::function<void(const T&)>;
-    
+
     explicit InputPort(int id, const std::string& name, ProcessingUnit* owner);
     ~InputPort() override = default;
-    
+
     // Data access
     T read() const;
     bool hasNewData() const noexcept;
     void clearNewDataFlag() noexcept;
-    
+
     // Connection management (called by OutputPort)
     void writeData(const T& data);
-    
+
     // Callbacks and validation
     void setValidationCallback(ValidationCallback callback);
     void setDataCallback(DataCallback callback);
-    
+
     // Bridge ports for complex routing
     void addBridgedPort(InputPort<T>* bridgedPort);
     void removeBridgedPort(InputPort<T>* bridgedPort);
     bool isBridgePort() const noexcept { return isBridgePort_; }
-    
+
     // Port information
     std::string getDataTypeName() const override { return typeid(T).name(); }
     size_t getDataTypeSize() const override { return sizeof(T); }
-    
+
     // Thread safety
     void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override { return isThreadSafe_; }
-    
+
     // MemoryPool support
     void setMemoryPoolSize(size_t poolSize) override;
     size_t getMemoryPoolSize() const noexcept override;
-    
+
     // Reset
     void reset() override;
-    
+
 private:
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> hasNewData_{false};
     std::atomic<bool> isThreadSafe_{false};
-    
+
     // MemoryPool for thread-safe data storage
     std::unique_ptr<MemoryPool<T>> memoryPool_;
     std::atomic<T*> pooledData_{nullptr};
     size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
-    
+
     // Callbacks
     ValidationCallback validationCallback_;
     DataCallback dataCallback_;
-    
+
     // Bridge port management
     bool isBridgePort_{false};
     std::vector<InputPort<T>*> bridgedPorts_;
     mutable std::mutex bridgeMutex_;
-    
+
     // NaN detection for floating point types
     bool hasNanWarned_{false};
 };
@@ -182,55 +182,55 @@ template<typename T>
 class OutputPort : public BasePort {
 public:
     using OutputCallback = std::function<void(const T&)>;
-    
+
     explicit OutputPort(int id, const std::string& name, ProcessingUnit* owner);
     ~OutputPort() override = default;
-    
+
     // Data output
     void write(const T& data);
-    
+
     // Connection management
     void connect(InputPort<T>* inputPort);
     void disconnect(InputPort<T>* inputPort);
     void disconnectAll();
     bool isConnected() const noexcept;
     size_t getConnectionCount() const noexcept;
-    
+
     // Get connected ports
     std::vector<InputPort<T>*> getConnectedPorts() const;
-    
+
     // Callbacks
     void setOutputCallback(OutputCallback callback);
-    
+
     // Port information
     std::string getDataTypeName() const override { return typeid(T).name(); }
     size_t getDataTypeSize() const override { return sizeof(T); }
-    
+
     // Thread safety
     void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override { return isThreadSafe_; }
-    
+
     // MemoryPool support
     void setMemoryPoolSize(size_t poolSize) override;
     size_t getMemoryPoolSize() const noexcept override;
-    
+
     // Reset
     void reset() override;
-    
+
 private:
     mutable std::mutex connectionMutex_;
     std::vector<InputPort<T>*> connectedPorts_;
     std::atomic<bool> isThreadSafe_{false};
-    
+
     // Current data for thread-safe access
     mutable std::mutex dataMutex_;
     T currentData_;
-    
+
     // MemoryPool for thread-safe data storage
     std::unique_ptr<MemoryPool<T>> memoryPool_;
     std::atomic<T*> pooledData_{nullptr};
     size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
-    
+
     OutputCallback outputCallback_;
     bool hasNanWarned_{false};
 };
@@ -243,55 +243,55 @@ class AsyncInputPort : public BasePort {
 public:
     using ValidationCallback = std::function<bool(const T&)>;
     using DataCallback = std::function<void(const T&)>;
-    
+
     explicit AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner);
     ~AsyncInputPort() override = default;
-    
+
     // Async data operations
     void update(const T& data);
     bool wasUpdated() const noexcept;
     void read(T& data);
     T read();
-    
+
     // Callbacks and validation
     void setValidationCallback(ValidationCallback callback);
     void setDataCallback(DataCallback callback);
-    
+
     // Bridge ports for complex routing
     void addBridgedPort(AsyncInputPort<T>* bridgedPort);
     void removeBridgedPort(AsyncInputPort<T>* bridgedPort);
     bool isBridgePort() const noexcept { return isBridgePort_; }
-    
+
     // Port information
     std::string getDataTypeName() const override { return typeid(T).name(); }
     size_t getDataTypeSize() const override { return sizeof(T); }
-    
+
     // Thread safety
     void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override { return isThreadSafe_; }
-    
+
     // MemoryPool support
     void setMemoryPoolSize(size_t poolSize) override;
     size_t getMemoryPoolSize() const noexcept override;
-    
+
     // Reset
     void reset() override;
-    
+
 private:
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> wasUpdated_{false};
     std::atomic<bool> isThreadSafe_{false};
-    
+
     // MemoryPool for thread-safe data storage
     std::unique_ptr<MemoryPool<T>> memoryPool_;
     std::atomic<T*> pooledData_{nullptr};
     size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
-    
+
     // Callbacks
     ValidationCallback validationCallback_;
     DataCallback dataCallback_;
-    
+
     // Bridge port management
     bool isBridgePort_{false};
     std::vector<AsyncInputPort<T>*> bridgedPorts_;
@@ -305,54 +305,54 @@ template<typename T>
 class AsyncOutputPort : public BasePort {
 public:
     using OutputCallback = std::function<void(const T&)>;
-    
+
     explicit AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner);
     ~AsyncOutputPort() override = default;
-    
+
     // Async data operations
     void write(const T& data);
-    
+
     // Connection management
     void connect(AsyncInputPort<T>* inputPort);
     void disconnect(AsyncInputPort<T>* inputPort);
     void disconnectAll();
     bool isConnected() const noexcept;
     size_t getConnectionCount() const noexcept;
-    
+
     // Get connected ports
     std::vector<AsyncInputPort<T>*> getConnectedPorts() const;
-    
+
     // Callbacks
     void setOutputCallback(OutputCallback callback);
-    
+
     // Port information
     std::string getDataTypeName() const override { return typeid(T).name(); }
     size_t getDataTypeSize() const override { return sizeof(T); }
-    
+
     // Thread safety
     void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override { return isThreadSafe_; }
-    
+
     // MemoryPool support
     void setMemoryPoolSize(size_t poolSize) override;
     size_t getMemoryPoolSize() const noexcept override;
-    
+
     // Reset
     void reset() override;
-    
+
     // Control async write logging
     void setLogAsyncWriteEvent(bool log) noexcept { logAsyncWriteEvent_ = log; }
     bool getLogAsyncWriteEvent() const noexcept { return logAsyncWriteEvent_; }
-    
+
 private:
     mutable std::mutex connectionMutex_;
     std::vector<AsyncInputPort<T>*> connectedPorts_;
     std::atomic<bool> isThreadSafe_{false};
     std::atomic<bool> logAsyncWriteEvent_{false};
-    
+
     // MemoryPool for consistency (AsyncOutput doesn't store data but maintains interface)
     size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
-    
+
     OutputCallback outputCallback_;
 };
 
@@ -394,21 +394,21 @@ void InputPort<T>::clearNewDataFlag() noexcept {
 template<typename T>
 void InputPort<T>::writeData(const T& data) {
     incrementTotalMessages();
-    
+
     // Validate data if callback is set
     if (validationCallback_ && !validationCallback_(data)) {
         incrementInvalidMessages();
         return;
     }
-    
+
     // Check for NaN in floating point data
     if (!validateData(data)) {
         incrementInvalidMessages();
         return;
     }
-    
+
     incrementValidMessages();
-    
+
     // Store data
     if (isThreadSafe_ && memoryPool_) {
         // Use MemoryPool for high-performance thread-safe storage
@@ -431,14 +431,14 @@ void InputPort<T>::writeData(const T& data) {
     } else {
         data_ = data;
     }
-    
+
     hasNewData_.store(true);
-    
+
     // Call data callback if set
     if (dataCallback_) {
         dataCallback_(data);
     }
-    
+
     // Propagate to bridged ports
     if (isBridgePort_) {
         std::lock_guard<std::mutex> lock(bridgeMutex_);
@@ -463,7 +463,7 @@ void InputPort<T>::setDataCallback(DataCallback callback) {
 template<typename T>
 void InputPort<T>::addBridgedPort(InputPort<T>* bridgedPort) {
     if (!bridgedPort) return;
-    
+
     std::lock_guard<std::mutex> lock(bridgeMutex_);
     auto it = std::find(bridgedPorts_.begin(), bridgedPorts_.end(), bridgedPort);
     if (it == bridgedPorts_.end()) {
@@ -558,7 +558,7 @@ OutputPort<T>::OutputPort(int id, const std::string& name, ProcessingUnit* owner
 template<typename T>
 void OutputPort<T>::write(const T& data) {
     incrementTotalMessages();
-    
+
     // Check for NaN in floating point data
     if (!validateData(data)) {
         if (!hasNanWarned_) {
@@ -567,7 +567,7 @@ void OutputPort<T>::write(const T& data) {
         }
         return;
     }
-    
+
     // Store current data for thread-safe access
     if (isThreadSafe_ && memoryPool_) {
         // Use MemoryPool for high-performance thread-safe storage
@@ -590,12 +590,12 @@ void OutputPort<T>::write(const T& data) {
     } else {
         currentData_ = data;
     }
-    
+
     // Call output callback if set
     if (outputCallback_) {
         outputCallback_(data);
     }
-    
+
     // Send to all connected input ports
     std::lock_guard<std::mutex> lock(connectionMutex_);
     for (auto* inputPort : connectedPorts_) {
@@ -608,7 +608,7 @@ void OutputPort<T>::write(const T& data) {
 template<typename T>
 void OutputPort<T>::connect(InputPort<T>* inputPort) {
     if (!inputPort) return;
-    
+
     std::lock_guard<std::mutex> lock(connectionMutex_);
     auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
     if (it == connectedPorts_.end()) {
@@ -717,21 +717,21 @@ AsyncInputPort<T>::AsyncInputPort(int id, const std::string& name, ProcessingUni
 template<typename T>
 void AsyncInputPort<T>::update(const T& data) {
     incrementTotalMessages();
-    
+
     // Validate data if callback is set
     if (validationCallback_ && !validationCallback_(data)) {
         incrementInvalidMessages();
         return;
     }
-    
+
     // Check for NaN in floating point data
     if (!validateData(data)) {
         incrementInvalidMessages();
         return;
     }
-    
+
     incrementValidMessages();
-    
+
     // Store data
     if (isThreadSafe_ && memoryPool_) {
         // Use MemoryPool for high-performance thread-safe storage
@@ -754,14 +754,14 @@ void AsyncInputPort<T>::update(const T& data) {
     } else {
         data_ = data;
     }
-    
+
     wasUpdated_.store(true);
-    
+
     // Call data callback if set
     if (dataCallback_) {
         dataCallback_(data);
     }
-    
+
     // Propagate to bridged ports
     if (isBridgePort_) {
         std::lock_guard<std::mutex> lock(bridgeMutex_);
@@ -785,9 +785,9 @@ void AsyncInputPort<T>::read(T& data) {
         errorMessage << "Error: Async Port " << getId() << " was read without being updated";
         throw std::runtime_error(errorMessage.str());
     }
-    
+
     wasUpdated_.store(false);
-    
+
     if (isThreadSafe_ && memoryPool_) {
         // Use MemoryPool for thread-safe access
         T* pooled = pooledData_.load(std::memory_order_acquire);
@@ -825,7 +825,7 @@ void AsyncInputPort<T>::setDataCallback(DataCallback callback) {
 template<typename T>
 void AsyncInputPort<T>::addBridgedPort(AsyncInputPort<T>* bridgedPort) {
     if (!bridgedPort) return;
-    
+
     std::lock_guard<std::mutex> lock(bridgeMutex_);
     auto it = std::find(bridgedPorts_.begin(), bridgedPorts_.end(), bridgedPort);
     if (it == bridgedPorts_.end()) {
@@ -906,17 +906,17 @@ AsyncOutputPort<T>::AsyncOutputPort(int id, const std::string& name, ProcessingU
 template<typename T>
 void AsyncOutputPort<T>::write(const T& data) {
     incrementTotalMessages();
-    
+
     if (connectedPorts_.empty()) {
         // Log warning about unconnected port
         return;
     }
-    
+
     // Call output callback if set
     if (outputCallback_) {
         outputCallback_(data);
     }
-    
+
     // Send to all connected async input ports
     std::lock_guard<std::mutex> lock(connectionMutex_);
     for (auto* inputPort : connectedPorts_) {
@@ -929,7 +929,7 @@ void AsyncOutputPort<T>::write(const T& data) {
 template<typename T>
 void AsyncOutputPort<T>::connect(AsyncInputPort<T>* inputPort) {
     if (!inputPort) return;
-    
+
     std::lock_guard<std::mutex> lock(connectionMutex_);
     auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
     if (it == connectedPorts_.end()) {
@@ -997,4 +997,4 @@ void AsyncOutputPort<T>::reset() {
     // Async output ports don't maintain state
 }
 
-} // namespace axonvex::core 
+} // namespace axonvex::core
