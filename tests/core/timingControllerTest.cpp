@@ -37,11 +37,15 @@ public:
         
         auto end = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        updatePerformanceMetrics(duration);
+        updateSyncExecutionStats(duration);
     }
 
     void processAsync() override {
-        processSync();
+        auto start = std::chrono::steady_clock::now();
+        processCallCount_.fetch_add(1);
+        auto end = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        updateAsyncExecutionStats(duration);
     }
 
     void reset() override {
@@ -51,6 +55,10 @@ public:
 
     void initialize() override {
         setState(ExecutionState::INITIALIZED);
+    }
+
+    std::string getTypeDescription() override {
+        return "MockProcessingUnit";
     }
 
     // Test utilities

@@ -13,6 +13,8 @@ set(AXONVEX_CORE_SOURCES
     core/timingController.cpp
     # System management (implemented)
     core/system.cpp
+    # Advanced port system
+    core/ports.cpp
     # Plugins infrastructure (placeholder)
     plugins/CMakeLists.txt
 )
@@ -35,6 +37,8 @@ set(AXONVEX_CORE_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/timingController.hpp
     # System management (implemented)
     ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/system.hpp
+    # Advanced port system
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/axonvex/core/ports.hpp
     # Subsystems (pending)
     # ... other subsystem headers will be added here
 )

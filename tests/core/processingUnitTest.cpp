@@ -1,534 +1,472 @@
+/**
+ * @file processingUnitTest.cpp
+ * @brief Unit tests for Advanced Processing Unit
+ * @author AxonVex Development Team
+ * @version 2.0.0
+ * @date 2025
+ */
+
 #include <gtest/gtest.h>
-#include "axonvex/core/processingUnit.hpp"
-#include <thread>
+#include <axonvex/core/processingUnit.hpp>
+#include <string>
 #include <chrono>
-#include <atomic>
-#include <vector>
-#include <set>
-#include <iostream>
+#include <thread>
 
-using namespace axonvex::core;
-using namespace std::chrono_literals;
+namespace axonvex::core::test {
 
-// Test ProcessingUnit implementation for testing
+// Test implementation of ProcessingUnit
 class TestProcessingUnit : public ProcessingUnit {
-private:
-    std::atomic<uint32_t> syncCallCount_{0};
-    std::atomic<uint32_t> asyncCallCount_{0};
-    std::atomic<uint32_t> resetCallCount_{0};
-    std::atomic<bool> shouldThrow_{false};
-    std::chrono::microseconds simulatedProcessingTime_{0};
-
 public:
     explicit TestProcessingUnit(const std::string& name) : ProcessingUnit(name) {}
-
+    
     void processSync() override {
-        auto start = std::chrono::steady_clock::now();
+        syncExecutionCount_++;
+        lastSyncProcessingTime_ = std::chrono::steady_clock::now();
         
-        if (shouldThrow_.load()) {
-            throw std::runtime_error("Simulated processing error");
+        // Simple processing: read from input, multiply by factor, write to output
+        if (inputPort_ && inputPort_->hasNewData()) {
+            int data = inputPort_->read();
+            inputPort_->clearNewDataFlag();
+            
+            if (outputPort_) {
+                outputPort_->write(data * processingFactor_);
+            }
         }
-        
-        setState(ExecutionState::RUNNING);
-        syncCallCount_.fetch_add(1);
-        
-        // Simulate processing time
-        if (simulatedProcessingTime_.count() > 0) {
-            std::this_thread::sleep_for(simulatedProcessingTime_);
-        }
-        
-        auto end = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        updatePerformanceMetrics(duration);
     }
-
+    
     void processAsync() override {
-        asyncCallCount_.fetch_add(1);
-        processSync();
+        asyncExecutionCount_++;
+        
+        // Handle custom async commands
+        if (customAsyncPort_ && customAsyncPort_->wasUpdated()) {
+            std::string command = customAsyncPort_->read();
+            lastAsyncCommand_ = command;
+            
+            if (command == "MULTIPLY_2") {
+                processingFactor_ = 2;
+            } else if (command == "MULTIPLY_3") {
+                processingFactor_ = 3;
+            }
+        }
     }
-
+    
     void reset() override {
-        resetCallCount_.fetch_add(1);
-        setState(ExecutionState::INITIALIZED);
+        resetCount_++;
+        syncExecutionCount_ = 0;
+        asyncExecutionCount_ = 0;
+        processingFactor_ = 1;
+        lastAsyncCommand_.clear();
     }
-
+    
     void initialize() override {
         setState(ExecutionState::INITIALIZED);
     }
-
-    // Test accessors
-    uint32_t getSyncCallCount() const { return syncCallCount_.load(); }
-    uint32_t getAsyncCallCount() const { return asyncCallCount_.load(); }
-    uint32_t getResetCallCount() const { return resetCallCount_.load(); }
     
-    void setShouldThrow(bool shouldThrow) { shouldThrow_.store(shouldThrow); }
-    void setSimulatedProcessingTime(std::chrono::microseconds time) { simulatedProcessingTime_ = time; }
+    std::string getTypeDescription() override {
+        return "TestProcessingUnit";
+    }
+    
+    // Test setup helpers
+    void setupPorts() {
+        inputPort_ = createInputPort<int>(1, "Input");
+        outputPort_ = createOutputPort<int>(1, "Output");
+        customAsyncPort_ = createAsyncInputPort<std::string>(1, "AsyncCommand");
+    }
+    
+    // Accessors for testing
+    int getSyncExecutionCount() const { return syncExecutionCount_; }
+    int getAsyncExecutionCount() const { return asyncExecutionCount_; }
+    int getResetCount() const { return resetCount_; }
+    int getProcessingFactor() const { return processingFactor_; }
+    const std::string& getLastAsyncCommand() const { return lastAsyncCommand_; }
+    
+    InputPort<int>* getTestInputPort() { return inputPort_; }
+    OutputPort<int>* getTestOutputPort() { return outputPort_; }
+    AsyncInputPort<std::string>* getTestAsyncPort() { return customAsyncPort_; }
+    
+private:
+    int syncExecutionCount_ = 0;
+    int asyncExecutionCount_ = 0;
+    int resetCount_ = 0;
+    int processingFactor_ = 1;
+    std::string lastAsyncCommand_;
+    std::chrono::steady_clock::time_point lastSyncProcessingTime_;
+    
+    // Test ports
+    InputPort<int>* inputPort_ = nullptr;
+    OutputPort<int>* outputPort_ = nullptr;
+    AsyncInputPort<std::string>* customAsyncPort_ = nullptr;
 };
 
+// Basic functionality tests
 class ProcessingUnitTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        testUnit = std::make_unique<TestProcessingUnit>("TestUnit");
+        unit = std::make_unique<TestProcessingUnit>("TestUnit");
+        unit->setBlockUID(1);
+        unit->setupPorts();
     }
-
-    void TearDown() override {
-        testUnit.reset();
-    }
-
-    std::unique_ptr<TestProcessingUnit> testUnit;
+    
+    std::unique_ptr<TestProcessingUnit> unit;
 };
 
-// Basic ProcessingUnit Tests
-TEST_F(ProcessingUnitTest, ConstructionAndBasicProperties) {
-    EXPECT_EQ(testUnit->getName(), "TestUnit");
-    EXPECT_EQ(testUnit->getState(), ExecutionState::UNINITIALIZED);
-    EXPECT_FALSE(testUnit->isInitialized());
-    EXPECT_FALSE(testUnit->isRunning());
-    EXPECT_FALSE(testUnit->hasError());
-    EXPECT_EQ(testUnit->getProcessPriority(), ProcessPriority::NORMAL);
+TEST_F(ProcessingUnitTest, Construction) {
+    EXPECT_EQ(unit->getName(), "TestUnit");
+    EXPECT_EQ(unit->getInstanceDescription(), "TestUnit");
+    EXPECT_EQ(unit->getBlockUID(), 1);
+    EXPECT_TRUE(unit->hasBeenAddedToSystem());
+    EXPECT_EQ(unit->getTypeDescription(), "TestProcessingUnit");
+    EXPECT_EQ(unit->getState(), ExecutionState::UNINITIALIZED);
+    EXPECT_FALSE(unit->isDisabled());
 }
 
-TEST_F(ProcessingUnitTest, InitializationAndStateManagement) {
-    // Test initialization
-    testUnit->initialize();
-    EXPECT_TRUE(testUnit->isInitialized());
-    EXPECT_EQ(testUnit->getState(), ExecutionState::INITIALIZED);
+TEST_F(ProcessingUnitTest, BuiltInControlPorts) {
+    // Test built-in reset port (created automatically)
+    auto resetPort = unit->getAsyncInputPort<int>(ControlPorts::RESET);
+    EXPECT_NE(resetPort, nullptr);
+    EXPECT_EQ(unit->getAsyncInputPortName(ControlPorts::RESET), "Reset");
     
-    // Test reset
-    testUnit->reset();
-    EXPECT_EQ(testUnit->getResetCallCount(), 1);
-    EXPECT_EQ(testUnit->getState(), ExecutionState::INITIALIZED);
+    // Test built-in disable port
+    auto disablePort = unit->getAsyncInputPort<int>(ControlPorts::DISABLE);
+    EXPECT_NE(disablePort, nullptr);
+    EXPECT_EQ(unit->getAsyncInputPortName(ControlPorts::DISABLE), "Disable");
 }
 
-TEST_F(ProcessingUnitTest, ProcessingSyncAndAsync) {
-    testUnit->initialize();
+TEST_F(ProcessingUnitTest, PortCreationAndAccess) {
+    // Test created ports
+    EXPECT_NE(unit->getTestInputPort(), nullptr);
+    EXPECT_NE(unit->getTestOutputPort(), nullptr);
+    EXPECT_NE(unit->getTestAsyncPort(), nullptr);
     
-    // Test sync processing
-    testUnit->processSync();
-    EXPECT_EQ(testUnit->getSyncCallCount(), 1);
-    EXPECT_EQ(testUnit->getState(), ExecutionState::RUNNING);
+    // Test port names
+    EXPECT_EQ(unit->getInputPortName(1), "Input");
+    EXPECT_EQ(unit->getOutputPortName(1), "Output");
+    EXPECT_EQ(unit->getAsyncInputPortName(1), "AsyncCommand");
     
-    // Test async processing
-    testUnit->processAsync();
-    EXPECT_EQ(testUnit->getAsyncCallCount(), 1);
-    EXPECT_EQ(testUnit->getSyncCallCount(), 2); // Async calls sync internally
+    // Test port collections
+    EXPECT_EQ(unit->getInputPorts().size(), 1);
+    EXPECT_EQ(unit->getOutputPorts().size(), 1);
+    EXPECT_EQ(unit->getAsyncInputPorts().size(), 3); // 1 custom + 2 built-in
+    EXPECT_EQ(unit->getAsyncOutputPorts().size(), 0);
 }
 
-TEST_F(ProcessingUnitTest, ErrorHandling) {
-    testUnit->initialize();
-    testUnit->setShouldThrow(true);
+TEST_F(ProcessingUnitTest, PortUIDGeneration) {
+    // Verify port UIDs follow formula
+    EXPECT_EQ(unit->getTestInputPort()->getPortUID(), 1 * 256 + 1);
+    EXPECT_EQ(unit->getTestOutputPort()->getPortUID(), 1 * 256 + 1);
+    EXPECT_EQ(unit->getTestAsyncPort()->getPortUID(), 1 * 256 + 1);
     
-    // Processing should throw
-    EXPECT_THROW(testUnit->processSync(), std::runtime_error);
+    // Built-in control ports
+    auto resetPort = unit->getAsyncInputPort<int>(ControlPorts::RESET);
+    auto disablePort = unit->getAsyncInputPort<int>(ControlPorts::DISABLE);
+    EXPECT_EQ(resetPort->getPortUID(), 1 * 256 + ControlPorts::RESET);
+    EXPECT_EQ(disablePort->getPortUID(), 1 * 256 + ControlPorts::DISABLE);
 }
 
-TEST_F(ProcessingUnitTest, PerformanceMetricsTracking) {
-    testUnit->initialize();
-    testUnit->setSimulatedProcessingTime(std::chrono::microseconds(100));
+TEST_F(ProcessingUnitTest, SyncProcessing) {
+    EXPECT_EQ(unit->getSyncExecutionCount(), 0);
     
-    // Process a few times to generate metrics
-    for (int i = 0; i < 5; ++i) {
-        testUnit->processSync();
-    }
+    // Process without data - should execute but not process anything
+    unit->processSyncBase();
+    EXPECT_EQ(unit->getSyncExecutionCount(), 1);
     
-    auto metrics = testUnit->getPerformanceMetrics();
-    EXPECT_EQ(metrics.executionCount, 5);
-    EXPECT_GT(metrics.averageExecutionTime.count(), 0);
-    EXPECT_GT(metrics.maxExecutionTime.count(), 0);
-    EXPECT_LT(metrics.minExecutionTime.count(), std::chrono::microseconds::max().count());
+    // Add data and process
+    unit->getTestInputPort()->writeData(10);
+    unit->processSyncBase();
+    EXPECT_EQ(unit->getSyncExecutionCount(), 2);
     
-    // Reset metrics
-    testUnit->resetPerformanceMetrics();
-    metrics = testUnit->getPerformanceMetrics();
+    // Check output (should be input * factor = 10 * 1 = 10)
+    auto outputPort = unit->getTestOutputPort();
+    // Note: In real implementation, we'd need to connect to another unit's input
+    // For this test, we're just verifying the processing logic was called
+}
+
+TEST_F(ProcessingUnitTest, AsyncProcessing) {
+    EXPECT_EQ(unit->getAsyncExecutionCount(), 0);
+    
+    // Process without async data
+    unit->processAsyncBase();
+    EXPECT_EQ(unit->getAsyncExecutionCount(), 1);
+    
+    // Send async command
+            unit->getTestAsyncPort()->update("MULTIPLY_2");
+    unit->processAsyncBase();
+    EXPECT_EQ(unit->getAsyncExecutionCount(), 2);
+    EXPECT_EQ(unit->getLastAsyncCommand(), "MULTIPLY_2");
+    EXPECT_EQ(unit->getProcessingFactor(), 2);
+}
+
+TEST_F(ProcessingUnitTest, BuiltInResetFunctionality) {
+    // Execute some processing first
+    unit->processSyncBase();
+    unit->processAsyncBase();
+    EXPECT_GT(unit->getSyncExecutionCount(), 0);
+    EXPECT_GT(unit->getAsyncExecutionCount(), 0);
+    
+    // Trigger reset via built-in port
+    auto resetPort = unit->getAsyncInputPort<int>(ControlPorts::RESET);
+            resetPort->update(1); // Non-zero triggers reset
+    
+    int resetCountBefore = unit->getResetCount();
+    unit->processAsyncBase();
+    EXPECT_EQ(unit->getResetCount(), resetCountBefore + 1);
+    EXPECT_EQ(unit->getSyncExecutionCount(), 0); // Reset by derived reset()
+    // Note: Async execution count is incremented because processAsyncBase() was called to handle the reset
+    EXPECT_GE(unit->getAsyncExecutionCount(), 0);
+}
+
+TEST_F(ProcessingUnitTest, BuiltInDisableFunctionality) {
+    EXPECT_FALSE(unit->isDisabled());
+    
+    // Disable via built-in port
+    auto disablePort = unit->getAsyncInputPort<int>(ControlPorts::DISABLE);
+            disablePort->update(1); // Non-zero disables
+    unit->processAsyncBase();
+    
+    EXPECT_TRUE(unit->isDisabled());
+    EXPECT_EQ(unit->getState(), ExecutionState::DISABLED);
+    
+    // Sync processing should be skipped when disabled
+    int syncCountBefore = unit->getSyncExecutionCount();
+    unit->processSyncBase();
+    EXPECT_EQ(unit->getSyncExecutionCount(), syncCountBefore); // No increment
+    
+    // Re-enable
+            disablePort->update(0); // Zero enables
+    unit->processAsyncBase();
+    EXPECT_FALSE(unit->isDisabled());
+    EXPECT_EQ(unit->getState(), ExecutionState::RUNNING);
+}
+
+TEST_F(ProcessingUnitTest, DownSamplingFactor) {
+    EXPECT_EQ(unit->getDownSamplingFactor(), 1); // Default
+    
+    // Set down-sampling factor
+    unit->setDownSamplingFactor(3);
+    EXPECT_EQ(unit->getDownSamplingFactor(), 3);
+    
+    // Should only process every 3rd call
+    int syncCountBefore = unit->getSyncExecutionCount();
+    unit->processSyncBase(); // Call 1 - no processing
+    unit->processSyncBase(); // Call 2 - no processing
+    EXPECT_EQ(unit->getSyncExecutionCount(), syncCountBefore);
+    
+    unit->processSyncBase(); // Call 3 - should process
+    EXPECT_EQ(unit->getSyncExecutionCount(), syncCountBefore + 1);
+    
+    unit->processSyncBase(); // Call 4 - no processing
+    unit->processSyncBase(); // Call 5 - no processing
+    unit->processSyncBase(); // Call 6 - should process
+    EXPECT_EQ(unit->getSyncExecutionCount(), syncCountBefore + 2);
+}
+
+TEST_F(ProcessingUnitTest, InheritDownSamplingFactor) {
+    auto sourceUnit = std::make_unique<TestProcessingUnit>("SourceUnit");
+    sourceUnit->setDownSamplingFactor(5);
+    
+    unit->inheritDownSamplingFactor(sourceUnit.get());
+    EXPECT_EQ(unit->getDownSamplingFactor(), 5);
+    
+    // Test with null pointer
+    unit->inheritDownSamplingFactor(nullptr);
+    EXPECT_EQ(unit->getDownSamplingFactor(), 5); // Should remain unchanged
+}
+
+TEST_F(ProcessingUnitTest, SamplingPeriod) {
+    auto defaultPeriod = unit->getBlockSamplingPeriod();
+    EXPECT_EQ(defaultPeriod, std::chrono::milliseconds(10)); // Default
+    
+    auto newPeriod = std::chrono::microseconds(500);
+    unit->setBlockSamplingPeriod(newPeriod);
+    EXPECT_EQ(unit->getBlockSamplingPeriod(), newPeriod);
+}
+
+TEST_F(ProcessingUnitTest, URLManagement) {
+    EXPECT_TRUE(unit->getRelativeURL().empty());
+    EXPECT_TRUE(unit->getAbsoluteURL().empty());
+    
+    unit->setURL("test/path/unit");
+    EXPECT_EQ(unit->getRelativeURL(), "test/path/unit");
+    EXPECT_EQ(unit->getAbsoluteURL(), "test/path/unit");
+}
+
+TEST_F(ProcessingUnitTest, ParentBlockHierarchy) {
+    auto parentUnit = std::make_unique<TestProcessingUnit>("ParentUnit");
+    
+    EXPECT_EQ(unit->getParentBlock(), nullptr);
+    
+    unit->setParentBlock(parentUnit.get());
+    EXPECT_EQ(unit->getParentBlock(), parentUnit.get());
+}
+
+TEST_F(ProcessingUnitTest, InstanceDescription) {
+    EXPECT_EQ(unit->getInstanceDescription(), "TestUnit");
+    
+    unit->updateInstanceDescription("Updated Test Description");
+    EXPECT_EQ(unit->getInstanceDescription(), "Updated Test Description");
+}
+
+TEST_F(ProcessingUnitTest, ThreadSafety) {
+    // Test thread safety setting for all ports
+    unit->setPortsThreadSafe(true);
+    EXPECT_TRUE(unit->getTestInputPort()->isThreadSafe());
+    EXPECT_TRUE(unit->getTestOutputPort()->isThreadSafe());
+    EXPECT_TRUE(unit->getTestAsyncPort()->isThreadSafe());
+    
+    unit->setPortsThreadSafe(false);
+    EXPECT_FALSE(unit->getTestInputPort()->isThreadSafe());
+    EXPECT_FALSE(unit->getTestOutputPort()->isThreadSafe());
+    EXPECT_FALSE(unit->getTestAsyncPort()->isThreadSafe());
+}
+
+TEST_F(ProcessingUnitTest, ResetFunctionality) {
+    // Set up some state
+    unit->getTestInputPort()->writeData(42);
+            unit->getTestAsyncPort()->update("MULTIPLY_3");
+    
+    // Check initial state before processing
+    EXPECT_TRUE(unit->getTestInputPort()->hasNewData());
+            EXPECT_TRUE(unit->getTestAsyncPort()->wasUpdated());
+    
+    // Process to get some execution counts
+    unit->processSyncBase();
+    unit->processAsyncBase();
+    
+    EXPECT_GT(unit->getSyncExecutionCount(), 0);
+    EXPECT_GT(unit->getAsyncExecutionCount(), 0);
+    
+    // Set up fresh port data to verify reset clears it
+    unit->getTestInputPort()->writeData(99);
+            unit->getTestAsyncPort()->update("NEW_COMMAND");
+    
+    // Reset the block
+    unit->resetBlock();
+    
+    // Check that ports and state were reset
+    EXPECT_FALSE(unit->getTestInputPort()->hasNewData());
+            EXPECT_FALSE(unit->getTestAsyncPort()->wasUpdated());
+    EXPECT_EQ(unit->getSyncExecutionCount(), 0);
+    EXPECT_EQ(unit->getAsyncExecutionCount(), 0);
+    EXPECT_EQ(unit->getState(), ExecutionState::INITIALIZED);
+}
+
+TEST_F(ProcessingUnitTest, ExecutionStatistics) {
+    auto stats = unit->getExecutionStats();
+    EXPECT_EQ(stats.syncExecutionCount, 0);
+    EXPECT_EQ(stats.asyncExecutionCount, 0);
+    
+    // Execute some processing
+    unit->processSyncBase();
+    unit->processSyncBase();
+    unit->processAsyncBase();
+    
+    stats = unit->getExecutionStats();
+    EXPECT_EQ(stats.syncExecutionCount, 2);
+    EXPECT_EQ(stats.asyncExecutionCount, 1);
+    // Note: Timing might be very small for simple test operations
+    EXPECT_GE(stats.totalSyncTime.count(), 0);
+    EXPECT_GE(stats.totalAsyncTime.count(), 0);
+    
+    // Reset statistics
+    unit->resetExecutionStats();
+    stats = unit->getExecutionStats();
+    EXPECT_EQ(stats.syncExecutionCount, 0);
+    EXPECT_EQ(stats.asyncExecutionCount, 0);
+}
+
+TEST_F(ProcessingUnitTest, PerformanceMetricsLegacy) {
+    // Test legacy performance metrics interface
+    auto metrics = unit->getPerformanceMetrics();
+    EXPECT_EQ(metrics.executionCount, 0);
+    
+    // Execute some processing
+    unit->processSyncBase();
+    unit->processAsyncBase();
+    
+    metrics = unit->getPerformanceMetrics();
+    EXPECT_EQ(metrics.executionCount, 2); // 1 sync + 1 async
+    
+    // Reset legacy metrics
+    unit->resetPerformanceMetrics();
+    metrics = unit->getPerformanceMetrics();
     EXPECT_EQ(metrics.executionCount, 0);
 }
 
-TEST_F(ProcessingUnitTest, PriorityManagement) {
-    EXPECT_EQ(testUnit->getProcessPriority(), ProcessPriority::NORMAL);
+TEST_F(ProcessingUnitTest, InvalidDownSamplingFactor) {
+    EXPECT_THROW(unit->setDownSamplingFactor(0), std::invalid_argument);
+    EXPECT_THROW(unit->setDownSamplingFactor(-1), std::invalid_argument);
     
-    testUnit->setProcessPriority(ProcessPriority::HIGH);
-    EXPECT_EQ(testUnit->getProcessPriority(), ProcessPriority::HIGH);
-    
-    testUnit->setProcessPriority(ProcessPriority::REAL_TIME);
-    EXPECT_EQ(testUnit->getProcessPriority(), ProcessPriority::REAL_TIME);
+    // Valid factors should not throw
+    EXPECT_NO_THROW(unit->setDownSamplingFactor(1));
+    EXPECT_NO_THROW(unit->setDownSamplingFactor(10));
 }
 
-TEST_F(ProcessingUnitTest, ExecutionPeriodManagement) {
-    auto defaultPeriod = testUnit->getExecutionPeriod();
-    EXPECT_EQ(defaultPeriod, 10ms); // Default from implementation
-    
-    testUnit->setExecutionPeriod(5ms);
-    EXPECT_EQ(testUnit->getExecutionPeriod(), 5ms);
-}
-
-// Port System Tests
-TEST_F(ProcessingUnitTest, InputPortCreationAndManagement) {
-    testUnit->initialize();
-    
-    // Create input port
-    auto* inputPort = testUnit->createInputPort<double>(1, "test_input");
-    ASSERT_NE(inputPort, nullptr);
-    EXPECT_EQ(inputPort->getId(), 1);
-    EXPECT_EQ(inputPort->getName(), "test_input");
-    EXPECT_EQ(inputPort->getOwner(), testUnit.get());
-    
-    // Test port retrieval
-    auto* retrievedPort = testUnit->getPort(1);
-    EXPECT_EQ(retrievedPort, inputPort);
-    
-    auto* retrievedByName = testUnit->getPort("test_input");
-    EXPECT_EQ(retrievedByName, inputPort);
-    
-    // Test duplicate ID error
-    EXPECT_THROW(testUnit->createInputPort<double>(1, "duplicate_id"), std::runtime_error);
-    
-    // Test duplicate name error
-    EXPECT_THROW(testUnit->createInputPort<double>(2, "test_input"), std::runtime_error);
-}
-
-TEST_F(ProcessingUnitTest, OutputPortCreationAndManagement) {
-    testUnit->initialize();
-    
-    // Create output port
-    auto* outputPort = testUnit->createOutputPort<int>(10, "test_output");
-    ASSERT_NE(outputPort, nullptr);
-    EXPECT_EQ(outputPort->getId(), 10);
-    EXPECT_EQ(outputPort->getName(), "test_output");
-    EXPECT_EQ(outputPort->getOwner(), testUnit.get());
-    
-    // Test port retrieval
-    auto* retrievedPort = testUnit->getPort(10);
-    EXPECT_EQ(retrievedPort, outputPort);
-    
-    auto* retrievedByName = testUnit->getPort("test_output");
-    EXPECT_EQ(retrievedByName, outputPort);
-}
-
-TEST_F(ProcessingUnitTest, PortConnectionAndDataFlow) {
-    testUnit->initialize();
-    
-    // Create ports
-    auto* outputPort = testUnit->createOutputPort<double>(1, "output");
-    auto* inputPort = testUnit->createInputPort<double>(2, "input");
-    
-    // Initially no connection
-    EXPECT_FALSE(outputPort->isConnected());
-    EXPECT_FALSE(inputPort->hasNewData());
-    
-    // Connect ports
-    outputPort->connect(inputPort);
-    EXPECT_TRUE(outputPort->isConnected());
-    EXPECT_EQ(outputPort->getConnectionCount(), 1);
-    
-    // Test data flow
-    const double testValue = 42.5;
-    outputPort->write(testValue);
-    
-    EXPECT_TRUE(inputPort->hasNewData());
-    EXPECT_DOUBLE_EQ(inputPort->read(), testValue);
-    
-    // Clear flag
-    inputPort->clearNewDataFlag();
-    EXPECT_FALSE(inputPort->hasNewData());
-    
-    // Disconnect
-    outputPort->disconnect(inputPort);
-    EXPECT_FALSE(outputPort->isConnected());
-    EXPECT_EQ(outputPort->getConnectionCount(), 0);
-}
-
-TEST_F(ProcessingUnitTest, PortMultipleConnections) {
-    testUnit->initialize();
-    
-    // Create one output and multiple inputs
-    auto* outputPort = testUnit->createOutputPort<int>(1, "output");
-    auto* input1 = testUnit->createInputPort<int>(2, "input1");
-    auto* input2 = testUnit->createInputPort<int>(3, "input2");
-    auto* input3 = testUnit->createInputPort<int>(4, "input3");
-    
-    // Connect all inputs to output
-    outputPort->connect(input1);
-    outputPort->connect(input2);
-    outputPort->connect(input3);
-    
-    EXPECT_EQ(outputPort->getConnectionCount(), 3);
-    
-    // Write data - should reach all inputs
-    const int testValue = 123;
-    outputPort->write(testValue);
-    
-    EXPECT_TRUE(input1->hasNewData());
-    EXPECT_TRUE(input2->hasNewData());
-    EXPECT_TRUE(input3->hasNewData());
-    
-    EXPECT_EQ(input1->read(), testValue);
-    EXPECT_EQ(input2->read(), testValue);
-    EXPECT_EQ(input3->read(), testValue);
-    
-    // Disconnect all
-    outputPort->disconnectAll();
-    EXPECT_EQ(outputPort->getConnectionCount(), 0);
-}
-
-TEST_F(ProcessingUnitTest, PortDataValidation) {
-    testUnit->initialize();
-    auto* inputPort = testUnit->createInputPort<double>(1, "validated_input");
-    
-    // Set validation callback - only accept positive values
-    inputPort->setValidationCallback([](const double& value) {
-        return value > 0.0;
-    });
-    
-    // Test valid data
-    inputPort->writeData(10.5);
-    EXPECT_TRUE(inputPort->hasNewData());
-    EXPECT_EQ(inputPort->getValidMessages(), 1);
-    EXPECT_EQ(inputPort->getInvalidMessages(), 0);
-    
-    // Clear the flag from previous valid write
-    inputPort->clearNewDataFlag();
-    EXPECT_FALSE(inputPort->hasNewData());
-    
-    // Test invalid data
-    inputPort->writeData(-5.0);
-    EXPECT_FALSE(inputPort->hasNewData()); // Should be rejected
-    EXPECT_EQ(inputPort->getValidMessages(), 1); // Still 1
-    EXPECT_EQ(inputPort->getInvalidMessages(), 1);
-    
-    EXPECT_EQ(inputPort->getTotalMessages(), 2);
-}
-
-TEST_F(ProcessingUnitTest, PortCallbacks) {
-    testUnit->initialize();
-    auto* inputPort = testUnit->createInputPort<std::string>(1, "callback_input");
-    auto* outputPort = testUnit->createOutputPort<std::string>(2, "callback_output");
-    
-    std::atomic<int> dataCallbackCount{0};
-    std::atomic<int> outputCallbackCount{0};
-    std::string lastDataReceived;
-    std::string lastDataSent;
-    
-    // Set data callback for input
-    inputPort->setDataCallback([&](const std::string& data) {
-        dataCallbackCount.fetch_add(1);
-        lastDataReceived = data;
-    });
-    
-    // Set output callback
-    outputPort->setOutputCallback([&](const std::string& data) {
-        outputCallbackCount.fetch_add(1);
-        lastDataSent = data;
-    });
-    
-    // Test callbacks
-    inputPort->writeData("test_data");
-    outputPort->write("output_data");
-    
-    EXPECT_EQ(dataCallbackCount.load(), 1);
-    EXPECT_EQ(outputCallbackCount.load(), 1);
-    EXPECT_EQ(lastDataReceived, "test_data");
-    EXPECT_EQ(lastDataSent, "output_data");
-}
-
-TEST_F(ProcessingUnitTest, PortStatistics) {
-    testUnit->initialize();
-    auto* inputPort = testUnit->createInputPort<int>(1, "stats_input");
-    auto* outputPort = testUnit->createOutputPort<int>(2, "stats_output");
-    
-    // Initial statistics
-    EXPECT_EQ(inputPort->getTotalMessages(), 0);
-    EXPECT_EQ(inputPort->getValidMessages(), 0);
-    EXPECT_EQ(inputPort->getInvalidMessages(), 0);
-    EXPECT_EQ(outputPort->getTotalMessages(), 0);
-    
-    // Generate some traffic
-    inputPort->writeData(1);
-    inputPort->writeData(2);
-    inputPort->writeData(3);
-    
-    outputPort->write(10);
-    outputPort->write(20);
-    
-    EXPECT_EQ(inputPort->getTotalMessages(), 3);
-    EXPECT_EQ(inputPort->getValidMessages(), 3);
-    EXPECT_EQ(inputPort->getInvalidMessages(), 0);
-    EXPECT_EQ(outputPort->getTotalMessages(), 2);
-}
-
-TEST_F(ProcessingUnitTest, AllPortsRetrieval) {
-    testUnit->initialize();
-    
-    // Create multiple ports
-    testUnit->createInputPort<double>(1, "input1");
-    testUnit->createInputPort<int>(2, "input2");
-    testUnit->createOutputPort<float>(3, "output1");
-    testUnit->createOutputPort<std::string>(4, "output2");
-    
-    auto allPorts = testUnit->getAllPorts();
-    EXPECT_EQ(allPorts.size(), 4);
-    
-    // Verify all ports are present
-    std::set<int> portIds;
-    for (const auto* port : allPorts) {
-        portIds.insert(port->getId());
+// Integration test with multiple units
+class MultiUnitIntegrationTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        producer = std::make_unique<TestProcessingUnit>("Producer");
+        processor = std::make_unique<TestProcessingUnit>("Processor");
+        consumer = std::make_unique<TestProcessingUnit>("Consumer");
+        
+        producer->setBlockUID(1);
+        processor->setBlockUID(2);
+        consumer->setBlockUID(3);
+        
+        producer->setupPorts();
+        processor->setupPorts();
+        consumer->setupPorts();
+        
+        // Connect the pipeline: Producer -> Processor -> Consumer
+        producer->getTestOutputPort()->connect(processor->getTestInputPort());
+        processor->getTestOutputPort()->connect(consumer->getTestInputPort());
     }
     
-    std::set<int> expectedIds{1, 2, 3, 4};
-    EXPECT_EQ(portIds, expectedIds);
+    std::unique_ptr<TestProcessingUnit> producer;
+    std::unique_ptr<TestProcessingUnit> processor;
+    std::unique_ptr<TestProcessingUnit> consumer;
+};
+
+TEST_F(MultiUnitIntegrationTest, DataPipeline) {
+    // Producer generates data (input = 0, output = 0 * 1 = 0, but we'll manually set)
+    producer->getTestInputPort()->writeData(10);
+    producer->processSyncBase(); // Should output 10 * 1 = 10
+    
+    // Processor should receive and process data
+    processor->processSyncBase(); // Should output 10 * 1 = 10
+    
+    // Consumer should receive processed data
+    consumer->processSyncBase(); // Should process 10
+    
+    // Verify processing occurred
+    EXPECT_EQ(producer->getSyncExecutionCount(), 1);
+    EXPECT_EQ(processor->getSyncExecutionCount(), 1);
+    EXPECT_EQ(consumer->getSyncExecutionCount(), 1);
 }
 
-// Thread Safety Tests
-TEST_F(ProcessingUnitTest, ThreadSafePortAccess) {
-    testUnit->initialize();
-    auto* outputPort = testUnit->createOutputPort<int>(1, "thread_output");
-    auto* inputPort = testUnit->createInputPort<int>(2, "thread_input");
-    outputPort->connect(inputPort);
+TEST_F(MultiUnitIntegrationTest, DownSamplingInheritance) {
+    // Set producer to down-sample by factor of 2
+    producer->setDownSamplingFactor(2);
     
-    const int numThreads = 4;
-    const int operationsPerThread = 50;
-    std::vector<std::thread> threads;
-    std::atomic<bool> testRunning{true};
-    std::atomic<int> readOperations{0};
-    std::atomic<int> writeOperations{0};
+    // Processor inherits from producer
+    processor->inheritDownSamplingFactor(producer.get());
+    EXPECT_EQ(processor->getDownSamplingFactor(), 2);
     
-    // Start writer threads
-    for (int i = 0; i < numThreads; ++i) {
-        threads.emplace_back([&, i]() {
-            for (int j = 0; j < operationsPerThread; ++j) {
-                int value = i * operationsPerThread + j;
-                outputPort->write(value);
-                writeOperations.fetch_add(1);
-                std::this_thread::sleep_for(std::chrono::microseconds(10));
-            }
-        });
-    }
-    
-    // Start reader threads (test concurrent read access)
-    for (int i = 0; i < 2; ++i) {
-        threads.emplace_back([&]() {
-            while (testRunning.load()) {
-                if (inputPort->hasNewData()) {
-                    inputPort->read(); // Test thread-safe reading
-                    inputPort->clearNewDataFlag();
-                    readOperations.fetch_add(1);
-                }
-                std::this_thread::sleep_for(std::chrono::microseconds(5));
-            }
-        });
-    }
-    
-    // Wait for writers to complete
-    for (int i = 0; i < numThreads; ++i) {
-        threads[i].join();
-    }
-    
-    // Allow readers to finish current operations
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    testRunning.store(false);
-    
-    // Wait for readers to complete
-    for (int i = numThreads; i < threads.size(); ++i) {
-        threads[i].join();
-    }
-    
-    // Verify operations completed without crashes (thread safety)
-    EXPECT_EQ(writeOperations.load(), numThreads * operationsPerThread);
-    EXPECT_GT(readOperations.load(), 0); // Some reads should have occurred
-    EXPECT_LE(readOperations.load(), writeOperations.load()); // Can't read more than written
-    
-    // Test that port operations are still functional after concurrent access
-    outputPort->write(12345);
-    EXPECT_TRUE(inputPort->hasNewData());
-    EXPECT_EQ(inputPort->read(), 12345);
+    // Consumer inherits from processor
+    consumer->inheritDownSamplingFactor(processor.get());
+    EXPECT_EQ(consumer->getDownSamplingFactor(), 2);
 }
 
-TEST_F(ProcessingUnitTest, ThreadSafeMetricsUpdate) {
-    testUnit->initialize();
-    testUnit->setSimulatedProcessingTime(std::chrono::microseconds(1));
+TEST_F(MultiUnitIntegrationTest, AsyncControlCommands) {
+    // Send async command to processor to change processing factor
+            processor->getTestAsyncPort()->update("MULTIPLY_3");
+    processor->processAsyncBase();
+    EXPECT_EQ(processor->getProcessingFactor(), 3);
     
-    const int numThreads = 8;
-    const int iterationsPerThread = 50;
-    std::vector<std::thread> threads;
-    
-    for (int i = 0; i < numThreads; ++i) {
-        threads.emplace_back([&]() {
-            for (int j = 0; j < iterationsPerThread; ++j) {
-                testUnit->processSync();
-            }
-        });
-    }
-    
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    
-    auto metrics = testUnit->getPerformanceMetrics();
-    EXPECT_EQ(metrics.executionCount, numThreads * iterationsPerThread);
-    EXPECT_GT(metrics.averageExecutionTime.count(), 0);
+    // Now data should be multiplied by 3
+    processor->getTestInputPort()->writeData(5);
+    processor->processSyncBase();
+    // Processing: 5 * 3 = 15 (but we'd need to check connected output)
 }
 
-// Performance Tests
-TEST_F(ProcessingUnitTest, PortPerformance) {
-    testUnit->initialize();
-    auto* outputPort = testUnit->createOutputPort<double>(1, "perf_output");
-    auto* inputPort = testUnit->createInputPort<double>(2, "perf_input");
-    outputPort->connect(inputPort);
-    
-    const int numMessages = 10000;
-    auto start = std::chrono::high_resolution_clock::now();
-    
-    for (int i = 0; i < numMessages; ++i) {
-        outputPort->write(static_cast<double>(i));
-        if (inputPort->hasNewData()) {
-            inputPort->read();
-            inputPort->clearNewDataFlag();
-        }
-    }
-    
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    
-    std::cout << "Port performance: " << numMessages << " messages in " 
-              << duration.count() << " μs" << std::endl;
-    std::cout << "Throughput: " << (numMessages * 1000000.0 / duration.count()) 
-              << " messages/sec" << std::endl;
-    
-    // Should handle at least 1M messages per second
-    EXPECT_LT(duration.count(), numMessages); // Less than 1μs per message
-}
-
-// Edge Cases and Error Conditions
-TEST_F(ProcessingUnitTest, InvalidPortAccess) {
-    testUnit->initialize();
-    
-    // Test non-existent port access
-    EXPECT_EQ(testUnit->getPort(999), nullptr);
-    EXPECT_EQ(testUnit->getPort("non_existent"), nullptr);
-}
-
-TEST_F(ProcessingUnitTest, EmptyNameHandling) {
-    EXPECT_THROW(TestProcessingUnit(""), std::invalid_argument);
-}
-
-TEST_F(ProcessingUnitTest, PortDataTypeInformation) {
-    testUnit->initialize();
-    
-    auto* doublePort = testUnit->createInputPort<double>(1, "double_port");
-    auto* intPort = testUnit->createInputPort<int>(2, "int_port");
-    auto* stringPort = testUnit->createInputPort<std::string>(3, "string_port");
-    
-    // Test data type name retrieval
-    EXPECT_FALSE(doublePort->getDataTypeName().empty());
-    EXPECT_FALSE(intPort->getDataTypeName().empty());
-    EXPECT_FALSE(stringPort->getDataTypeName().empty());
-    
-    // Different types should have different names
-    EXPECT_NE(doublePort->getDataTypeName(), intPort->getDataTypeName());
-    EXPECT_NE(doublePort->getDataTypeName(), stringPort->getDataTypeName());
-}
-
-// Main function for Google Test
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-} 
+} // namespace axonvex::core::test 

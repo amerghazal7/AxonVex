@@ -66,12 +66,29 @@ public:
 
         // Stop the timer and update metrics
         executionTimer_.stop();
-        updatePerformanceMetrics(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
+        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
     }
     
     void processAsync() override {
-        // For this simple example, async processing is the same as sync
-        processSync();
+        // Start the timer
+        executionTimer_.start();
+        
+        setState(ExecutionState::RUNNING);
+        
+        // Generate random data
+        double value = distribution_(generator_);
+        generatedCount_.fetch_add(1);
+        
+        // Simulate some processing time
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        
+        if (generatedCount_.load() % 100 == 0) {
+            std::cout << getName() << " generated " << generatedCount_.load() << " values (async)" << std::endl;
+        }
+
+        // Stop the timer and update metrics
+        executionTimer_.stop();
+        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
     }
     
     void reset() override {
@@ -80,15 +97,19 @@ public:
         std::cout << "Reset: " << getName() << std::endl;
     }
     
+    std::string getTypeDescription() override {
+        return "SimpleDataGenerator";
+    }
+    
     uint64_t getGeneratedCount() const { return generatedCount_.load(); }
     
     // Expose performance metrics
-    PerformanceMetrics getMetrics() const {
+    axonvex::core::ProcessingUnit::PerformanceMetrics getMetrics() const {
         return getPerformanceMetrics();
     }
     
     void finalize() override {
-        setState(ExecutionState::STOPPED);
+        setState(ExecutionState::INITIALIZED);
         std::cout << "Finalized: " << getName() << " (Generated: " << generatedCount_.load() << ")" << std::endl;
     }
 };
@@ -113,6 +134,9 @@ public:
     }
     
     void processSync() override {
+        // Start the timer
+        executionTimer_.start();
+        
         setState(ExecutionState::RUNNING);
         
         // Simulate processing some data
@@ -128,11 +152,35 @@ public:
         if (processedCount_.load() % 150 == 0) {
             std::cout << getName() << " processed " << processedCount_.load() << " values" << std::endl;
         }
+
+        // Stop the timer and update metrics
+        executionTimer_.stop();
+        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
     }
     
     void processAsync() override {
-        // For this simple example, async processing is the same as sync
-        processSync();
+        // Start the timer
+        executionTimer_.start();
+        
+        setState(ExecutionState::RUNNING);
+        
+        // Simulate processing some data
+        {
+            std::lock_guard<std::mutex> lock(sumMutex_);
+            runningSum_ += processedCount_.load() * 0.1;
+        }
+        processedCount_.fetch_add(1);
+        
+        // Simulate processing time
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+        
+        if (processedCount_.load() % 150 == 0) {
+            std::cout << getName() << " processed " << processedCount_.load() << " values (async)" << std::endl;
+        }
+
+        // Stop the timer and update metrics
+        executionTimer_.stop();
+        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
     }
     
     void reset() override {
@@ -145,6 +193,10 @@ public:
         std::cout << "Reset: " << getName() << std::endl;
     }
     
+    std::string getTypeDescription() override {
+        return "SimpleDataProcessor";
+    }
+    
     uint64_t getProcessedCount() const { return processedCount_.load(); }
     
     double getRunningSum() const { 
@@ -153,7 +205,7 @@ public:
     }
     
     void finalize() override {
-        setState(ExecutionState::STOPPED);
+        setState(ExecutionState::INITIALIZED);
         std::cout << "Finalized: " << getName() << " (Processed: " << processedCount_.load() << ")" << std::endl;
     }
 };
@@ -176,6 +228,9 @@ public:
     }
     
     void processSync() override {
+        // Start the timer
+        executionTimer_.start();
+        
         setState(ExecutionState::RUNNING);
         
         monitoringCycles_.fetch_add(1);
@@ -187,11 +242,31 @@ public:
         
         // Simulate monitoring time
         std::this_thread::sleep_for(std::chrono::microseconds(25));
+
+        // Stop the timer and update metrics
+        executionTimer_.stop();
+        updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
     }
     
     void processAsync() override {
-        // For this simple example, async processing is the same as sync
-        processSync();
+        // Start the timer
+        executionTimer_.start();
+        
+        setState(ExecutionState::RUNNING);
+        
+        monitoringCycles_.fetch_add(1);
+        
+        // Periodic monitoring output
+        if (monitoringCycles_.load() % 50 == 0) {
+            std::cout << getName() << " monitoring cycle: " << monitoringCycles_.load() << " (async)" << std::endl;
+        }
+        
+        // Simulate monitoring time
+        std::this_thread::sleep_for(std::chrono::microseconds(25));
+
+        // Stop the timer and update metrics
+        executionTimer_.stop();
+        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
     }
     
     void reset() override {
@@ -200,10 +275,14 @@ public:
         std::cout << "Reset: " << getName() << std::endl;
     }
     
+    std::string getTypeDescription() override {
+        return "SimpleMonitor";
+    }
+    
     uint64_t getMonitoringCycles() const { return monitoringCycles_.load(); }
     
     void finalize() override {
-        setState(ExecutionState::STOPPED);
+        setState(ExecutionState::INITIALIZED);
         std::cout << "Finalized: " << getName() << " (Cycles: " << monitoringCycles_.load() << ")" << std::endl;
     }
 };
@@ -364,7 +443,7 @@ void demonstratePerformance() {
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     
     // Get and display performance metrics from the unit
-    PerformanceMetrics metrics = generator->getMetrics();
+    axonvex::core::ProcessingUnit::PerformanceMetrics metrics = generator->getMetrics();
     
     std::cout << "Performance Results (from internal timer):\n";
     std::cout << "  Iterations: " << metrics.executionCount << "\n";

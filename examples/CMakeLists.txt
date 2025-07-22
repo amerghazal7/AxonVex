@@ -21,8 +21,8 @@ add_executable(path_example path_example.cpp)
 target_link_libraries(path_example axonvex)
 
 # Timing controller example (temporarily disabled due to implementation complexity)
-# add_executable(timing_controller_example timing_controller_example.cpp)
-# target_link_libraries(timing_controller_example axonvex)
+add_executable(timing_controller_example timing_controller_example.cpp)
+target_link_libraries(timing_controller_example axonvex)
 
 # System Management example - re-enabled with basic fixes 
 add_executable(system_example_simple system_example_simple.cpp)
@@ -34,4 +34,16 @@ target_link_libraries(system_example_simple axonvex)
 
 # Re-enabling optimization demo with simplified error handling
 add_executable(optimization_demo optimization_demo.cpp)
-target_link_libraries(optimization_demo axonvex) 
+target_link_libraries(optimization_demo axonvex)
+
+# Callback system example
+add_executable(callback_example callback_example.cpp)
+target_link_libraries(callback_example axonvex)
+
+# Simple callback demo
+add_executable(simple_callback_demo simple_callback_demo.cpp)
+target_link_libraries(simple_callback_demo axonvex)
+
+# Custom system architecture example
+add_executable(custom_system_example custom_system_example.cpp)
+target_link_libraries(custom_system_example axonvex) 

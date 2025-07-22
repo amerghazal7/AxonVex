@@ -29,6 +29,7 @@ public:
     }
     
     void processSync() override {
+        auto start = std::chrono::steady_clock::now();
         processCallCount_.fetch_add(1);
         setState(ExecutionState::RUNNING);
         
@@ -37,21 +38,39 @@ public:
         }
         
         std::this_thread::sleep_for(processingTime_);
+        
+        auto end = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        updateSyncExecutionStats(duration);
     }
     
     void processAsync() override {
-        // For testing, just call processSync in async mode
-        processSync();
+        auto start = std::chrono::steady_clock::now();
+        processCallCount_.fetch_add(1);
+        
+        if (shouldThrow_) {
+            throw std::runtime_error("Mock processing error");
+        }
+        
+        std::this_thread::sleep_for(processingTime_);
+        
+        auto end = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        updateAsyncExecutionStats(duration);
     }
     
     void reset() override {
         resetCallCount_++;
-        ProcessingUnit::reset();
+        setState(ExecutionState::INITIALIZED);
     }
     
     void finalize() override {
         finalizeCallCount_++;
-        setState(ExecutionState::STOPPED);
+        setState(ExecutionState::INITIALIZED);
+    }
+    
+    std::string getTypeDescription() override {
+        return "MockProcessingUnit";
     }
     
     // Test helpers
@@ -72,6 +91,62 @@ private:
     std::chrono::microseconds processingTime_{100};
 };
 
+/**
+ * @brief Concrete AxonVexSystem implementation for testing
+ */
+class TestAxonVexSystem : public AxonVexSystem {
+public:
+    explicit TestAxonVexSystem(const SystemConfiguration& config = SystemConfiguration{})
+        : AxonVexSystem(config) {}
+
+protected:
+    bool initializeBlocksLayout() override {
+        // For basic system tests, we don't need any specific processing units
+        // Just return true to indicate successful initialization
+        return true;
+    }
+};
+
+/**
+ * @brief Test system that creates MockProcessingUnits for testing
+ */
+class TestAxonVexSystemWithUnits : public AxonVexSystem {
+private:
+    std::unique_ptr<MockProcessingUnit> mockUnit_;
+
+public:
+    explicit TestAxonVexSystemWithUnits(const SystemConfiguration& config = SystemConfiguration{})
+        : AxonVexSystem(config) {}
+
+protected:
+    bool initializeBlocksLayout() override {
+        try {
+            // Create and register a mock processing unit for tests
+            mockUnit_ = std::make_unique<MockProcessingUnit>("TestUnit");
+            
+            TimingConstraints constraints;
+            constraints.period = std::chrono::milliseconds(100);
+            constraints.priority = SchedulerPriority::NORMAL;
+            
+            registerProcessingUnit(std::move(mockUnit_), constraints);
+            return true;
+            
+        } catch (const std::exception& e) {
+            std::cerr << "Test block layout initialization failed: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+public:
+    MockProcessingUnit* getTestUnit() const {
+        auto units = getAllProcessingUnits();
+        if (!units.empty()) {
+            return dynamic_cast<MockProcessingUnit*>(units[0]);
+        }
+        return nullptr;
+    }
+};
+
 // Google Test fixture for AxonVexSystem tests
 class AxonVexSystemTest : public ::testing::Test {
 protected:
@@ -87,8 +162,8 @@ protected:
         config_.healthCheckInterval = std::chrono::seconds(2);
         config_.enableFileLogging = false; // Disable file logging for tests
         
-        // Create system with test configuration
-        system_ = std::make_unique<AxonVexSystem>(config_);
+                // Create system with test configuration
+        system_ = std::make_unique<TestAxonVexSystem>(config_);
     }
     
     void TearDown() override {
@@ -98,9 +173,9 @@ protected:
         // Give a moment for all threads to properly shut down
         std::this_thread::sleep_for(100ms);
     }
-    
+
     SystemConfiguration config_;
-    std::unique_ptr<AxonVexSystem> system_;
+    std::unique_ptr<TestAxonVexSystem> system_;
 };
 
 // =================================================================
@@ -141,7 +216,7 @@ TEST_F(AxonVexSystemTest, InitializationFailure) {
     invalidConfig.systemName = ""; // Invalid empty name
     
     EXPECT_THROW({
-        AxonVexSystem invalidSystem(invalidConfig);
+        TestAxonVexSystem invalidSystem(invalidConfig);
     }, std::invalid_argument);
 }
 

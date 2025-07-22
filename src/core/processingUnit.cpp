@@ -1,138 +1,244 @@
-#include <axonvex/core/processingUnit.hpp>
+/**
+ * @file processingUnit.cpp
+ * @brief Advanced Processing Unit Implementation
+ * @author AxonVex Development Team
+ * @version 2.0.0
+ * @date 2025
+ */
+
+#include "axonvex/core/processingUnit.hpp"
+#include <iostream>
 #include <algorithm>
-#include <stdexcept>
-#include <mutex>
-#include <vector>
 
 namespace axonvex::core {
 
-// BasePort implementation
-BasePort::BasePort(int id, const std::string& name, ProcessingUnit* owner)
-    : id_(id), name_(name), owner_(owner) {
-    if (!owner) {
-        throw std::invalid_argument("BasePort owner cannot be null");
-    }
-}
-
-// ProcessingUnit implementation
 ProcessingUnit::ProcessingUnit(const std::string& name)
-    : name_(name) {
-    if (name.empty()) {
-        throw std::invalid_argument("ProcessingUnit name cannot be empty");
-    }
+    : name_(name), instanceDescription_(name) {
+    // Create built-in control ports
+    resetPort_ = createAsyncInputPort<int>(ControlPorts::RESET, "Reset");
+    disablePort_ = createAsyncInputPort<int>(ControlPorts::DISABLE, "Disable");
 }
 
 ProcessingUnit::~ProcessingUnit() {
-    // Clean up ports
-    std::lock_guard<std::mutex> lock(portsMutex_);
-    portsById_.clear();
-    portsByName_.clear();
+    // Cleanup is handled by unique_ptr in ownedPorts_
 }
 
-BasePort* ProcessingUnit::getPort(int id) const {
-    std::lock_guard<std::mutex> lock(portsMutex_);
-    auto it = portsById_.find(id);
-    return (it != portsById_.end()) ? it->second.get() : nullptr;
+void ProcessingUnit::processSyncBase() {
+    intraSampleCounter_++;
+    if (intraSampleCounter_ >= downSamplingFactor_) {
+        if (!isDisabled_.load()) {
+            executionTimer_.start();
+            processSync();
+            executionTimer_.stop();
+            auto duration = executionTimer_.getElapsedNanoseconds();
+            updateSyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(duration));
+        }
+        intraSampleCounter_ = 0;
+    }
 }
 
-BasePort* ProcessingUnit::getPort(const std::string& name) const {
-    std::lock_guard<std::mutex> lock(portsMutex_);
-    auto it = portsByName_.find(name);
-    return (it != portsByName_.end()) ? it->second : nullptr;
-}
-
-std::vector<BasePort*> ProcessingUnit::getAllPorts() const {
-    std::lock_guard<std::mutex> lock(portsMutex_);
-    std::vector<BasePort*> ports;
-    ports.reserve(portsById_.size());
-    
-    for (const auto& pair : portsById_) {
-        ports.push_back(pair.second.get());
+void ProcessingUnit::processAsyncBase() {
+    // Handle built-in control ports
+            if (resetPort_->wasUpdated()) {
+            int msg = resetPort_->read();
+        if (msg != 0) {
+            resetBlock();
+        }
     }
     
-    return ports;
+            if (disablePort_->wasUpdated()) {
+            int msg = disablePort_->read();
+        setDisabled(msg != 0);
+    }
+    
+    if (!isDisabled_.load()) {
+        executionTimer_.start();
+        processAsync();
+        executionTimer_.stop();
+        auto duration = executionTimer_.getElapsedNanoseconds();
+        updateAsyncExecutionStats(std::chrono::duration_cast<std::chrono::microseconds>(duration));
+    }
 }
 
-// Type-erased port access removed - use getAllPorts() and cast as needed
+void ProcessingUnit::setDownSamplingFactor(int factor) {
+    if (factor < 1) {
+        throw std::invalid_argument("Down-sampling factor must be >= 1");
+    }
+    downSamplingFactor_ = factor;
+    intraSampleCounter_ = 0; // Reset counter
+}
 
-PerformanceMetrics ProcessingUnit::getPerformanceMetrics() const {
-    std::lock_guard<std::mutex> lock(metricsMutex_);
-    return metrics_;
+void ProcessingUnit::inheritDownSamplingFactor(const ProcessingUnit* source) {
+    if (source) {
+        setDownSamplingFactor(source->getDownSamplingFactor());
+    }
+}
+
+void ProcessingUnit::setBlockSamplingPeriod(std::chrono::microseconds period) {
+    samplingPeriod_ = period;
+}
+
+void ProcessingUnit::setBlockUID(uint32_t uid) {
+    blockUID_ = uid;
+    hasBeenAddedToSystem_ = true;
+    
+    // Update all port UIDs
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    for (auto& [idx, port] : inputPorts_) {
+        port->setPortUID(uid * 256 + idx);
+    }
+    for (auto& [idx, port] : outputPorts_) {
+        port->setPortUID(uid * 256 + idx);
+    }
+    for (auto& [idx, port] : asyncInputPorts_) {
+        port->setPortUID(uid * 256 + idx);
+    }
+    for (auto& [idx, port] : asyncOutputPorts_) {
+        port->setPortUID(uid * 256 + idx);
+    }
+}
+
+void ProcessingUnit::setURL(const std::string& url) {
+    relativeURL_ = url;
+    // For now, absolute URL is the same as relative
+    // In a full system, this would be computed from parent hierarchy
+    absoluteURL_ = relativeURL_;
+    hasURLBeenSet_ = true;
+}
+
+void ProcessingUnit::setDisabled(bool disabled) {
+    isDisabled_.store(disabled);
+    if (disabled) {
+        setState(ExecutionState::DISABLED);
+    } else {
+        setState(ExecutionState::RUNNING);
+    }
+}
+
+void ProcessingUnit::resetBlock() {
+    reset(); // Call derived class reset
+    resetPorts();
+    intraSampleCounter_ = 0;
+    setState(ExecutionState::INITIALIZED);
+}
+
+void ProcessingUnit::resetPorts() {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    for (auto& [idx, port] : inputPorts_) {
+        port->reset();
+    }
+    for (auto& [idx, port] : outputPorts_) {
+        port->reset();
+    }
+    for (auto& [idx, port] : asyncInputPorts_) {
+        port->reset();
+    }
+    for (auto& [idx, port] : asyncOutputPorts_) {
+        port->reset();
+    }
+}
+
+void ProcessingUnit::setPortsThreadSafe(bool threadSafe) {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    for (auto& [idx, port] : inputPorts_) {
+        port->setThreadSafe(threadSafe);
+    }
+    for (auto& [idx, port] : outputPorts_) {
+        port->setThreadSafe(threadSafe);
+    }
+    for (auto& [idx, port] : asyncInputPorts_) {
+        port->setThreadSafe(threadSafe);
+    }
+    for (auto& [idx, port] : asyncOutputPorts_) {
+        port->setThreadSafe(threadSafe);
+    }
+}
+
+std::string ProcessingUnit::getInputPortName(int idx) const {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    auto it = inputPortNames_.find(idx);
+    return it != inputPortNames_.end() ? it->second : "";
+}
+
+std::string ProcessingUnit::getOutputPortName(int idx) const {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    auto it = outputPortNames_.find(idx);
+    return it != outputPortNames_.end() ? it->second : "";
+}
+
+std::string ProcessingUnit::getAsyncInputPortName(int idx) const {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    auto it = asyncInputPortNames_.find(idx);
+    return it != asyncInputPortNames_.end() ? it->second : "";
+}
+
+std::string ProcessingUnit::getAsyncOutputPortName(int idx) const {
+    std::lock_guard<std::mutex> lock(portsMutex_);
+    auto it = asyncOutputPortNames_.find(idx);
+    return it != asyncOutputPortNames_.end() ? it->second : "";
+}
+
+void ProcessingUnit::updateInstanceDescription(const std::string& description) {
+    instanceDescription_ = description;
+}
+
+ProcessingUnit::ExecutionStats ProcessingUnit::getExecutionStats() const {
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    return stats_;
+}
+
+void ProcessingUnit::resetExecutionStats() {
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    stats_ = ExecutionStats{};
+}
+
+ProcessingUnit::PerformanceMetrics ProcessingUnit::getPerformanceMetrics() const {
+    auto stats = getExecutionStats();
+    PerformanceMetrics metrics;
+    
+    // Convert execution stats to legacy format
+    metrics.executionCount = stats.syncExecutionCount + stats.asyncExecutionCount;
+    if (metrics.executionCount > 0) {
+        auto totalTime = stats.totalSyncTime + stats.totalAsyncTime;
+        metrics.executionTime = totalTime;
+        metrics.averageExecutionTime = totalTime / metrics.executionCount;
+        metrics.maxExecutionTime = std::max(stats.maxSyncTime, stats.maxAsyncTime);
+        metrics.minExecutionTime = std::min(
+            stats.maxSyncTime > std::chrono::microseconds{0} ? stats.maxSyncTime : std::chrono::microseconds::max(),
+            stats.maxAsyncTime > std::chrono::microseconds{0} ? stats.maxAsyncTime : std::chrono::microseconds::max()
+        );
+    }
+    
+    return metrics;
 }
 
 void ProcessingUnit::resetPerformanceMetrics() {
-    std::lock_guard<std::mutex> lock(metricsMutex_);
-    metrics_.reset();
+    resetExecutionStats();
 }
 
 void ProcessingUnit::setError(const std::string& error) {
-    std::lock_guard<std::mutex> lock(metricsMutex_);
     lastError_ = error;
     setState(ExecutionState::ERROR);
 }
 
-void ProcessingUnit::reset() {
-    // Reset execution state
-    setState(ExecutionState::STOPPED);
-    
-    // Reset performance metrics
-    resetPerformanceMetrics();
-    
-    // Clear last error
-    {
-        std::lock_guard<std::mutex> lock(metricsMutex_);
-        lastError_.clear();
+void ProcessingUnit::updateSyncExecutionStats(std::chrono::microseconds executionTime) {
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    stats_.syncExecutionCount++;
+    stats_.totalSyncTime += executionTime;
+    stats_.avgSyncTime = stats_.totalSyncTime / stats_.syncExecutionCount;
+    if (executionTime > stats_.maxSyncTime) {
+        stats_.maxSyncTime = executionTime;
     }
 }
 
-void ProcessingUnit::updatePerformanceMetrics(std::chrono::microseconds executionTime) {
-    std::lock_guard<std::mutex> lock(metricsMutex_);
-    
-    metrics_.executionCount++;
-    metrics_.executionTime = executionTime;
-    
-    // Update min/max execution times
-    if (executionTime < metrics_.minExecutionTime) {
-        metrics_.minExecutionTime = executionTime;
-    }
-    if (executionTime > metrics_.maxExecutionTime) {
-        metrics_.maxExecutionTime = executionTime;
-    }
-    
-    // Update average execution time using running average
-    if (metrics_.executionCount == 1) {
-        metrics_.averageExecutionTime = executionTime;
-    } else {
-        // Running average: avg = (old_avg * (n-1) + new_value) / n
-        auto oldAvg = metrics_.averageExecutionTime.count();
-        auto newAvg = (oldAvg * (metrics_.executionCount - 1) + executionTime.count()) / metrics_.executionCount;
-        metrics_.averageExecutionTime = std::chrono::microseconds(static_cast<long long>(newAvg));
-    }
-    
-    // Calculate throughput (processing rate)
-    if (executionTime.count() > 0) {
-        metrics_.throughput = 1000000.0 / executionTime.count(); // items per second
-    }
-    
-    // Check for deadline misses (if execution time exceeds period)
-    if (executionTime > executionPeriod_) {
-        metrics_.missedDeadlines++;
+void ProcessingUnit::updateAsyncExecutionStats(std::chrono::microseconds executionTime) {
+    std::lock_guard<std::mutex> lock(statsMutex_);
+    stats_.asyncExecutionCount++;
+    stats_.totalAsyncTime += executionTime;
+    stats_.avgAsyncTime = stats_.totalAsyncTime / stats_.asyncExecutionCount;
+    if (executionTime > stats_.maxAsyncTime) {
+        stats_.maxAsyncTime = executionTime;
     }
 }
-
-// Example usage for derived classes:
-// In your derived ProcessingUnit, use executionTimer_ to time your processing:
-// void MyUnit::processSync() override {
-//     executionTimer_.start();
-//     // ... processing logic ...
-//     executionTimer_.stop();
-//     updatePerformanceMetrics(std::chrono::duration_cast<std::chrono::microseconds>(executionTimer_.getElapsedNanoseconds()));
-// }
-//
-// For ThreadSafeQueue and MemoryPool, instantiate as needed in your derived class:
-// ThreadSafeQueue<MyData> inputQueue_;
-// MemoryPool<MyBuffer> bufferPool_;
-//
-// Use inputQueue_ for thread-safe input buffering, and bufferPool_ for real-time safe temporary allocations.
 
 } // namespace axonvex::core 

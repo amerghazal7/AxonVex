@@ -457,9 +457,13 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
     auto executionStart = std::chrono::steady_clock::now();
     
     try {
-        // Execute the processing unit
-        task.unit->processSync();
-        
+        // Execute the async processing unit
+        task.unit->processAsyncBase();
+
+        // Execute the sync processing unit
+        task.unit->processSyncBase();
+
+        // Calculate the execution time
         auto executionEnd = std::chrono::steady_clock::now();
         auto executionTime = std::chrono::duration_cast<std::chrono::microseconds>(
             executionEnd - executionStart);
