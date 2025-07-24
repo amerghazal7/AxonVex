@@ -29,8 +29,8 @@ add_executable(system_example_simple system_example_simple.cpp)
 target_link_libraries(system_example_simple axonvex)
 
 # Subsystem Composition example (temporarily disabled due to namespace ambiguity)
-# add_executable(subsystem_example subsystem_example.cpp)
-# target_link_libraries(subsystem_example axonvex) 
+add_executable(subsystem_example subsystem_example.cpp)
+target_link_libraries(subsystem_example axonvex) 
 
 # Re-enabling optimization demo with simplified error handling
 add_executable(optimization_demo optimization_demo.cpp)
