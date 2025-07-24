@@ -31,6 +31,7 @@
 #include <vector>
 
 using namespace axonvex;
+using namespace axonvex::core;
 using namespace axonvex::Log;
 
 // =================================================================
@@ -94,6 +95,15 @@ class SensorDataGenerator : public ProcessingUnit {
         setState(ExecutionState::STOPPED);
         Info() << "🌡️  " << getName() << " finalized - generated " << sampleCount_.load()
                << " samples";
+    }
+
+    void reset() override {
+        setState(ExecutionState::UNINITIALIZED);
+        Info() << "🌡️  " << getName() << " reset - reset sensor readings";
+    }
+
+    std::string getTypeDescription() override {
+        return "SensorDataGenerator";
     }
 };
 
@@ -177,6 +187,15 @@ class DigitalFilter : public ProcessingUnit {
         setState(ExecutionState::STOPPED);
         Info() << "🔧 " << getName() << " finalized - processed " << processedSamples_.load()
                << " samples";
+    }
+
+    std::string getTypeDescription() override {
+        return "DigitalFilter";
+    }
+
+    void reset() override {
+        setState(ExecutionState::UNINITIALIZED);
+        Info() << "🔧 " << getName() << " reset - reset filter";
     }
 };
 
@@ -293,6 +312,15 @@ class StatisticalAnalyzer : public ProcessingUnit {
         Info() << "📊 " << getName() << " finalized - generated " << analysisCount_.load()
                << " analytics reports";
     }
+
+    void reset() override {
+        setState(ExecutionState::UNINITIALIZED);
+        Info() << "📊 " << getName() << " reset - reset analytics reports";
+    }
+
+    std::string getTypeDescription() override {
+        return "StatisticalAnalyzer";
+    }
 };
 
 /**
@@ -347,11 +375,31 @@ class ResultsMonitor : public ProcessingUnit {
         Info() << "📺 " << getName() << " finalized - processed " << reportsProcessed_.load()
                << " reports";
     }
+
+    std::string getTypeDescription() override {
+        return "ResultsMonitor";
+    }
+
+    void reset() override {
+        setState(ExecutionState::UNINITIALIZED);
+        Info() << "📺 " << getName() << " reset - reset reports";
+    }
 };
 
 // =================================================================
 // SUBSYSTEM CREATION AND MANAGEMENT
 // =================================================================
+
+// creating a mock axonvex system
+class MockAxonVexSystem : public AxonVexSystem {
+  public:
+    MockAxonVexSystem(const SystemConfiguration& config = SystemConfiguration{})
+        : AxonVexSystem(config) {}
+
+    bool initializeBlocksLayout() override {
+        return true;
+    }
+};
 
 /**
  * @brief Create Data Source Subsystem
@@ -363,7 +411,7 @@ std::unique_ptr<AxonVexSystem> createDataSourceSystem() {
     config.enablePerformanceMonitoring = true;
     config.enableFileLogging = false;
 
-    auto system = std::make_unique<AxonVexSystem>(config);
+    auto system = std::make_unique<MockAxonVexSystem>(config);
 
     if (!system->initialize()) {
         Error() << "Failed to initialize Data Source System";
@@ -407,7 +455,7 @@ std::unique_ptr<AxonVexSystem> createProcessingSystem() {
     config.enablePerformanceMonitoring = true;
     config.enableFileLogging = false;
 
-    auto system = std::make_unique<AxonVexSystem>(config);
+    auto system = std::make_unique<MockAxonVexSystem>(config);
 
     if (!system->initialize()) {
         Error() << "Failed to initialize Processing System";
@@ -455,7 +503,7 @@ std::unique_ptr<AxonVexSystem> createAnalyticsSystem() {
     config.enablePerformanceMonitoring = true;
     config.enableFileLogging = false;
 
-    auto system = std::make_unique<AxonVexSystem>(config);
+    auto system = std::make_unique<MockAxonVexSystem>(config);
 
     if (!system->initialize()) {
         Error() << "Failed to initialize Analytics System";
@@ -481,9 +529,9 @@ std::unique_ptr<AxonVexSystem> createAnalyticsSystem() {
     system->registerProcessingUnit(std::move(resultsMonitor), analyticsConstraints);
 
     // Connect analyzers to monitor internally
-    auto tempAnalyticsOut = tempAnalyzerPtr->getPort(2202);
-    auto pressureAnalyticsOut = pressureAnalyzerPtr->getPort(2202);
-    auto monitorAnalyticsIn = monitorPtr->getPort(2300);
+    auto tempAnalyticsOut = tempAnalyzerPtr->getOutputPort<std::string>(2202);
+    auto pressureAnalyticsOut = pressureAnalyzerPtr->getOutputPort<std::string>(2202);
+    auto monitorAnalyticsIn = monitorPtr->getInputPort<std::string>(2300);
 
     if (tempAnalyticsOut && monitorAnalyticsIn) {
         static_cast<OutputPort<std::string>*>(tempAnalyticsOut)

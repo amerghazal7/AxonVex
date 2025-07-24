@@ -36,15 +36,15 @@ class AxonVexSystem;
 /**
  * @brief Execution state for processing units
  */
-enum class ExecutionState { UNINITIALIZED = 0, INITIALIZED, RUNNING, DISABLED, ERROR };
+enum class ExecutionState { UNINITIALIZED = 0, INITIALIZED, RUNNING, STOPPED, DISABLED, ERROR };
 
 /**
  * @brief Built-in control port indices (reserved range 100-199)
  */
 namespace ControlPorts {
-constexpr int RESET = 100;
-constexpr int DISABLE = 101;
-constexpr int ENABLE = 102;
+constexpr int RESET = 1000;
+constexpr int DISABLE = 1001;
+constexpr int ENABLE = 1002;
 } // namespace ControlPorts
 
 /**

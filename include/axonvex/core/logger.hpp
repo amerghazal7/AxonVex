@@ -763,11 +763,6 @@ inline std::string LogOutput::defaultFormat(const LogMessage& message) const {
 //==============================================================================
 
 namespace axonvex::core {
-
-// Forward declarations
-class GlobalLogger;
-extern std::unique_ptr<GlobalLogger> g_logger_instance;
-
 /**
  * @brief Global Logger singleton for stream-based logging
  *
@@ -873,49 +868,6 @@ constexpr const char* WHITE = "\033[1;37m";
 constexpr const char* GRAY = "\033[1;30m";
 } // namespace Colors
 
-/**
- * @brief Base class for stream-based logging
- */
-template <LogLevel Level, const char* ColorCode>
-class StreamLogger {
-  private:
-    std::ostringstream stream_;
-
-  public:
-    StreamLogger() = default;
-
-    // Move constructor for chaining
-    StreamLogger(StreamLogger&& other) noexcept : stream_(std::move(other.stream_)) {}
-
-    // Destructor logs the accumulated message
-    ~StreamLogger() {
-        if (stream_.tellp() > 0) { // Only log if there's content
-            std::string message = stream_.str();
-            if (!message.empty()) {
-                auto& logger = getGlobalLogger().getLogger();
-                logger.log(Level, "Stream", message);
-            }
-        }
-    }
-
-    // Stream operator for any type
-    template <typename T>
-    StreamLogger& operator<<(const T& value) {
-        stream_ << value;
-        return *this;
-    }
-
-    // Handle stream manipulators (like std::endl)
-    StreamLogger& operator<<(std::ostream& (*manip)(std::ostream&)) {
-        stream_ << manip;
-        return *this;
-    }
-
-    // Non-copyable to prevent issues
-    StreamLogger(const StreamLogger&) = delete;
-    StreamLogger& operator=(const StreamLogger&) = delete;
-    StreamLogger& operator=(StreamLogger&&) = delete;
-};
 
 /**
  * @brief Colored console logger that outputs immediately
@@ -937,27 +889,27 @@ class ColoredStreamLogger {
             std::string message = stream_.str();
             if (!message.empty()) {
                 // Create timestamp
-                auto now = std::chrono::system_clock::now();
-                auto time_t = std::chrono::system_clock::to_time_t(now);
-                auto ms =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) %
-                    1000;
+                // auto now = std::chrono::system_clock::now();
+                // auto time_t = std::chrono::system_clock::to_time_t(now);
+                // auto ms =
+                //     std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) %
+                //     1000;
+
+                // std::ostringstream colored_output;
+                // colored_output << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S.")
+                //                << std::setfill('0') << std::setw(3) << ms.count() << "    "
+                //                << ColorCode << message << Colors::RESET;
 
                 std::ostringstream colored_output;
-                colored_output << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S.")
-                               << std::setfill('0') << std::setw(3) << ms.count() << "    "
+                colored_output << " "
                                << ColorCode << message << Colors::RESET;
 
-                // Output to appropriate stream
-                if (Level >= LogLevel::Error) {
-                    std::cerr << colored_output.str() << std::endl;
-                } else {
-                    std::cout << colored_output.str() << std::endl;
-                }
+
+
 
                 // Also log to async logger without color codes
                 auto& logger = getGlobalLogger().getLogger();
-                logger.log(Level, "Stream", message);
+                logger.log(Level, "[Global]", colored_output.str());
             }
         }
     }
