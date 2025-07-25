@@ -333,4 +333,29 @@ set_tests_properties(MemoryPoolPortsTest PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     TIMEOUT 60
     LABELS "core;unit;v2;memory"
-) 
+)
+
+# Types Module Tests
+add_executable(types_test 
+    types/typesTest.cpp
+)
+
+target_link_libraries(types_test 
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+set_target_properties(types_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+add_test(NAME TypesTest COMMAND types_test)
+set_tests_properties(TypesTest PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    TIMEOUT 60
+    LABELS "types;unit;phase3"
+)
