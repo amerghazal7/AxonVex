@@ -62,6 +62,43 @@
 #include <axonvex/core/caller.hpp>
 #include <axonvex/core/callerKeyed.hpp>
 
+// Phase 3 Enhanced Modules (conditionally included based on availability)
+#ifdef AXONVEX_UTILS_MODULE_AVAILABLE
+#include <axonvex/utils/utils.hpp>
+#endif
+
+#ifdef AXONVEX_TYPES_MODULE_AVAILABLE
+#include <axonvex/types/types.hpp>
+#endif
+
+#ifdef AXONVEX_IO_MODULE_AVAILABLE
+#include <axonvex/io/io.hpp>
+#endif
+
+#ifdef AXONVEX_INTERFACES_MODULE_AVAILABLE
+#include <axonvex/interfaces/interfaces.hpp>
+#endif
+
+#ifdef AXONVEX_PLUGINS_MODULE_AVAILABLE
+#include <axonvex/plugins/plugins.hpp>
+#endif
+
+#ifdef AXONVEX_ALGORITHMS_MODULE_AVAILABLE
+#include <axonvex/algorithms/algorithms.hpp>
+#endif
+
+#ifdef AXONVEX_VISUALIZATION_MODULE_AVAILABLE
+#include <axonvex/visualization/visualization.hpp>
+#endif
+
+#ifdef AXONVEX_SAFETY_MODULE_AVAILABLE
+#include <axonvex/safety/safety.hpp>
+#endif
+
+#ifdef AXONVEX_DEPLOYMENT_MODULE_AVAILABLE
+#include <axonvex/deployment/deployment.hpp>
+#endif
+
 /**
  * @namespace axonvex
  * @brief Main namespace for the AxonVex real-time framework

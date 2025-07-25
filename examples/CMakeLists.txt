@@ -46,4 +46,12 @@ target_link_libraries(simple_callback_demo axonvex)
 
 # Custom system architecture example
 add_executable(custom_system_example custom_system_example.cpp)
-target_link_libraries(custom_system_example axonvex) 
+target_link_libraries(custom_system_example axonvex)
+
+# Add matrix example to demonstrate Phase 3 Utils module
+add_executable(matrix_example matrix_example.cpp)
+target_link_libraries(matrix_example axonvex)
+set_target_properties(matrix_example PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)

@@ -149,22 +149,77 @@ target_include_directories(axonvex
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
-        ${TBB_INCLUDE_DIRS}
-        ${nlohmann_json_INCLUDE_DIRS}
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# Link libraries
+# Link with external dependencies only initially
 target_link_libraries(axonvex
     PUBLIC
         Threads::Threads
-        TBB::tbb
         nlohmann_json::nlohmann_json
+        TBB::tbb
     PRIVATE
-        $<$<PLATFORM_ID:Linux>:rt>      # Real-time library on Linux
-        $<$<PLATFORM_ID:Windows>:winmm> # Windows multimedia library
+        $<$<PLATFORM_ID:Linux>:rt>
+        $<$<PLATFORM_ID:Windows>:winmm>
 )
+
+# Add source subdirectories in dependency order
+add_subdirectory(src)
+
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/types/CMakeLists.txt")
+message(STATUS "Adding Types module")
+add_subdirectory(src/types)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/utils/CMakeLists.txt")
+message(STATUS "Adding Utils module")
+add_subdirectory(src/utils)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/core/CMakeLists.txt")
+    message(STATUS "Adding Core module")
+    add_subdirectory(src/core)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/io/CMakeLists.txt")
+    message(STATUS "Adding IO module")
+    add_subdirectory(src/io)
+endif()
+
+# Phase 3B: Communication Modules
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/interfaces/CMakeLists.txt")
+    message(STATUS "Adding Interfaces module")
+    add_subdirectory(src/interfaces)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/plugins/CMakeLists.txt")
+    message(STATUS "Adding Plugins module")
+    add_subdirectory(src/plugins)
+endif()
+
+# Phase 3C: Algorithm Modules
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/algorithms/CMakeLists.txt")
+    message(STATUS "Adding Algorithms module")
+    add_subdirectory(src/algorithms)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/visualization/CMakeLists.txt")
+    message(STATUS "Adding Visualization module")
+    add_subdirectory(src/visualization)
+endif()
+
+# Phase 3D: Production Modules
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/safety/CMakeLists.txt")
+    message(STATUS "Adding Safety module")
+    add_subdirectory(src/safety)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/deployment/CMakeLists.txt")
+    message(STATUS "Adding Deployment module")
+    add_subdirectory(src/deployment)
+endif()
 
 # Preprocessor definitions
 target_compile_definitions(axonvex
@@ -178,9 +233,6 @@ target_compile_definitions(axonvex
         $<$<PLATFORM_ID:Windows>:AXONVEX_PLATFORM_WINDOWS>
         $<$<PLATFORM_ID:Darwin>:AXONVEX_PLATFORM_MACOS>
 )
-
-# Add source subdirectories
-add_subdirectory(src)
 
 # Testing
 if(AXONVEX_BUILD_TESTS)
@@ -196,11 +248,6 @@ endif()
 # Documentation
 if(AXONVEX_BUILD_DOCS)
     add_subdirectory(docs)
-endif()
-
-# Plugins
-if(AXONVEX_BUILD_PLUGINS)
-    add_subdirectory(src/plugins)
 endif()
 
 # Installation
@@ -266,4 +313,4 @@ message(STATUS "Building tests: ${AXONVEX_BUILD_TESTS}")
 message(STATUS "Building examples: ${AXONVEX_BUILD_EXAMPLES}")
 message(STATUS "Building documentation: ${AXONVEX_BUILD_DOCS}")
 message(STATUS "Building plugins: ${AXONVEX_BUILD_PLUGINS}")
-message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}") 
+message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")

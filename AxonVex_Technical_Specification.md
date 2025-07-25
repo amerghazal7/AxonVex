@@ -941,11 +941,8 @@ public:
         // Create output ports
         controlOutput = createOutputPort<double>(0, "control_output");
         
-        // Create async ports for parameter updates
+        // Async port for parameter updates from utils module
         parameterInput = createAsyncInputPort<PIDParameters>(0, "parameters");
-        
-        // Configure PID controller
-        pidController.setParameters(1.0, 0.1, 0.05);
     }
     
     void processSync() override {
@@ -1717,4 +1714,4 @@ The framework's modular design, comprehensive API, and powerful development tool
 
 ---
 
-*Copyright © 2024 AxonVex Framework. All rights reserved.* 
+*Copyright © 2024 AxonVex Framework. All rights reserved.*
