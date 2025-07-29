@@ -3,20 +3,16 @@
 # Enhanced type system and data structures for real-time applications
 # Dependencies: None (only system libraries)
 
-set(AXONVEX_TYPES_SOURCES
+set(TYPES_SOURCES
     primitives/primitives.cpp
-)
-
-set(AXONVEX_TYPES_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/axonvex/types/types.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/axonvex/types/primitives/primitives.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/axonvex/types/collections/collections.hpp
+    collections/collections.cpp
+    signals/signals.cpp
+    geometry/geometry.cpp
 )
 
 # Add types sources to the main axonvex library
 target_sources(axonvex PRIVATE 
-    ${AXONVEX_TYPES_SOURCES}
-    ${AXONVEX_TYPES_HEADERS}
+    ${TYPES_SOURCES}
 )
 
 # Define module availability
@@ -30,16 +26,16 @@ source_group("Types\\Primitives" FILES
     primitives/primitives.cpp
 )
 
-source_group("Headers\\Types\\Core" FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/axonvex/types/types.hpp
+source_group("Types\\Collections" FILES
+    collections/collections.cpp
 )
 
-source_group("Headers\\Types\\Primitives" FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/axonvex/types/primitives/primitives.hpp
+source_group("Types\\Signals" FILES
+    signals/signals.cpp
 )
 
-source_group("Headers\\Types\\Collections" FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/axonvex/types/collections/collections.hpp
+source_group("Types\\Geometry" FILES
+    geometry/geometry.cpp
 )
 
 message(STATUS "Types module configured successfully")
