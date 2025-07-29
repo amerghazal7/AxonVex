@@ -55,3 +55,11 @@ set_target_properties(matrix_example PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
 )
+
+# Add algorithms example to demonstrate Phase 3 Utils module
+add_executable(algorithms_demo algorithms_demo.cpp)
+target_link_libraries(algorithms_demo axonvex)
+set_target_properties(algorithms_demo PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)

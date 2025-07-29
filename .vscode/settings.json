@@ -3,7 +3,16 @@
         "*.hpp": "cpp",
         "*.cpp": "cpp",
         "*.h": "c",
-        "*.c": "c"
+        "*.c": "c",
+        "optional": "cpp",
+        "ratio": "cpp",
+        "system_error": "cpp",
+        "array": "cpp",
+        "functional": "cpp",
+        "tuple": "cpp",
+        "type_traits": "cpp",
+        "utility": "cpp",
+        "variant": "cpp"
     },
     "editor.tabSize": 4,
     "editor.insertSpaces": true,
