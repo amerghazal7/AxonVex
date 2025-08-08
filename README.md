@@ -10,6 +10,11 @@
 
 ---
 
+> Note: Containers now live under `axonvex::utils::containers`.
+> See `docs/UPGRADING.md` for migration from legacy core includes.
+
+---
+
 ## Mission Statement
 
 AxonVex is a cutting-edge real-time framework designed to empower developers to master the complexity of modern systems with unparalleled speed and scalability. Inspired by the rapid signaling of neural axons and the challenge of solving intricate problems, AxonVex delivers precision orchestration, deterministic execution, and robust performance for real-time applications across industries. We enable seamless, scalable solutions where milliseconds matter and complexity is conquered effortlessly.

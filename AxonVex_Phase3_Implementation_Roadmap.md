@@ -168,6 +168,9 @@ private:
 // Container utilities
 #include <axonvex/utils/containers/lockFreeStack.hpp>
 #include <axonvex/utils/containers/concurrentMap.hpp>
+#include <axonvex/utils/containers/threadSafeQueue.hpp>
+#include <axonvex/utils/containers/ringBuffer.hpp>
+#include <axonvex/utils/containers/memoryPool.hpp>
 
 // Serialization utilities
 #include <axonvex/utils/serialization/binarySerializer.hpp>
@@ -1099,4 +1102,4 @@ This roadmap transforms AxonVex from a monolithic framework to a truly modular a
 
 ---
 
-*This roadmap provides the practical foundation for implementing the enhanced Phase 3 plan, creating a modular AxonVex framework that scales from simple applications to complex distributed systems.* 
+*This roadmap provides the practical foundation for implementing the enhanced Phase 3 plan, creating a modular AxonVex framework that scales from simple applications to complex distributed systems.*

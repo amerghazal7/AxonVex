@@ -1,9 +1,9 @@
 #pragma once
 
 #include <atomic>
-#include <axonvex/core/memoryPool.hpp>
+#include <axonvex/utils/containers/memoryPool.hpp>
 #include <axonvex/core/precisionTimer.hpp>
-#include <axonvex/core/threadSafeQueue.hpp>
+#include <axonvex/utils/containers/threadSafeQueue.hpp>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -16,6 +16,10 @@
 #include <vector>
 
 namespace axonvex::core {
+
+// Bring utils containers into core namespace for convenience
+using axonvex::utils::containers::MemoryPool;
+using axonvex::utils::containers::ThreadSafeQueue;
 
 // Forward declaration
 class ProcessingUnit;

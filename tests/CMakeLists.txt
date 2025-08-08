@@ -333,4 +333,105 @@ set_tests_properties(MemoryPoolPortsTest PROPERTIES
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     TIMEOUT 60
     LABELS "core;unit;v2;memory"
-) 
+)
+
+# ------------------------------------------------------------------
+# Phase 3A module tests
+# ------------------------------------------------------------------
+# Types: UUID
+add_executable(types_uuid_test
+    types/uuidTest.cpp
+)
+
+target_link_libraries(types_uuid_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+add_test(NAME TypesUUIDTest COMMAND types_uuid_test)
+set_tests_properties(TypesUUIDTest PROPERTIES LABELS "types;unit")
+
+# Utils: LRUCache
+add_executable(utils_lru_test
+    utils/lruCacheTest.cpp
+)
+
+target_link_libraries(utils_lru_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+add_test(NAME UtilsLRUTest COMMAND utils_lru_test)
+set_tests_properties(UtilsLRUTest PROPERTIES LABELS "utils;unit")
+
+# IO: FileManager
+add_executable(io_file_manager_test
+    io/fileManagerTest.cpp
+)
+
+target_link_libraries(io_file_manager_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+add_test(NAME IOFileManagerTest COMMAND io_file_manager_test)
+set_tests_properties(IOFileManagerTest PROPERTIES LABELS "io;unit")
+
+# Utils: RingBuffer
+add_executable(utils_ring_buffer_test
+    utils/ringBufferTest.cpp
+)
+
+target_link_libraries(utils_ring_buffer_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+add_test(NAME UtilsRingBufferTest COMMAND utils_ring_buffer_test)
+set_tests_properties(UtilsRingBufferTest PROPERTIES LABELS "utils;unit")
+
+# Types: Geometry
+add_executable(types_geometry_test
+    types/geometryTest.cpp
+)
+
+target_link_libraries(types_geometry_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+add_test(NAME TypesGeometryTest COMMAND types_geometry_test)
+set_tests_properties(TypesGeometryTest PROPERTIES LABELS "types;unit")
+
+# Utils: JSONSerializer
+add_executable(utils_json_serializer_test
+    utils/jsonSerializerTest.cpp
+)
+
+target_link_libraries(utils_json_serializer_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+add_test(NAME UtilsJSONSerializerTest COMMAND utils_json_serializer_test)
+set_tests_properties(UtilsJSONSerializerTest PROPERTIES LABELS "utils;unit")
+
+# Update aggregate target
+add_custom_target(test_modules
+    COMMAND ${CMAKE_CTEST_COMMAND} -L "types|utils|io" --output-on-failure
+    DEPENDS types_uuid_test types_geometry_test utils_lru_test utils_ring_buffer_test utils_json_serializer_test io_file_manager_test
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    COMMENT "Running all Phase 3A module tests"
+)

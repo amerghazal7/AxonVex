@@ -7,7 +7,8 @@
  */
 
 #include <atomic>
-#include <axonvex/core/circularBuffer.hpp>
+#include <axonvex/utils/containers/ringBuffer.hpp>
+#include <axonvex/utils/utils.hpp>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <random>
@@ -15,6 +16,8 @@
 #include <vector>
 
 using namespace axonvex::core;
+using axonvex::utils::containers::RingBuffer;
+using axonvex::utils::containers::RingBufferStatistics;
 
 class CircularBufferTest : public ::testing::Test {
   protected:
@@ -39,7 +42,7 @@ class CircularBufferTest : public ::testing::Test {
 
 // Test basic buffer construction
 TEST_F(CircularBufferTest, Construction) {
-    CircularBuffer<int> buffer;
+    RingBuffer<int> buffer;
     EXPECT_EQ(buffer.capacity(), 1024); // Default capacity
     EXPECT_EQ(buffer.size(), 0);
     EXPECT_TRUE(buffer.isEmpty());
@@ -49,24 +52,24 @@ TEST_F(CircularBufferTest, Construction) {
 
 // Test custom capacity construction
 TEST_F(CircularBufferTest, CustomCapacityConstruction) {
-    CircularBuffer<int> buffer(512);
+    RingBuffer<int> buffer(512);
     EXPECT_EQ(buffer.capacity(), 512);
     EXPECT_EQ(buffer.size(), 0);
     EXPECT_TRUE(buffer.isEmpty());
     EXPECT_FALSE(buffer.isFull());
 
     // Test power-of-2 rounding
-    CircularBuffer<int> buffer2(500);
+    RingBuffer<int> buffer2(500);
     EXPECT_EQ(buffer2.capacity(), 512); // Rounded up to next power of 2
 
     // Test minimum capacity
-    CircularBuffer<int> buffer3(8);
+    RingBuffer<int> buffer3(8);
     EXPECT_EQ(buffer3.capacity(), 16); // Minimum capacity
 }
 
 // Test basic write and read operations
 TEST_F(CircularBufferTest, BasicWriteRead) {
-    CircularBuffer<int> buffer(64);
+    RingBuffer<int> buffer(64);
 
     // Write single element
     EXPECT_TRUE(buffer.write(42));
@@ -84,7 +87,7 @@ TEST_F(CircularBufferTest, BasicWriteRead) {
 
 // Test move semantics
 TEST_F(CircularBufferTest, MoveSemantics) {
-    CircularBuffer<std::string> buffer(64);
+    RingBuffer<std::string> buffer(64);
 
     std::string test_string = "Hello, World!";
     std::string original = test_string;
@@ -102,7 +105,7 @@ TEST_F(CircularBufferTest, MoveSemantics) {
 
 // Test buffer overflow
 TEST_F(CircularBufferTest, BufferOverflow) {
-    CircularBuffer<int> buffer(16);
+    RingBuffer<int> buffer(16);
 
     // Fill buffer to capacity - 1
     for (int i = 0; i < 15; ++i) {
@@ -127,7 +130,7 @@ TEST_F(CircularBufferTest, BufferOverflow) {
 
 // Test buffer underflow
 TEST_F(CircularBufferTest, BufferUnderflow) {
-    CircularBuffer<int> buffer(64);
+    RingBuffer<int> buffer(64);
 
     // Try to read from empty buffer
     auto value = buffer.read();
@@ -142,7 +145,7 @@ TEST_F(CircularBufferTest, BufferUnderflow) {
 
 // Test peek functionality
 TEST_F(CircularBufferTest, PeekOperation) {
-    CircularBuffer<int> buffer(64);
+    RingBuffer<int> buffer(64);
 
     // Write some data
     EXPECT_TRUE(buffer.write(100));
@@ -170,7 +173,7 @@ TEST_F(CircularBufferTest, PeekOperation) {
 
 // Test writeMany and readMany operations
 TEST_F(CircularBufferTest, BulkOperations) {
-    CircularBuffer<int> buffer(64);
+    RingBuffer<int> buffer(64);
 
     // Prepare test data
     std::vector<int> write_data = createTestData(10);
@@ -192,7 +195,7 @@ TEST_F(CircularBufferTest, BulkOperations) {
 
 // Test partial bulk operations
 TEST_F(CircularBufferTest, PartialBulkOperations) {
-    CircularBuffer<int> buffer(16);
+    RingBuffer<int> buffer(16);
 
     // Fill buffer almost to capacity
     for (int i = 0; i < 14; ++i) {
@@ -214,7 +217,7 @@ TEST_F(CircularBufferTest, PartialBulkOperations) {
 
 // Test buffer utilization
 TEST_F(CircularBufferTest, UtilizationCalculation) {
-    CircularBuffer<int> buffer(64);
+    RingBuffer<int> buffer(64);
 
     // Empty buffer
     EXPECT_DOUBLE_EQ(buffer.getUtilization(), 0.0);
@@ -234,7 +237,7 @@ TEST_F(CircularBufferTest, UtilizationCalculation) {
 
 // Test statistics collection
 TEST_F(CircularBufferTest, StatisticsCollection) {
-    CircularBuffer<int> buffer(64);
+    RingBuffer<int> buffer(64);
 
     // Perform various operations
     for (int i = 0; i < 10; ++i) {
@@ -273,7 +276,7 @@ TEST_F(CircularBufferTest, StatisticsCollection) {
 
 // Test statistics reset
 TEST_F(CircularBufferTest, StatisticsReset) {
-    CircularBuffer<int> buffer(64);
+    RingBuffer<int> buffer(64);
 
     // Generate some statistics
     buffer.write(1);
@@ -297,7 +300,7 @@ TEST_F(CircularBufferTest, StatisticsReset) {
 
 // Test buffer clear operation
 TEST_F(CircularBufferTest, ClearOperation) {
-    CircularBuffer<int> buffer(64);
+    RingBuffer<int> buffer(64);
 
     // Fill buffer with data
     for (int i = 0; i < 10; ++i) {
@@ -315,7 +318,7 @@ TEST_F(CircularBufferTest, ClearOperation) {
 
 // Test thread safety with single producer/consumer
 TEST_F(CircularBufferTest, SingleProducerConsumerThreadSafety) {
-    CircularBuffer<int> buffer(1024);
+    RingBuffer<int> buffer(1024);
     const int NUM_ITEMS = 10000;
 
     std::atomic<int> items_written{0};
@@ -363,7 +366,7 @@ TEST_F(CircularBufferTest, SingleProducerConsumerThreadSafety) {
 
 // Performance test
 TEST_F(CircularBufferTest, PerformanceTest) {
-    CircularBuffer<int> buffer(8192);
+    RingBuffer<int> buffer(8192);
     const int NUM_OPERATIONS = 4096; // Use less than buffer capacity for pure performance test
 
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -416,7 +419,7 @@ TEST_F(CircularBufferTest, ComplexDataTypes) {
         }
     };
 
-    CircularBuffer<ComplexData> buffer(64);
+    RingBuffer<ComplexData> buffer(64);
 
     ComplexData data1{1, "test1", {1.0, 2.0, 3.0}};
     ComplexData data2{2, "test2", {4.0, 5.0, 6.0}};
@@ -440,7 +443,7 @@ TEST_F(CircularBufferTest, ComplexDataTypes) {
 
 // Test error handling
 TEST_F(CircularBufferTest, ErrorHandling) {
-    CircularBuffer<int> buffer(16);
+    RingBuffer<int> buffer(16);
 
     // Test writeMany with null pointer
     size_t written = buffer.writeMany(nullptr, 10);

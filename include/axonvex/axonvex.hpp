@@ -32,11 +32,11 @@
 #include <axonvex/core/precisionTimer.hpp>
 
 // High-performance data structures
-#include <axonvex/core/circularBuffer.hpp>
-#include <axonvex/core/threadSafeQueue.hpp>
+// Containers are now part of utils module
+// (RingBuffer, ThreadSafeQueue, MemoryPool via axonvex::utils::containers)
 
 // Memory management
-#include <axonvex/core/memoryPool.hpp>
+// memory pool provided via utils aggregator
 
 // Logging system with dual interface
 #include <axonvex/core/logger.hpp>
@@ -61,6 +61,11 @@
 #include <axonvex/core/callback.hpp>
 #include <axonvex/core/caller.hpp>
 #include <axonvex/core/callerKeyed.hpp>
+
+// Optional Phase 3 modules (header-first exposure)
+#include <axonvex/utils/utils.hpp>
+#include <axonvex/types/types.hpp>
+#include <axonvex/io/io.hpp>
 
 /**
  * @namespace axonvex

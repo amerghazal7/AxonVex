@@ -143,7 +143,7 @@ namespace axonvex::utils {
 ```cpp
 // Utils module leverages core components
 #include <axonvex/core/processingUnit.hpp>
-#include <axonvex/core/memoryPool.hpp>
+#include <axonvex/utils/containers/memoryPool.hpp>
 
 namespace axonvex::utils {
     class MathProcessor : public core::ProcessingUnit {
@@ -616,8 +616,8 @@ TEST(ModuleIntegrationTest, PIDWithMatrixOperations) {
 ### **4. User Experience Benefits**
 - **Progressive Enhancement**: Start with core, add modules as needed
 - **Learning Curve**: Learn modules incrementally
-- **Documentation**: Module-specific documentation
-- **Examples**: Module-specific examples and tutorials
+- **Customization**: Easy customization with module selection
+- **Deployment**: Simplified deployment with module packaging
 
 ---
 
@@ -682,4 +682,4 @@ The enhanced Phase 3 plan provides a comprehensive roadmap for implementing this
 
 ---
 
-*This analysis provides the foundation for implementing the enhanced Phase 3 plan, transforming AxonVex into a truly modular and extensible real-time framework.* 
+*This analysis provides the foundation for implementing the enhanced Phase 3 plan, transforming AxonVex into a truly modular and extensible real-time framework.*
