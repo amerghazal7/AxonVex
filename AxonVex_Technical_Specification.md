@@ -1405,11 +1405,17 @@ private:
 
 #### 9.2.2 Data Structures
 ```cpp
+#include <axonvex/utils/containers/ringBuffer.hpp>
+#include <axonvex/utils/containers/threadSafeQueue.hpp>
+
+using axonvex::utils::containers::RingBuffer;
+using axonvex::utils::containers::ThreadSafeQueue;
+
 template<typename T>
-class CircularBuffer {
+class RingBuffer {
 public:
     // Constructor
-    explicit CircularBuffer(size_t capacity);
+    explicit RingBuffer(size_t capacity);
     
     // Data operations
     void push(const T& item);
@@ -1427,11 +1433,7 @@ public:
     typename std::vector<T>::iterator end();
     
 private:
-    std::vector<T> buffer;
-    size_t head;
-    size_t tail;
-    size_t count;
-    size_t maxSize;
+    // ... implementation overview ...
 };
 
 template<typename T>
@@ -1451,11 +1453,7 @@ public:
     void enableBlocking(bool enable);
     
 private:
-    std::queue<T> queue;
-    mutable std::mutex mutex;
-    std::condition_variable condition;
-    size_t maxSize;
-    bool blockingEnabled;
+    // ... implementation overview ...
 };
 ```
 
@@ -1717,4 +1715,4 @@ The framework's modular design, comprehensive API, and powerful development tool
 
 ---
 
-*Copyright © 2024 AxonVex Framework. All rights reserved.* 
+*Copyright © 2024 AxonVex Framework. All rights reserved.*

@@ -1,37 +1,63 @@
-# AxonVex Framework - Architecture Diagram
+# AxonVex Framework - Architecture Diagram (Phase 3 Modular Design)
 
-## System Architecture Overview
+## Phase 3 Modular Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        AxonVex Framework                                   │
+│                            AxonVex Framework                            │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                     Visualization Layer                                    │
-├────────────────┬────────────────────┬───────────────────────────────────┤
-│ Real-time      │ 3D Visualization   │ Analytics Suite                   │
-│ Dashboard      │ Engine             │                                   │
-├────────────────┼────────────────────┼───────────────────────────────────┤
-│                     Orchestration Layer                                    │
-├────────────────┬────────────────────┬───────────────────────────────────┤
-│ System         │ Safety             │ Performance                       │
-│ Orchestrator   │ Orchestrator       │ Orchestrator                      │
-├────────────────┴────────────────────┴───────────────────────────────────┤
-│                      Subsystem Layer                                       │
-├────────────────┬────────────────────┬───────────────────────────────────┤
-│ Control        │ Estimation         │ Mission                           │
-│ Subsystems     │ Subsystems         │ Subsystems                        │
-├────────────────┼────────────────────┼───────────────────────────────────┤
-│ Interface      │ Trajectory         │ Allocation                        │
-│ Subsystems     │ Subsystems         │ Subsystems                        │
-├────────────────┴────────────────────┴───────────────────────────────────┤
-│                    Core Runtime Engine                                     │
-├────────────────┬────────────────────┬───────────────────────────────────┤
-│ Processing     │ Port System        │ Timing Controller                 │
-│ Units          │                    │                                   │
-├────────────────┼────────────────────┼───────────────────────────────────┤
-│ Resource       │ Configuration      │ Security Manager                  │
-│ Manager        │ Manager            │                                   │
-└────────────────┴────────────────────┴───────────────────────────────────┘
+│                         Visualization Layer                             │
+├───────────────────────┬───────────────────────┬─────────────────────────┤
+│ Real-time Dashboard   │ 3D/VR Visualization   │ Analytics Suite         │
+├───────────────────────┴───────────────────────┴─────────────────────────┤
+│                           Orchestration Layer                           │
+├───────────────────────┬───────────────────────┬─────────────────────────┤
+│ System Orchestrator   │ Safety Orchestrator   │ Performance Orchestrator│
+├─────────────────────────────────────────────────────────────────────────┤
+│                               Module Layer                              │
+├────────────┬────────────┬─────────┬──────────────┬───────────┬──────────┤
+│  core      │  utils     │  types  │     io       │ interfaces│ plugins  │
+├────────────┼────────────┼─────────┼──────────────┼───────────┼──────────┤
+│ algorithms │ visualization │ safety │ deployment │           │          │
+├────────────┴────────────┴─────────┴──────────────┴───────────┴──────────┤
+│                         Core Runtime Engine (RT)                         │
+├────────────────┬────────────────────┬──────────────────┬────────────────┤
+│ Processing     │ Port System (sync/ │ Timing Controller│ Resource &     │
+│ Units (Blocks) │ async + validation)│ (µs precision)   │ Config Manager │
+├────────────────┴────────────────────┴──────────────────┴────────────────┤
+│                      Security Manager & Audit Log                        │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+Notes:
+- Module Layer reflects Phase 3 modularization (utils, types, io, interfaces, plugins, algorithms, visualization, safety, deployment).
+- Core remains the foundation for timing, ports, scheduling, resources, and security.
+
+## System Port Management (Phase 3 Breakthrough)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        System Port Management                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│  AxonVexSystem A                             AxonVexSystem B             │
+│  ┌──────────────────────┐                   ┌──────────────────────┐     │
+│  │  Processing Units    │                   │  Processing Units    │     │
+│  │  (blocks & ports)    │                   │  (blocks & ports)    │     │
+│  └──────────┬───────────┘                   └──────────┬───────────┘     │
+│             │ expose as System I/O                       │ expose as     │
+│             ▼                                            ▼ System I/O    │
+│     ┌───────────────┐                           ┌───────────────┐        │
+│     │ System Inputs │◀──── type-safe connect ───│ System Outputs│        │
+│     └───────────────┘                           └───────────────┘        │
+│             ▲                                            ▲               │
+│             │ auto-cleanup, validation, threading        │               │
+├─────────────┴────────────────────────────────────────────┴───────────────┤
+│ Features:                                                                │
+│ • Cross-system data flow (type-checked)                                  │
+│ • Hierarchical composition of subsystems                                 │
+│ • Thread-safe dynamic (re)wiring & lifecycle management                  │
+│ • System-level introspection & metrics                                    │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Core Component Relationships
@@ -40,105 +66,64 @@
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   Input Ports   │───▶│ Processing Unit │───▶│  Output Ports   │
-│                 │    │                 │    │                 │
-│ • Sync Inputs   │    │ • processSync() │    │ • Sync Outputs  │
-│ • Async Inputs  │    │ • processAsync()│    │ • Async Outputs │
-│ • Validation    │    │ • reset()       │    │ • Buffering     │
+│  (sync/async)   │    │  (processSync/  │    │  (buffer/QoS)   │
+│  + validation   │    │   processAsync) │    │  + backpressure │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-### Hierarchical System Structure
+## Module Layer Map (Phase 3)
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          System Level                                      │
+│                                Modules                                   │
+├────────────┬────────────┬──────────────┬─────────────┬─────────┬────────┤
+│ core       │ utils      │ types        │ io          │ plugins │ algos  │
+│ ports, RT, │ math,      │ geometry,    │ files,      │ loader, │ control│
+│ timing,    │ containers,│ signals,     │ streams,    │ registry│ est.,  │
+│ resources  │ serializ., │ time, units  │ net/dev/px  │ API     │ signal │
+├────────────┼────────────┼──────────────┼─────────────┼─────────┼────────┤
+│ interfaces │ visualization │ safety     │ deployment  │         │        │
+│ ROS, MAV,  │ dashboard, 3D│ watchdogs, │ packaging,  │         │        │
+│ WS, REST…  │ charts, AR/VR│ validation  │ ops/metrics │         │        │
+└────────────┴────────────┴──────────────┴─────────────┴─────────┴────────┘
+```
+
+## Unified Communication Architecture
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Communication Layer                               │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐          │
-│  │   Control       │  │   Estimation    │  │   Mission       │          │
-│  │   Subsystem     │  │   Subsystem     │  │   Subsystem     │          │
-│  │                 │  │                 │  │                 │          │
-│  │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │          │
-│  │ │ PID Block   │ │  │ │ Kalman      │ │  │ │ Mission     │ │          │
-│  │ │             │ │  │ │ Filter      │ │  │ │ Element     │ │          │
-│  │ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │          │
-│  │                 │  │                 │  │                 │          │
-│  │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │          │
-│  │ │ MRFT Block  │ │  │ │ EKF Block   │ │  │ │ Pipeline    │ │          │
-│  │ │             │ │  │ │             │ │  │ │ Controller  │ │          │
-│  │ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │          │
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘          │
+│  Protocol Endpoints                                                      │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐     │
+│  │ WebSocket    │ │ HTTP/REST    │ │ GraphQL      │ │ MQTT         │     │
+│  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘     │
+│                    │                        │                            │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐                      │
+│  │ ROS Adapter  │ │ MAVLink Adap.│ │ Custom Proto │ …                    │
+│  └──────────────┘ └──────────────┘ └──────────────┘                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│                     Interface Abstraction Layer                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Publisher ◀──▶ Subscriber ◀──▶ Service Client/Server (QoS, Reliability) │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Communication Architecture
+## Real-time Data Flow with QoS
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    Communication Layer                                     │
+│                              Data Sources                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐          │
-│  │   WebSocket     │  │   HTTP REST     │  │   GraphQL       │          │
-│  │   Interface     │  │   Interface     │  │   Interface     │          │
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘          │
-│                               │                                           │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐          │
-│  │   ROS           │  │   MAVLink       │  │   MQTT          │          │
-│  │   Interface     │  │   Interface     │  │   Interface     │          │
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘          │
-│                               │                                           │
+│ Sensors │ Controllers │ Estimators │ Actuators │ External Feeds          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                Interface Abstraction Layer                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐          │
-│  │   Publisher     │  │   Subscriber    │  │   Service       │          │
-│  │   Interface     │  │   Interface     │  │   Interface     │          │
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-## Real-time Data Flow
-
-### Data Stream Architecture
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      Data Sources                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Sensors   │  │ Controllers │  │ Estimators  │  │   Actuators │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
-│         │                │                │                │             │
-│         ▼                ▼                ▼                ▼             │
-├─────────────────────────────────────────────────────────────────────────┤
-│                   Data Aggregation Layer                                  │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │               Data Stream Manager                                   │ │
-│  │                                                                     │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                │ │
-│  │  │   Filter    │  │   Buffer    │  │  Compress   │                │ │
-│  │  │   Engine    │  │   Manager   │  │   Engine    │                │ │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘                │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-│                                │                                          │
-│                                ▼                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                   Distribution Layer                                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │               WebSocket Server                                      │ │
-│  │                                                                     │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                │ │
-│  │  │   Client    │  │   Client    │  │   Client    │                │ │
-│  │  │   Manager   │  │   Manager   │  │   Manager   │                │ │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘                │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-│                                │                                          │
-│                                ▼                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                      Visualization Layer                                  │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Web UI    │  │   Mobile    │  │   Desktop   │  │   API       │      │
-│  │   Client    │  │   Client    │  │   Client    │  │   Client    │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│                        Data Stream Manager (RT)                          │
+│  • Filter/Transform  • Buffer Mgmt  • Compression  • Zero-copy           │
+│  • QoS (Critical/High/Best-effort)  • Backpressure                       │
+├───────────────┬─────────────────────────┬───────────────────────────────┤
+│ QoS:Critical  │ QoS:High                │ QoS:Best-effort               │
+├──────┬────────┼──────────┬──────────────┼──────────┬───────────────────┤
+│ WS   │ gRPC   │ WS       │ REST/GraphQL │ WS       │ Storage/Archive   │
+├──────┴────────┴──────────┴──────────────┴──────────┴───────────────────┤
+│                           Visualization Clients                          │
+│               Web UI │ Mobile │ Desktop │ Programmatic API               │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -147,216 +132,78 @@
 ### Multi-Layer Safety System
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        Safety Layer 1                                     │
-│                      Hardware Safety                                       │
+│ Layer 1: Hardware Safety  | Interlocks | HW Watchdog | E-Stop | Power   │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Hardware  │  │   Watchdog  │  │   Emergency │  │   Power     │      │
-│  │   Interlocks│  │   Timer     │  │   Stop      │  │   Monitor   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│ Layer 2: Software Safety  | SW Watchdog | Param Validator | Timing Mon. │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                        Safety Layer 2                                     │
-│                      Software Safety                                       │
+│ Layer 3: Application      | Mission Safety | State/Behavior | Perf Mon. │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Software  │  │   Parameter │  │   Range     │  │   Timing    │      │
-│  │   Watchdog  │  │   Validator │  │   Checker   │  │   Monitor   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
-├─────────────────────────────────────────────────────────────────────────┤
-│                        Safety Layer 3                                     │
-│                    Application Safety                                      │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Mission   │  │   State      │  │   Behavior  │  │   Performance│      │
-│  │   Safety    │  │   Validator  │  │   Monitor   │  │   Monitor   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
-├─────────────────────────────────────────────────────────────────────────┤
-│                        Safety Layer 4                                     │
-│                       Human Safety                                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Operator  │  │   Manual    │  │   Override  │  │   Monitoring│      │
-│  │   Interface │  │   Override  │  │   Controls  │  │   Dashboard │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│ Layer 4: Human Safety     | Operator UI | Manual Override | Monitoring │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Security Framework
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      Security Perimeter                                   │
+│ Security Perimeter | Firewall | IDS/IPS | Access Control | Audit Logging │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Firewall  │  │   Intrusion │  │   Access    │  │   Audit     │      │
-│  │   Protection│  │   Detection │  │   Control   │  │   Logging   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│ Authentication     | MFA | Certificates | Tokens | Sessions              │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                    Authentication Layer                                    │
+│ Authorization      | RBAC | Permissions | Operation Validator | ABAC     │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Multi-    │  │   Certificate│  │   Token     │  │   Session   │      │
-│  │   Factor    │  │   Auth      │  │   Validation│  │   Manager   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
-├─────────────────────────────────────────────────────────────────────────┤
-│                    Authorization Layer                                     │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Role-     │  │   Permission│  │   Operation │  │   Resource  │      │
-│  │   Based     │  │   Manager   │  │   Validator │  │   Control   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
-├─────────────────────────────────────────────────────────────────────────┤
-│                     Encryption Layer                                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   TLS/SSL   │  │   Data      │  │   Key       │  │   Digital   │      │
-│  │   Transport │  │   Encryption│  │   Management│  │   Signatures│      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│ Encryption         | TLS/SSL | Data-at-Rest | Key Mgmt | Signatures     │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Performance Monitoring Architecture
-
-### Monitoring Pipeline
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        Data Collection                                     │
+│ Data Collection | Timing | Resources | Network | Application              │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Timing    │  │   Resource  │  │   Network   │  │   Application│      │
-│  │   Metrics   │  │   Metrics   │  │   Metrics   │  │   Metrics   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
-│         │                │                │                │             │
-│         ▼                ▼                ▼                ▼             │
+│ Metrics Processing | Filter | Aggregate | Analyze | Trend/Predict         │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                     Metrics Processing                                    │
+│ Storage | Time Series DB | Metrics DB | Alerts DB | Reports               │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │                    Metrics Aggregator                              │ │
-│  │                                                                     │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                │ │
-│  │  │   Filter    │  │   Aggregate │  │   Analyze   │                │ │
-│  │  │   Engine    │  │   Engine    │  │   Engine    │                │ │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘                │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-│                                │                                          │
-│                                ▼                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                        Storage Layer                                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Time      │  │   Metrics   │  │   Alerts    │  │   Reports   │      │
-│  │   Series DB │  │   Database  │  │   Database  │  │   Storage   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
-│                                │                                          │
-│                                ▼                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                     Visualization Layer                                   │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Real-time │  │   Historical│  │   Predictive│  │   Alert     │      │
-│  │   Dashboard │  │   Analysis  │  │   Analytics │  │   Manager   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│ Visualization | Realtime Dash | Historical | Predictive | Alerts          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Deployment Architecture
 
-### Single Node Deployment
+### Single Node
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        Physical Node                                       │
+│ Node: AxonVex System + Visualization                                    │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │                   AxonVex System                                    │ │
-│  │                                                                     │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                │ │
-│  │  │   Control   │  │   Estimation│  │   Mission   │                │ │
-│  │  │   Subsystem │  │   Subsystem │  │   Subsystem │                │ │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘                │ │
-│  │                                                                     │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                │ │
-│  │  │   Interface │  │   Trajectory│  │   Allocation│                │ │
-│  │  │   Subsystem │  │   Subsystem │  │   Subsystem │                │ │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘                │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │                   Visualization System                             │ │
-│  │                                                                     │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                │ │
-│  │  │   Web Server│  │   Dashboard │  │   Analytics │                │ │
-│  │  │             │  │   Engine    │  │   Engine    │                │ │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘                │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
+│ Modules: core | io | interfaces | algorithms | visualization             │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Distributed Deployment
+### Distributed
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        Control Node                                        │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │                   Master System                                     │ │
-│  │                                                                     │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                │ │
-│  │  │   System    │  │   Mission   │  │   Network   │                │ │
-│  │  │   Manager   │  │   Manager   │  │   Manager   │                │ │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘                │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
+│ Control Node: Master System | System/Mission/Network Managers           │
 └─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
+               │
+               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      Network Infrastructure                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Ethernet  │  │   WiFi      │  │   CAN Bus   │  │   Serial    │      │
-│  │   Network   │  │   Network   │  │   Network   │  │   Network   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│ Network: Ethernet | WiFi | CAN | Serial                                 │
 └─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
+               │
+               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        Compute Nodes                                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Sensor    │  │   Control   │  │   Actuator  │  │   Monitoring│      │
-│  │   Node      │  │   Node      │  │   Node      │  │   Node      │      │
-│  │             │  │             │  │             │  │             │      │
-│  │ ┌─────────┐ │  │ ┌─────────┐ │  │ ┌─────────┐ │  │ ┌─────────┐ │      │
-│  │ │ Sensor  │ │  │ │ Control │ │  │ │ Actuator│ │  │ │ Monitor │ │      │
-│  │ │ Blocks  │ │  │ │ Blocks  │ │  │ │ Blocks  │ │  │ │ Blocks  │ │      │
-│  │ └─────────┘ │  │ └─────────┘ │  │ └─────────┘ │  │ └─────────┘ │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│ Compute Nodes: Sensor | Control | Actuator | Monitoring (Module sets)   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Plugin Architecture
-
-### Plugin System Structure
+## Plugin Architecture (Phase 3)
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        Plugin Manager                                     │
+│ Plugin Manager | Discovery | Loader | Registry | Lifecycle | Services    │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Plugin    │  │   Plugin    │  │   Plugin    │  │   Plugin    │      │
-│  │   Discovery │  │   Loader    │  │   Registry  │  │   Manager   │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
-├─────────────────────────────────────────────────────────────────────────┤
-│                        Plugin Types                                        │
-├─────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │ Processing  │  │  Interface  │  │ Visualization│  │   Mission   │      │
-│  │    Unit     │  │   Plugin    │  │   Plugin    │  │   Plugin    │      │
-│  │   Plugin    │  │             │  │             │  │             │      │
-│  │             │  │ ┌─────────┐ │  │ ┌─────────┐ │  │ ┌─────────┐ │      │
-│  │ ┌─────────┐ │  │ │ ROS     │ │  │ │ Custom  │ │  │ │ Custom  │ │      │
-│  │ │ Custom  │ │  │ │ MAVLink │ │  │ │ Widgets │ │  │ │ Elements│ │      │
-│  │ │ Blocks  │ │  │ │ WebSock │ │  │ │ Charts  │ │  │ │ Logic   │ │      │
-│  │ └─────────┘ │  │ └─────────┘ │  │ └─────────┘ │  │ └─────────┘ │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│ Plugin Types: ProcessingUnit | Interface | Visualization | Mission       │
+│            + Ext: Algorithms | Analytics | Custom Tools                 │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-This architecture diagram provides a comprehensive visual representation of the AxonVex framework's structure, showing how components interact and the hierarchical organization of the system. The modular design enables scalability, maintainability, and extensibility while maintaining real-time performance guarantees. 
+This diagram reflects the Phase 3 modular architecture, highlights the System Port Management capability, clarifies the unified communication framework with protocol adapters and QoS, and aligns safety/security and performance views with the updated design.

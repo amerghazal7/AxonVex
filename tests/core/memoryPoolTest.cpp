@@ -8,7 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
-#include <axonvex/core/memoryPool.hpp>
+#include <axonvex/utils/utils.hpp>
 #include <chrono>
 #include <future>
 #include <gtest/gtest.h>
@@ -17,7 +17,10 @@
 #include <thread>
 #include <vector>
 
-using namespace axonvex::core;
+using axonvex::utils::containers::MemoryPool;
+using axonvex::utils::containers::MemoryPoolStatistics;
+
+// Note: Avoid pulling axonvex::core into scope to prevent ambiguity with utils aliases
 
 class MemoryPoolTest : public ::testing::Test {
   protected:

@@ -7,7 +7,7 @@
  */
 
 #include <atomic>
-#include <axonvex/core/threadSafeQueue.hpp>
+#include <axonvex/utils/utils.hpp>
 #include <chrono>
 #include <future>
 #include <gtest/gtest.h>
@@ -16,7 +16,7 @@
 #include <thread>
 #include <vector>
 
-using namespace axonvex::core;
+using axonvex::utils::containers::ThreadSafeQueue;
 
 class ThreadSafeQueueTest : public ::testing::Test {
   protected:

@@ -16,7 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
-#include <axonvex/core/memoryPool.hpp>
+#include <axonvex/utils/containers/memoryPool.hpp>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -29,6 +29,9 @@
 #include <vector>
 
 namespace axonvex::core {
+
+// Bring utils containers into core namespace for convenience
+using axonvex::utils::containers::MemoryPool;
 
 // Forward declarations
 class ProcessingUnit;

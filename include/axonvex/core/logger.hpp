@@ -2,8 +2,8 @@
 
 #include <array>
 #include <atomic>
-#include <axonvex/core/memoryPool.hpp>
-#include <axonvex/core/threadSafeQueue.hpp>
+#include <axonvex/utils/containers/memoryPool.hpp>
+#include <axonvex/utils/containers/threadSafeQueue.hpp>
 #include <chrono>
 #include <condition_variable>
 #include <ctime>
@@ -20,6 +20,10 @@
 #include <vector>
 
 namespace axonvex::core {
+
+// Bring utils containers into core namespace for convenience
+using axonvex::utils::containers::MemoryPool;
+using axonvex::utils::containers::ThreadSafeQueue;
 
 /**
  * @brief Log severity levels

@@ -18,11 +18,12 @@
 // Include our optimized headers
 #include <axonvex/core/coreUtilities.hpp>
 #include <axonvex/core/errorHandler.hpp>
-#include <axonvex/core/memoryPool.hpp>
+#include <axonvex/utils/containers/memoryPool.hpp>
 #include <axonvex/core/performanceStatistics.hpp>
 // Note: CircularBuffer and ThreadSafeQueue updates are in progress
 
 using namespace axonvex::core;
+using axonvex::utils::containers::MemoryPool;
 
 /**
  * @brief Example component demonstrating unified statistics collection
