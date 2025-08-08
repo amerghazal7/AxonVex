@@ -335,6 +335,45 @@ set_tests_properties(MemoryPoolPortsTest PROPERTIES
     LABELS "core;unit;v2;memory"
 )
 
+# --------------------------------------------------------------
+# Plugins tests (mock loader based)
+add_executable(plugins_manager_test
+    plugins/pluginSample.cpp
+)
+
+target_link_libraries(plugins_manager_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+add_test(NAME PluginsManagerTest COMMAND plugins_manager_test)
+set_tests_properties(PluginsManagerTest PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    TIMEOUT 30
+    LABELS "plugins;unit"
+)
+
+# Safety: Watchdog tests
+add_executable(safety_watchdog_test
+    safety/watchdogTest.cpp
+)
+
+target_link_libraries(safety_watchdog_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+add_test(NAME SafetyWatchdogTest COMMAND safety_watchdog_test)
+set_tests_properties(SafetyWatchdogTest PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    TIMEOUT 30
+    LABELS "safety;unit"
+)
+
 # ------------------------------------------------------------------
 # Phase 3A module tests
 # ------------------------------------------------------------------
