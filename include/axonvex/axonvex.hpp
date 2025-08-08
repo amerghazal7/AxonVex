@@ -66,6 +66,14 @@
 #include <axonvex/utils/utils.hpp>
 #include <axonvex/types/types.hpp>
 #include <axonvex/io/io.hpp>
+#include <axonvex/interfaces/protocolInterface.hpp>
+#include <axonvex/interfaces/websocket/websocketServer.hpp>
+#include <axonvex/interfaces/tcp/tcpClient.hpp>
+#include <axonvex/interfaces/udp/udpSocket.hpp>
+#include <axonvex/plugins/pluginInterface.hpp>
+#include <axonvex/plugins/pluginManager.hpp>
+#include <axonvex/visualization/telemetryBus.hpp>
+#include <axonvex/safety/watchdog.hpp>
 
 /**
  * @namespace axonvex
@@ -98,6 +106,20 @@ namespace axonvex {
  */
 namespace core {
 // Core utilities are defined in their respective headers
+}
+
+/**
+ * @namespace axonvex::plugins
+ * @brief Plugin management and dynamic loading
+ *
+ * This namespace includes functionalities for managing and using plugins
+ * within the AxonVex framework, including the ability to load plugins
+ * dynamically at runtime.
+ */
+namespace plugins {
+    inline axonvex::plugins::PluginManager::LoaderFn makePosixLoader() {
+        return axonvex::plugins::PluginManager::makePosixLoader();
+    }
 }
 
 /**

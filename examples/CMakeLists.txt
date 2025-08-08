@@ -47,3 +47,7 @@ target_link_libraries(simple_callback_demo axonvex)
 # Custom system architecture example
 add_executable(custom_system_example custom_system_example.cpp)
 target_link_libraries(custom_system_example axonvex) 
+
+# Telemetry bus example
+add_executable(telemetry_bus_example telemetry_bus_example.cpp)
+target_link_libraries(telemetry_bus_example axonvex)
