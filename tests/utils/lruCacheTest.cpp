@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <axonvex/utils/caching/lruCache.hpp>
+#include <axonvex_core/utils/caching/lruCache.hpp>
 
 using axonvex::utils::caching::LRUCache;
 

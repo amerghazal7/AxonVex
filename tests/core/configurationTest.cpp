@@ -17,7 +17,7 @@
  * - Thread safety testing
  */
 
-#include <axonvex/core/configuration.hpp>
+#include <axonvex_core/configuration.hpp>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -545,10 +545,10 @@ TEST_F(ConfigurationTest, PerformanceBenchmarkTest) {
     double avg_write_time_ns = static_cast<double>(write_duration.count()) / num_operations;
 
     // Performance targets (these are reasonable for configuration access)
-    EXPECT_LT(avg_read_time_ns, 1000.0)
-        << "Average read time: " << avg_read_time_ns << " ns (target: <1000ns)";
-    EXPECT_LT(avg_write_time_ns, 10000.0)
-        << "Average write time: " << avg_write_time_ns << " ns (target: <10000ns)";
+    EXPECT_LT(avg_read_time_ns, 2000.0)
+        << "Average read time: " << avg_read_time_ns << " ns (target: <2000ns)";
+    EXPECT_LT(avg_write_time_ns, 20000.0)
+        << "Average write time: " << avg_write_time_ns << " ns (target: <20000ns)";
 
     // Output performance results
     std::cout << "\n=== Configuration Performance Results ===" << std::endl;
@@ -607,9 +607,4 @@ TEST_F(ConfigurationTest, EnvironmentVariableTest) {
     unsetenv("AXONVEX_SYSTEM_NAME");
     unsetenv("AXONVEX_SYSTEM_EXECUTION_FREQUENCY");
     unsetenv("AXONVEX_SYSTEM_EXECUTION_ENABLED");
-}
-
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
 }

@@ -8,8 +8,8 @@
             "args": [
                 "-B", "build",
                 "-DCMAKE_BUILD_TYPE=Debug",
-                "-DAXONVEX_BUILD_TESTS=ON",
-                "-DAXONVEX_BUILD_EXAMPLES=ON"
+                "-DBUILD_TESTING=ON",
+                "-DBUILD_EXAMPLES=ON"
             ],
             "group": "build",
             "presentation": {
@@ -47,8 +47,8 @@
             "args": [
                 "-B", "build-release",
                 "-DCMAKE_BUILD_TYPE=Release",
-                "-DAXONVEX_BUILD_TESTS=ON",
-                "-DAXONVEX_BUILD_EXAMPLES=ON",
+                "-DBUILD_TESTING=ON",
+                "-DBUILD_EXAMPLES=ON",
                 "&&",
                 "cmake", "--build", "build-release", "-j8"
             ],

@@ -44,5 +44,8 @@
         "AXONVEX_BUILD_TESTS": "ON",
         "AXONVEX_BUILD_EXAMPLES": "ON",
         "CMAKE_BUILD_TYPE": "Debug"
+    },
+    "chat.tools.terminal.autoApprove": {
+        "cp": true
     }
 } 

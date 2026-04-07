@@ -7,8 +7,8 @@
  */
 
 #include <atomic>
-#include <axonvex/utils/containers/ringBuffer.hpp>
-#include <axonvex/utils/utils.hpp>
+#include <axonvex_core/utils/containers/ringBuffer.hpp>
+#include <axonvex_core/utils/utils.hpp>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <random>

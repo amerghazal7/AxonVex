@@ -1,8 +1,8 @@
 #include <atomic>
-#include <axonvex/core/callback.hpp>
-#include <axonvex/interfaces/tcp/tcpClient.hpp>
-#include <axonvex/interfaces/udp/udpSocket.hpp>
-#include <axonvex/interfaces/websocket/websocketServer.hpp>
+#include <axonvex_core/callback.hpp>
+#include <axonvex_interfaces/tcp/tcpClient.hpp>
+#include <axonvex_interfaces/udp/udpSocket.hpp>
+#include <axonvex_interfaces/websocket/websocketServer.hpp>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -102,9 +102,3 @@ TEST(ProtocolInterfacesContractTest, TcpStartFailurePathAndConfigurationContract
     tcp.stop();
 #endif
 }
-
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
-

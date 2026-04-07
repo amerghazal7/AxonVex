@@ -1,5 +1,5 @@
 #include <atomic>
-#include <axonvex/core/system.hpp>
+#include <axonvex_core/system.hpp>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
@@ -8,6 +8,8 @@
 
 using namespace axonvex::core;
 using namespace std::chrono_literals;
+
+namespace {
 
 // Mock ProcessingUnit for testing
 class MockProcessingUnit : public ProcessingUnit {
@@ -1018,12 +1020,4 @@ TEST_F(AxonVexSystemTest, SystemPortThreadSafety) {
     EXPECT_EQ(system_->getSystemOutputPortNames().size(), 5);
 }
 
-// =================================================================
-// MAIN FUNCTION
-// =================================================================
-
-// Main function for Google Test
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
+} // anonymous namespace

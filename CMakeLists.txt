@@ -1,273 +1,129 @@
 cmake_minimum_required(VERSION 3.20)
 
-# AxonVex Framework Project
-project(AxonVex
-    VERSION 1.0.0
-    LANGUAGES CXX
-    DESCRIPTION "A Real-Time Framework Built for Scalable, Precise Execution"
-    HOMEPAGE_URL "https://github.com/axonvex/axonvex-framework"
-)
+set(PROJECT_NAME "axonvex")
 
-# Project configuration
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
+set(CMAKE_BUILD_TYPE Debug)
+
+set(CMAKE_ENABLE_EXPORTS ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Build options
-option(AXONVEX_BUILD_TESTS "Build AxonVex tests" ON)
-option(AXONVEX_BUILD_EXAMPLES "Build AxonVex examples" ON)
-option(AXONVEX_BUILD_DOCS "Build AxonVex documentation" OFF)
-option(AXONVEX_BUILD_PLUGINS "Build AxonVex plugins" ON)
-option(AXONVEX_ENABLE_REAL_TIME "Enable real-time optimizations" ON)
-option(AXONVEX_ENABLE_PROFILING "Enable performance profiling" OFF)
+# Install prefix for native libs (used before project() for RPATH)
+set(AXONVEX_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/install/libs")
 
-# Include CMake modules
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
-
-# Platform-specific configurations
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(AXONVEX_PLATFORM_LINUX ON)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(AXONVEX_PLATFORM_WINDOWS ON)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(AXONVEX_PLATFORM_MACOS ON)
-endif()
-
-# Compiler-specific configurations
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set(AXONVEX_COMPILER_GCC ON)
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set(AXONVEX_COMPILER_CLANG ON)
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    set(AXONVEX_COMPILER_MSVC ON)
-endif()
-
-# Real-time optimization flags
-if(AXONVEX_ENABLE_REAL_TIME)
-    if(AXONVEX_COMPILER_GCC OR AXONVEX_COMPILER_CLANG)
-        # GCC/Clang real-time optimizations
-        set(AXONVEX_RT_FLAGS
-            -O3                     # High optimization level
-            -march=native           # Use native CPU instructions
-            -mtune=native           # Tune for native CPU
-            -ffast-math             # Fast math operations
-            -funroll-loops          # Unroll loops
-            -finline-functions      # Inline functions
-            -fomit-frame-pointer    # Omit frame pointer
-            # -fno-exceptions         # Keep exceptions for error handling
-            # -fno-rtti               # Keep RTTI for type identification
-        )
-        
-        # Additional flags for debug/release
-        set(AXONVEX_RT_DEBUG_FLAGS
-            -g                      # Debug symbols
-            -DDEBUG                 # Debug macro
-        )
-        
-        set(AXONVEX_RT_RELEASE_FLAGS
-            -DNDEBUG                # Release macro
-            -flto                   # Link-time optimization
-        )
-        
-        # Thread-related flags
-        if(AXONVEX_PLATFORM_LINUX)
-            list(APPEND AXONVEX_RT_FLAGS -pthread)
-        endif()
-        
-    elseif(AXONVEX_COMPILER_MSVC)
-        # MSVC real-time optimizations
-        set(AXONVEX_RT_FLAGS
-            /O2                     # Optimize for speed
-            /Ot                     # Favor fast code
-            /Oy                     # Omit frame pointers
-            /GL                     # Whole program optimization
-            /GS-                    # Disable buffer security checks
-            /fp:fast                # Fast floating point
-        )
-        
-        set(AXONVEX_RT_DEBUG_FLAGS
-            /Zi                     # Debug symbols
-            /DDEBUG                 # Debug macro
-        )
-        
-        set(AXONVEX_RT_RELEASE_FLAGS
-            /DNDEBUG                # Release macro
-            /LTCG                   # Link-time code generation
-        )
-    endif()
-endif()
-
-# Warning flags
-if(AXONVEX_COMPILER_GCC OR AXONVEX_COMPILER_CLANG)
-    set(AXONVEX_WARNING_FLAGS
-        -Wall                   # Enable all warnings
-        -Wextra                 # Extra warnings
-        -Wpedantic              # Pedantic warnings
-        -Werror                 # Treat warnings as errors
-        -Wno-unused-parameter   # Ignore unused parameters
-        -Wno-missing-field-initializers  # Ignore missing field initializers
-    )
-elseif(AXONVEX_COMPILER_MSVC)
-    set(AXONVEX_WARNING_FLAGS
-        /W4                     # Warning level 4
-        /WX                     # Treat warnings as errors
-    )
-endif()
-
-# Find dependencies
-find_package(Threads REQUIRED)
-find_package(nlohmann_json REQUIRED)
-find_package(TBB REQUIRED)
-
-# Conan integration (if using Conan)
-if(EXISTS "${CMAKE_CURRENT_BINARY_DIR}/conan_paths.cmake")
-    include(${CMAKE_CURRENT_BINARY_DIR}/conan_paths.cmake)
-endif()
-
-# Create main AxonVex library
-add_library(axonvex STATIC)
-
-# Set target properties
-set_target_properties(axonvex PROPERTIES
-    VERSION ${PROJECT_VERSION}
-    SOVERSION ${PROJECT_VERSION_MAJOR}
-    POSITION_INDEPENDENT_CODE ON
-    CXX_VISIBILITY_PRESET hidden
-    VISIBILITY_INLINES_HIDDEN ON
+# Set RPATH so installed shared libs can find each other
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+set(CMAKE_INSTALL_RPATH
+    "${AXONVEX_INSTALL_PREFIX}/axonvex_core/libs"
+    "${AXONVEX_INSTALL_PREFIX}/axonvex_plugins/libs"
+    "${AXONVEX_INSTALL_PREFIX}/axonvex_interfaces/libs"
+    "${AXONVEX_INSTALL_PREFIX}/axonvex_safety/libs"
+    "${AXONVEX_INSTALL_PREFIX}/axonvex_io/libs"
+    "${AXONVEX_INSTALL_PREFIX}/axonvex_visualization/libs"
 )
 
-# Apply compiler flags
-target_compile_options(axonvex PRIVATE
-    ${AXONVEX_WARNING_FLAGS}
-    ${AXONVEX_RT_FLAGS}
-    $<$<CONFIG:Debug>:${AXONVEX_RT_DEBUG_FLAGS}>
-    $<$<CONFIG:Release>:${AXONVEX_RT_RELEASE_FLAGS}>
-)
+project("${PROJECT_NAME}"
+    VERSION 1.0.0
+    DESCRIPTION "A Real-Time Framework Built for Scalable, Precise Execution"
+    LANGUAGES CXX)
 
-# Include directories
-target_include_directories(axonvex
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-        ${TBB_INCLUDE_DIRS}
-        ${nlohmann_json_INCLUDE_DIRS}
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
+# Set install prefix to project-local directory
+set(CMAKE_INSTALL_PREFIX "${AXONVEX_INSTALL_PREFIX}" CACHE PATH "" FORCE)
 
-# Link libraries
-target_link_libraries(axonvex
-    PUBLIC
-        Threads::Threads
-        TBB::tbb
-        nlohmann_json::nlohmann_json
-    PRIVATE
-        $<$<PLATFORM_ID:Linux>:rt>      # Real-time library on Linux
-        $<$<PLATFORM_ID:Windows>:winmm> # Windows multimedia library
-)
+option(BUILD_TESTING "Build unit tests" ON)
+option(BUILD_EXAMPLES "Build examples" ON)
 
-# Preprocessor definitions
-target_compile_definitions(axonvex
-    PRIVATE
-        AXONVEX_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
-        AXONVEX_VERSION_MINOR=${PROJECT_VERSION_MINOR}
-        AXONVEX_VERSION_PATCH=${PROJECT_VERSION_PATCH}
-        $<$<BOOL:${AXONVEX_ENABLE_REAL_TIME}>:AXONVEX_REAL_TIME_ENABLED>
-        $<$<BOOL:${AXONVEX_ENABLE_PROFILING}>:AXONVEX_PROFILING_ENABLED>
-        $<$<PLATFORM_ID:Linux>:AXONVEX_PLATFORM_LINUX>
-        $<$<PLATFORM_ID:Windows>:AXONVEX_PLATFORM_WINDOWS>
-        $<$<PLATFORM_ID:Darwin>:AXONVEX_PLATFORM_MACOS>
-)
+##################### Build AxonVex Libs ##########################
+add_subdirectory(src/libs)
 
-# Add source subdirectories
-add_subdirectory(src)
-
-# Testing
-if(AXONVEX_BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
-endif()
-
-# Examples
-if(AXONVEX_BUILD_EXAMPLES)
-    add_subdirectory(examples)
-endif()
-
-# Documentation
-if(AXONVEX_BUILD_DOCS)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/docs/CMakeLists.txt")
-        add_subdirectory(docs)
-    else()
-        message(WARNING "AXONVEX_BUILD_DOCS is ON but docs/CMakeLists.txt is missing; skipping docs target.")
-    endif()
-endif()
-
-# Plugins
-if(AXONVEX_BUILD_PLUGINS)
-    add_subdirectory(src/plugins)
-endif()
-
-# Installation
-include(GNUInstallDirs)
-
-# Install targets
-install(TARGETS axonvex
-    EXPORT AxonVexTargets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-
-# Install headers
-install(DIRECTORY include/axonvex
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    FILES_MATCHING PATTERN "*.hpp"
-)
-
-# Install export file
-install(EXPORT AxonVexTargets
-    FILE AxonVexTargets.cmake
-    NAMESPACE AxonVex::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AxonVex
-)
-
-# Create config file
+##################### CMake Package Export ##########################
 include(CMakePackageConfigHelpers)
 
+install(EXPORT axonvexTargets
+    NAMESPACE axonvex::
+    DESTINATION lib/cmake/axonvex
+)
+
 configure_package_config_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/AxonVexConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfig.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AxonVex
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/AxonVexConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfig.cmake"
+    INSTALL_DESTINATION lib/cmake/axonvex
 )
 
 write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfigVersion.cmake
+    "${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion
+    COMPATIBILITY AnyNewerVersion
 )
 
 install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfigVersion.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AxonVex
+    "${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfigVersion.cmake"
+    DESTINATION lib/cmake/axonvex
 )
 
-# Package configuration
-set(CPACK_PACKAGE_NAME "AxonVex")
-set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "A Real-Time Framework Built for Scalable, Precise Execution")
-set(CPACK_PACKAGE_VENDOR "AxonVex Framework")
-set(CPACK_RESOURCE_FILE_LICENSE ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE)
-set(CPACK_RESOURCE_FILE_README ${CMAKE_CURRENT_SOURCE_DIR}/README.md)
+##################### Build Tests ##########################
+if(BUILD_TESTING)
+    find_package(GTest QUIET)
+    if(GTest_FOUND)
+        add_compile_definitions(BUILD_TESTING)
+        enable_testing()
+        add_executable(test_core
+            tests/core/precisionTimerTest.cpp
+            tests/core/circularBufferTest.cpp
+            tests/core/threadSafeQueueTest.cpp
+            tests/core/memoryPoolTest.cpp
+            tests/core/loggerTest.cpp
+            tests/core/configurationTest.cpp
+            tests/core/pathTest.cpp
+            tests/core/timingControllerTest.cpp
+            tests/core/systemTest.cpp
+            tests/core/callbackTest.cpp
+            tests/core/portsTest.cpp
+            tests/core/processingUnitTest.cpp
+            tests/core/memoryPoolPortsTest.cpp
+            tests/types/uuidTest.cpp
+            tests/types/geometryTest.cpp
+            tests/utils/lruCacheTest.cpp
+            tests/utils/ringBufferTest.cpp
+            tests/utils/jsonSerializerTest.cpp
+            tests/io/fileManagerTest.cpp
+            tests/plugins/pluginSample.cpp
+            tests/safety/watchdogTest.cpp
+            tests/interfaces/protocolInterfacesContractTest.cpp
+        )
+        target_link_libraries(test_core
+            PRIVATE
+                axonvex_core
+                axonvex_plugins
+                axonvex_interfaces
+                axonvex_safety
+                axonvex_io
+                axonvex_visualization
+                GTest::GTest
+                GTest::Main
+        )
+        # Register a single aggregated test plus per-test discovery for better reporting.
+        add_test(NAME core_tests COMMAND test_core)
+        include(GoogleTest)
+        gtest_discover_tests(test_core
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+            DISCOVERY_TIMEOUT 30
+        )
+        add_custom_target(run_tests
+            COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+            DEPENDS test_core
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        )
+    else()
+        message(STATUS "GTest not found; skipping tests.")
+    endif()
+endif()
 
-include(CPack)
-
-# Status output
-message(STATUS "AxonVex Framework v${PROJECT_VERSION}")
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "Real-time optimizations: ${AXONVEX_ENABLE_REAL_TIME}")
-message(STATUS "Building tests: ${AXONVEX_BUILD_TESTS}")
-message(STATUS "Building examples: ${AXONVEX_BUILD_EXAMPLES}")
-message(STATUS "Building documentation: ${AXONVEX_BUILD_DOCS}")
-message(STATUS "Building plugins: ${AXONVEX_BUILD_PLUGINS}")
-message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}") 
+##################### Build Examples ##########################
+if(BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()

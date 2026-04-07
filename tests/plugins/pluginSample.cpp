@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include <axonvex/plugins/pluginInterface.hpp>
-#include <axonvex/plugins/pluginManager.hpp>
+#include <axonvex_plugins/pluginInterface.hpp>
+#include <axonvex_plugins/pluginManager.hpp>
 #include <string>
 
 using namespace axonvex::plugins;

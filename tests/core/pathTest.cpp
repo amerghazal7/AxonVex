@@ -16,7 +16,7 @@
  * - Integration with AxonVex components
  */
 
-#include <axonvex/core/path.hpp>
+#include <axonvex_core/path.hpp>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -569,9 +569,4 @@ TEST_F(PathTest, GlobalOperatorsTest) {
     path_set.insert(Path("path1")); // Duplicate
 
     EXPECT_EQ(path_set.size(), 2); // Should only have 2 unique paths
-}
-
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
 }
