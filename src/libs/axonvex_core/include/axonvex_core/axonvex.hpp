@@ -65,6 +65,10 @@
 // Generic interface units for adapter integration
 #include <axonvex_core/interfaceUnits.hpp>
 
+// Mission runtime
+#include <axonvex_core/missionElement.hpp>
+#include <axonvex_core/missionPipeline.hpp>
+
 // Optional Phase 3 modules (header-first exposure)
 #include <axonvex_core/utils/utils.hpp>
 #include <axonvex_core/types/types.hpp>
