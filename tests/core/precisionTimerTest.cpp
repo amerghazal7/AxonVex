@@ -7,7 +7,7 @@
  */
 
 #include <atomic>
-#include <axonvex/core/precisionTimer.hpp>
+#include <axonvex_core/precisionTimer.hpp>
 #include <chrono>
 #include <cmath>
 #include <gtest/gtest.h>

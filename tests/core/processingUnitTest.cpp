@@ -6,13 +6,14 @@
  * @date 2025
  */
 
-#include <axonvex/core/processingUnit.hpp>
+#include <axonvex_core/processingUnit.hpp>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <string>
 #include <thread>
 
 namespace axonvex::core::test {
+namespace {
 
 // Test implementation of ProcessingUnit
 class TestProcessingUnit : public ProcessingUnit {
@@ -486,4 +487,5 @@ TEST_F(MultiUnitIntegrationTest, AsyncControlCommands) {
     // Processing: 5 * 3 = 15 (but we'd need to check connected output)
 }
 
+} // anonymous namespace
 } // namespace axonvex::core::test

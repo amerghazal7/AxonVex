@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <axonvex/utils/utils.hpp>
+#include <axonvex_core/utils/utils.hpp>
 
 #include <nlohmann/json.hpp>
 

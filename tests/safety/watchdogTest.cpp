@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
-#include <axonvex/axonvex.hpp>
+#include <axonvex_core/callback.hpp>
+#include <axonvex_safety/watchdog.hpp>
 #include <atomic>
 
 using axonvex::safety::Watchdog;

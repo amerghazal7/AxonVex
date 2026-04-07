@@ -6,8 +6,8 @@
  * @date 2025
  */
 
-#include <axonvex/core/ports.hpp>
-#include <axonvex/core/processingUnit.hpp>
+#include <axonvex_core/ports.hpp>
+#include <axonvex_core/processingUnit.hpp>
 #include <cmath>
 #include <gtest/gtest.h>
 #include <stdexcept>
@@ -15,6 +15,7 @@
 #include <vector>
 
 namespace axonvex::core::test {
+namespace {
 
 // Test ProcessingUnit for creating ports
 class TestProcessingUnit : public ProcessingUnit {
@@ -464,4 +465,5 @@ TEST_F(IntegrationTest, PortUIDGeneration) {
     EXPECT_EQ(consumerInput->getPortUID(), 3 * 256 + 1);   // Block 3, Port 1
 }
 
+} // anonymous namespace
 } // namespace axonvex::core::test

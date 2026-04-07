@@ -1,6 +1,6 @@
-#include "axonvex/core/timingController.hpp"
+#include "axonvex_core/timingController.hpp"
 
-#include "axonvex/core/processingUnit.hpp"
+#include "axonvex_core/processingUnit.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -11,6 +11,8 @@
 
 using namespace axonvex::core;
 using namespace std::chrono_literals;
+
+namespace {
 
 // Test ProcessingUnit for TimingController tests
 class MockProcessingUnit : public ProcessingUnit {
@@ -687,8 +689,4 @@ TEST_F(TimingControllerTest, ConcurrentTaskManagement) {
     }
 }
 
-// Main function for Google Test
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
+} // anonymous namespace

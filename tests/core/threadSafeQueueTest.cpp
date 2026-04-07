@@ -7,7 +7,7 @@
  */
 
 #include <atomic>
-#include <axonvex/utils/utils.hpp>
+#include <axonvex_core/utils/utils.hpp>
 #include <chrono>
 #include <future>
 #include <gtest/gtest.h>

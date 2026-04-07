@@ -21,7 +21,7 @@
  *   cd build && make path_example && ./examples/path_example
  */
 
-#include <axonvex/axonvex.hpp>
+#include <axonvex_core/axonvex.hpp>
 
 using namespace axonvex;
 using namespace axonvex::Log; // Use framework's Logger

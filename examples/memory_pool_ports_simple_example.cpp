@@ -7,7 +7,7 @@
  */
 
 #include <atomic>
-#include <axonvex/axonvex.hpp>
+#include <axonvex_core/axonvex.hpp>
 #include <chrono>
 #include <iomanip>
 #include <iostream>

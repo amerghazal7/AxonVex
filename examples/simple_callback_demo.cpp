@@ -8,7 +8,7 @@
  * A concise demonstration of the AxonVex callback system functionality.
  */
 
-#include <axonvex/axonvex.hpp>
+#include <axonvex_core/axonvex.hpp>
 #include <iostream>
 #include <string>
 

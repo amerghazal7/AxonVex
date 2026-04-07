@@ -7,7 +7,7 @@
  */
 
 #include <array>
-#include <axonvex/axonvex.hpp>
+#include <axonvex_core/axonvex.hpp>
 #include <chrono>
 #include <thread>
 #include <vector>
