@@ -35,9 +35,15 @@ set(CMAKE_INSTALL_PREFIX "${AXONVEX_INSTALL_PREFIX}" CACHE PATH "" FORCE)
 
 option(BUILD_TESTING "Build unit tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
+option(BUILD_PLUGINS "Build middleware plugins (axonvex_ros2, etc.)" ON)
 
 ##################### Build AxonVex Libs ##########################
 add_subdirectory(src/libs)
+
+##################### Build Plugins (optional) ##########################
+if(BUILD_PLUGINS)
+    add_subdirectory(plugins)
+endif()
 
 ##################### CMake Package Export ##########################
 include(CMakePackageConfigHelpers)
