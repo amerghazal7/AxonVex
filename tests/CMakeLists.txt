@@ -125,7 +125,7 @@ set_tests_properties(MemoryPoolTest PROPERTIES LABELS "core;unit")
 # Add custom test target for running all core tests
 add_custom_target(test_core
     COMMAND ${CMAKE_CTEST_COMMAND} -L core --output-on-failure
-    DEPENDS precision_timer_test circular_buffer_test thread_safe_queue_test memory_pool_test callback_test ports_test processing_unit_v2_test memory_pool_ports_test
+    DEPENDS precision_timer_test circular_buffer_test thread_safe_queue_test memory_pool_test callback_test ports_test processing_unit_v2_test memory_pool_ports_test configuration_test path_test
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Running all core component tests"
 )
@@ -160,17 +160,39 @@ set_tests_properties(LoggerTest PROPERTIES
 # Add custom test target for running all unit tests  
 add_custom_target(test_unit
     COMMAND ${CMAKE_CTEST_COMMAND} -L unit --output-on-failure
-    DEPENDS precision_timer_test circular_buffer_test thread_safe_queue_test memory_pool_test logger_test callback_test ports_test processing_unit_v2_test memory_pool_ports_test
+    DEPENDS precision_timer_test circular_buffer_test thread_safe_queue_test memory_pool_test logger_test callback_test ports_test processing_unit_v2_test memory_pool_ports_test configuration_test path_test interfaces_contract_test
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Running all unit tests"
 ) 
 
 add_executable(configuration_test core/configurationTest.cpp)
-target_link_libraries(configuration_test axonvex gtest)
+target_link_libraries(configuration_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+add_test(NAME ConfigurationTest COMMAND configuration_test)
+set_tests_properties(ConfigurationTest PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    TIMEOUT 60
+    LABELS "core;unit"
+)
 
 # Path class test
 add_executable(path_test core/pathTest.cpp)
-target_link_libraries(path_test axonvex gtest)
+target_link_libraries(path_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+add_test(NAME PathTest COMMAND path_test)
+set_tests_properties(PathTest PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    TIMEOUT 30
+    LABELS "core;unit"
+)
 
 
 
@@ -473,4 +495,25 @@ add_custom_target(test_modules
     DEPENDS types_uuid_test types_geometry_test utils_lru_test utils_ring_buffer_test utils_json_serializer_test io_file_manager_test
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Running all Phase 3A module tests"
+)
+
+# ------------------------------------------------------------------
+# Interfaces contract tests
+# ------------------------------------------------------------------
+add_executable(interfaces_contract_test
+    interfaces/protocolInterfacesContractTest.cpp
+)
+
+target_link_libraries(interfaces_contract_test
+    axonvex
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+
+add_test(NAME InterfacesContractTest COMMAND interfaces_contract_test)
+set_tests_properties(InterfacesContractTest PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    TIMEOUT 30
+    LABELS "interfaces;contract;unit"
 )

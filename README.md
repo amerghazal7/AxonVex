@@ -1,7 +1,7 @@
 ![AxonVex Banner](assets/banner.png)
 
 # AxonVex  
-**A Real-Time Framework Built for Scalable, Precise Execution**
+**Real-time C++ framework for typed processing pipelines, deterministic scheduling, and extensible protocol adapters**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/Build-Pending-orange.svg)]()
@@ -10,10 +10,9 @@
 
 ---
 
-> Note: Containers now live under `axonvex::utils::containers`.
-> See `docs/UPGRADING.md` for migration from legacy core includes.
+## Project Status
 
----
+AxonVex is in active development. Current strongest capability is the core runtime and test harness.
 
 ## Mission Statement
 
@@ -24,18 +23,6 @@ AxonVex is a cutting-edge real-time framework designed to empower developers to 
 ## Framework Overview
 
 AxonVex is a comprehensive real-time framework built upon proven hierarchical block-based architecture principles. It provides developers with the tools and infrastructure needed to build sophisticated real-time systems with deterministic timing, high performance, and mission-critical reliability.
-
-### Core Architecture
-
-The framework follows a three-tier hierarchical design:
-
-```
-Processing Units (Blocks) → Subsystems → Execution Orchestrators
-```
-
-- **Processing Units**: Fundamental computational units with microsecond-level timing accuracy
-- **Subsystems**: Specialized collections of interconnected blocks (Control, Estimation, Mission, Interface)
-- **Orchestrators**: High-level coordination systems managing complex behaviors
 
 ### Key Features
 
@@ -52,10 +39,11 @@ Processing Units (Blocks) → Subsystems → Execution Orchestrators
 
 ## Documentation Suite
 
-### 📚 [Complete Documentation Index](AxonVex_Documentation_Index.md)
+### 📚 [Complete Documentation Index](docs/)
 Your starting point for all AxonVex documentation, including quick start guides, examples, and community resources.
 
-### 🔧 [Technical Specification](AxonVex_Technical_Specification.md) 
+### 🔧 [Technical Specification](docs/software_requirements_specification.md)
+
 Comprehensive technical specification covering:
 - Core architecture philosophy and design principles
 - Advanced real-time visual monitoring and control systems
@@ -66,7 +54,7 @@ Comprehensive technical specification covering:
 - Development and integration guidelines
 - Complete API reference and deployment guides
 
-### 🏗️ [Architecture Diagram](AxonVex_Architecture_Diagram.md)
+### 🏗️ [Architecture Diagram](docs/architecture_and_design.md)
 Visual representation of the system architecture including:
 - System architecture overview and component relationships
 - Communication architecture and protocol abstractions
@@ -100,64 +88,43 @@ make -j$(nproc)
 sudo make install
 ```
 
-### Hello World Example
+---
+
+## API Usage (Current Pattern)
+
+The system class is abstract and intended to be derived to define block layout.
 
 ```cpp
-#include <axonvex/core.hpp>
+#include <axonvex/axonvex.hpp>
+
+class MySystem final : public axonvex::core::AxonVexSystem {
+  protected:
+    bool initializeBlocksLayout() override {
+        // registerProcessingUnit(...), assign ports, etc.
+        return true;
+    }
+};
 
 int main() {
-    // Create AxonVex system
-    auto system = std::make_unique<AxonVexSystem>("HelloWorld");
-    
-    // Create and add processing units
-    auto sensor = std::make_unique<SensorBlock>("Sensor");
-    auto controller = std::make_unique<ControllerBlock>("Controller");
-    auto actuator = std::make_unique<ActuatorBlock>("Actuator");
-    
-    system->addBlock(std::move(sensor));
-    system->addBlock(std::move(controller));
-    system->addBlock(std::move(actuator));
-    
-    // Connect blocks
-    system->connect("Sensor", "output", "Controller", "input");
-    system->connect("Controller", "output", "Actuator", "input");
-    
-    // Enable real-time visualization
-    system->enableVisualization(true);
-    system->setVisualizationPort(8080);
-    system->setExecutionFrequency(1000); // 1000 Hz
-    
-    // Start system
-    system->initialize();
-    system->start();
-    
+    MySystem system;
+    if (!system.initialize()) return 1;
+    if (!system.start()) return 1;
+    // ...
+    system.stop();
     return 0;
 }
 ```
 
-Access the real-time dashboard at `http://localhost:8080` to monitor system performance and control parameters.
-
 ---
 
-## Performance Specifications
+## Testing
 
-### Real-time Performance
-- **Execution Precision**: <1 microsecond timing accuracy
-- **System Response**: <100 microseconds for high-priority operations
-- **Data Streaming**: <1 millisecond end-to-end latency
-- **Dashboard Updates**: 60Hz+ refresh rate
+Primary suites live under `tests/` and are executed through CTest.
 
-### Scalability Metrics
-- **Processing Blocks**: 10,000+ blocks per system
-- **Concurrent Clients**: 1,000+ simultaneous dashboard users
-- **Message Throughput**: 1M+ messages per second per node
-- **Data Processing**: 100MB/s+ sustained throughput
-
-### Reliability Specifications
-- **System Availability**: 99.99% uptime for mission-critical applications
-- **Failover Time**: <1 second automatic failover
-- **Error Recovery**: Automatic recovery from transient failures
-- **Data Integrity**: Zero data loss during normal operations
+```bash
+ctest --output-on-failure
+ctest -L unit --output-on-failure
+```
 
 ---
 
@@ -318,5 +285,5 @@ For questions, support, or collaboration opportunities:
 
 ---
 
-*Copyright © 2025 AxonVex Framework. All rights reserved.*
+*Copyright © 2026 AxonVex Framework. All rights reserved.*
 

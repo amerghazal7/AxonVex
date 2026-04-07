@@ -74,6 +74,26 @@ bool Configuration::loadFromString(const std::string& json_string, bool merge_wi
 bool Configuration::loadFromEnvironment(const std::string& prefix, bool merge_with_existing) {
     try {
         nlohmann::json env_config;
+        auto setNested = [](nlohmann::json& root, const std::string& dotted_key,
+                            const nlohmann::json& value) {
+            nlohmann::json* current = &root;
+            size_t start = 0;
+
+            while (start < dotted_key.size()) {
+                size_t dot = dotted_key.find('.', start);
+                std::string part =
+                    dot == std::string::npos ? dotted_key.substr(start)
+                                             : dotted_key.substr(start, dot - start);
+
+                if (dot == std::string::npos) {
+                    (*current)[part] = value;
+                    return;
+                }
+
+                current = &(*current)[part];
+                start = dot + 1;
+            }
+        };
 
         // Get all environment variables with the specified prefix
         for (char** env = environ; *env != nullptr; ++env) {
@@ -93,14 +113,16 @@ bool Configuration::loadFromEnvironment(const std::string& prefix, bool merge_wi
                 // Replace underscores with dots for hierarchical keys
                 std::replace(key.begin(), key.end(), '_', '.');
 
-                // Try to parse as JSON value
+                nlohmann::json parsed_value;
                 try {
-                    auto json_value = nlohmann::json::parse(value);
-                    env_config[key] = json_value;
+                    parsed_value = nlohmann::json::parse(value);
                 } catch (...) {
-                    // Treat as string if not valid JSON
-                    env_config[key] = value;
+                    // Treat as string if not valid JSON.
+                    parsed_value = value;
                 }
+
+                // Build nested object shape so dotted keys are queryable via get("a.b").
+                setNested(env_config, key, parsed_value);
             }
         }
 
