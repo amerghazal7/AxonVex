@@ -101,6 +101,7 @@ if(BUILD_TESTING)
             tests/safety/watchdogTest.cpp
             tests/interfaces/protocolInterfacesContractTest.cpp
             tests/core/interfaceUnitsTest.cpp
+            tests/core/missionTest.cpp
             tests/adapters/adapterContractTest.cpp
         )
         target_link_libraries(test_core

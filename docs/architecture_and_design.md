@@ -55,11 +55,11 @@ flowchart TD
 - Adapter contract: AdapterInterface + AdapterBase + MockAdapter (`axonvex_adapters`)
 - ROS 2 plugin: ROS2Adapter with typed unit creation + type caster registry (`axonvex_ros2`)
 - System adapter injection: `addAdapter()` / `getAdapter()` on AxonVexSystem
+- Mission runtime: `MissionElement` + `MissionPipeline` (PU) with graph-based execution control
 - Plugin system, safety primitives, I/O, telemetry bus
-- Unit-test harness: 316 tests (`tests/`, CTest/GTest)
+- Unit-test harness: 331 tests (`tests/`, CTest/GTest)
 
 ### Next-milestone gaps
-- Mission runtime module (`MissionElement`, `MissionPipeline`)
 - Safety manager and policy engine (`SafetyManager`)
 - Deterministic replay harness
 - MAVLink plugin lib (`axonvex_mavlink`)

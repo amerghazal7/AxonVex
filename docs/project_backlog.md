@@ -21,7 +21,7 @@
 |---|---|---|---|
 | E01 | Core Runtime Integrity | P0 | Done |
 | E02 | Adapter Contract Layer | P0 | Done (Baseline) |
-| E03 | Mission Runtime Engine | P0 | Not Started |
+| E03 | Mission Runtime Engine | P0 | Done |
 | E04 | Safety Envelope | P0 | Not Started |
 | E05 | Replay and Regression Harness | P0 | Not Started |
 | E06 | Scalability and Soak Validation | P1 | Not Started |
@@ -41,7 +41,7 @@
 | B02.1 | Define adapter contract spec | 1d | Done |
 | B02.2 | Implement ROS adapter baseline shell | 2d | Done |
 | B02.3 | Implement MAVLink adapter baseline shell | 2d | Done |
-| B03.1 | Implement `MissionElement` abstraction | 1d | Planned |
-| B03.2 | Implement `MissionPipeline` with sequential/conditional transitions | 2d | Planned |
+| B03.1 | Implement `MissionElement` abstraction | 1d | Done |
+| B03.2 | Implement `MissionPipeline` with sequential/conditional transitions | 2d | Done |
 | B04.1 | Implement baseline `SafetyManager` + e-stop | 2d | Planned |
 | B05.1 | Implement deterministic replay harness | 2d | Planned |

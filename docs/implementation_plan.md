@@ -33,10 +33,15 @@
 - Sample app (`axonvex_bridge_app`) demonstrating clean composition.
 - All 316 tests passing.
 
-## Phase C - Mission Runtime
+## Phase C - Mission Runtime  ✅ Complete
 
-- Implement `MissionElement` + `MissionPipeline` + execution control.
-- Add deterministic component tests for transitions and abort/restart paths.
+- Implemented `MissionElement` abstract base with execute/onEnter/onExit/reset lifecycle.
+- Implemented `MissionPipeline` as a `ProcessingUnit` with directed-graph execution.
+- Sequential and conditional transitions via labeled edges (Default, Option1-3).
+- Execution control: startPipeline, abort, restart, pause, resume.
+- Control port (AsyncInputPort) and status port (OutputPort) for system integration.
+- 15 deterministic tests covering all transition paths, lifecycle hooks, and control commands.
+- All 331 tests passing.
 
 ## Phase D - Safety Envelope
 
