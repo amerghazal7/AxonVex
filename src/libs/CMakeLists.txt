@@ -20,6 +20,3 @@ add_subdirectory(axonvex_visualization)
 
 ##################### Build axonvex_adapters Lib ##########################
 add_subdirectory(axonvex_adapters)
-
-##################### Build axonvex_ros2 Plugin Lib (optional) ##########################
-add_subdirectory(axonvex_ros2)
