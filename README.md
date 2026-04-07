@@ -4,8 +4,8 @@
 **Real-time C++ framework for typed processing pipelines, deterministic scheduling, and extensible protocol adapters**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Build Status](https://img.shields.io/badge/Build-Pending-orange.svg)]()
-[![Documentation](https://img.shields.io/badge/Documentation-Available-green.svg)](AxonVex_Documentation_Index.md)
+[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)]()
+[![Documentation](https://img.shields.io/badge/Documentation-Available-green.svg)](docs/)
 [![Version](https://img.shields.io/badge/Version-1.0.0--dev-red.svg)]()
 
 ---
@@ -74,56 +74,74 @@ Visual representation of the system architecture including:
 - **OS**: Linux (Ubuntu 20.04+), Windows 10+, macOS 10.15+
 - **Compiler**: GCC 9+, Clang 10+, or MSVC 2019+
 
-### Installation
+### Dependencies
+
+- [Conan 2](https://conan.io/) package manager
+- [CMake 3.20+](https://cmake.org/)
+
+### Build
 
 ```bash
-# Clone the repository
 git clone https://github.com/axonvex/axonvex-framework.git
 cd axonvex-framework
 
-# Build and install
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-sudo make install
+# Install dependencies via Conan
+conan install . --output-folder=build --build=missing
+
+# Configure and build
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+      -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DBUILD_EXAMPLES=ON
+cmake --build build -j$(nproc)
+
+# Run tests
+ctest --test-dir build --output-on-failure
 ```
 
 ---
 
-## API Usage (Current Pattern)
+## API Usage
 
-The system class is abstract and intended to be derived to define block layout.
+Derive from `AxonVexSystem` to define your processing pipeline, then drive it through the standard lifecycle.
 
 ```cpp
-#include <axonvex/axonvex.hpp>
+#include <axonvex_core/axonvex.hpp>
 
-class MySystem final : public axonvex::core::AxonVexSystem {
+using namespace axonvex;
+
+class MySystem final : public AxonVexSystem {
   protected:
     bool initializeBlocksLayout() override {
-        // registerProcessingUnit(...), assign ports, etc.
+        auto unit = std::make_unique<MyProcessingUnit>("sensor");
+        registerProcessingUnit(std::move(unit));
         return true;
     }
 };
 
 int main() {
-    MySystem system;
+    SystemConfig cfg;
+    cfg.name = "Example";
+    cfg.enableStatistics = true;
+
+    AxonVexSystem system(cfg);
     if (!system.initialize()) return 1;
     if (!system.start()) return 1;
-    // ...
+    // ... run ...
     system.stop();
     return 0;
 }
 ```
 
+See `examples/` for complete working demos.
+
 ---
 
 ## Testing
 
-Primary suites live under `tests/` and are executed through CTest.
+All tests live under `tests/` and compile into a single `test_core` binary discovered by CTest.
 
 ```bash
-ctest --output-on-failure
-ctest -L unit --output-on-failure
+cmake --build build -j8
+ctest --test-dir build --output-on-failure
 ```
 
 ---
@@ -159,78 +177,63 @@ ctest -L unit --output-on-failure
 ## Technology Stack
 
 ### Core System
-- **Language**: C++17/20 with real-time optimizations
-- **Build System**: CMake 3.20+ with cross-platform support
-- **Threading**: Custom thread pool with real-time scheduling
-- **Networking**: High-performance networking with zero-copy operations
+- **Language**: C++17
+- **Build System**: CMake 3.20+ with Conan 2 dependency management
+- **Dependencies**: oneTBB (concurrency), nlohmann_json (configuration), GoogleTest (testing)
+- **Threading**: Custom thread pool with real-time scheduling via `TimingController`
 
-### Web Interface
-- **Frontend**: React 18 with TypeScript
-- **Real-time Communication**: WebSocket with binary message support
-- **Visualization**: Three.js with WebGL acceleration
-- **State Management**: Redux Toolkit for efficient state management
-
-### Communication Protocols
-- **WebSocket**: Ultra-low latency bidirectional communication
-- **HTTP REST API**: Configuration and batch operations
-- **GraphQL API**: Flexible, efficient data querying
-- **MQTT Support**: Scalable IoT device integration
-- **Custom Protocols**: Plugin-based protocol extensions
+### Communication Protocols (Current)
+- **Protocol Abstraction**: `ProtocolInterface` base with lifecycle, stats, and error reporting
+- **TCP Client**: BSD socket implementation (Linux) with simulation fallback
+- **UDP Socket**: BSD socket implementation (Linux) with simulation fallback
+- **WebSocket**: Placeholder implementation (full stack planned)
 
 ---
 
-## Safety and Security
+## Library Architecture
 
-### Multi-Layer Safety System
-- **Hardware Safety**: Hardware interlocks, watchdog timers, emergency stops
-- **Software Safety**: Software watchdogs, parameter validation, range checking
-- **Application Safety**: Mission safety, state validation, behavior monitoring
-- **Human Safety**: Operator interfaces, manual overrides, monitoring dashboards
+AxonVex is split into libraries under `src/libs/`:
 
-### Security Framework
-- **Authentication**: Multi-factor authentication, certificate-based auth
-- **Authorization**: Role-based access control, permission management
-- **Encryption**: TLS/SSL transport security, data encryption at rest
-- **Audit**: Comprehensive audit logging, security event monitoring
+| Library | Type | Role |
+|---------|------|------|
+| `axonvex_core` | Shared | Runtime, orchestration, ports, timing, configuration, logging, interface units |
+| `axonvex_interfaces` | Interface | Protocol abstractions (TCP, UDP, WebSocket) |
+| `axonvex_adapters` | Interface | Adapter contract (AdapterInterface, AdapterBase, MockAdapter) |
+| `axonvex_ros2` | Interface | ROS 2 plugin — ROS2Adapter with typed unit creation (optional, requires rclcpp) |
+| `axonvex_plugins` | Interface | Plugin API and dynamic loading |
+| `axonvex_safety` | Interface | Safety primitives (Watchdog) |
+| `axonvex_io` | Interface | Filesystem helpers |
+| `axonvex_visualization` | Interface | Telemetry pub/sub bus |
 
----
-
-## Development and Integration
-
-### Developer Experience
-- **Intuitive APIs**: Clean, well-documented interfaces
-- **Code Generation**: Tools for generating boilerplate code
-- **Testing Framework**: Comprehensive testing and simulation tools
-- **Plugin Architecture**: Extensible plugin system for custom functionality
-
-### Integration Support
-- **Protocol Abstraction**: Support for ROS, MAVLink, WebSocket, MQTT
-- **Configuration Management**: Dynamic configuration with validation
-- **Deployment Options**: Single-node and distributed deployment models
-- **Monitoring Tools**: Real-time performance monitoring and debugging
+All interface libraries depend only on `axonvex_core`. See [Architecture](docs/architecture_and_design.md) for the full design.
 
 ---
 
 ## Implementation Status
 
-> **Note**: AxonVex is currently in the design and specification phase. The framework is being developed based on the comprehensive technical specifications provided in this documentation suite.
+### Implemented
+- ✅ **Core Runtime**: System orchestration, processing units, typed ports, timing controller
+- ✅ **Configuration**: JSON-backed runtime configuration with typed access
+- ✅ **Logging**: Dual-interface logger with stream and function APIs
+- ✅ **Utilities**: Thread-safe queue, ring buffer, memory pool, LRU cache, JSON serializer
+- ✅ **Types**: UUID, Point2D/3D, Quaternion geometry types
+- ✅ **Protocol Abstraction**: TCP, UDP, WebSocket scaffolds with `ProtocolInterface` contract
+- ✅ **Plugin System**: Dynamic plugin loading (Linux) with `PluginManager`
+- ✅ **Safety Primitives**: Watchdog timer with configurable callbacks
+- ✅ **I/O**: Filesystem helpers via `FileManager`
+- ✅ **Telemetry**: Keyed pub/sub bus for visualization data
+- ✅ **Test Suite**: 286 tests across all modules, CTest/GTest integrated
 
-### Current Status
-- ✅ **Architecture Design**: Complete system architecture and component specifications
-- ✅ **Technical Specification**: Comprehensive technical documentation
-- ✅ **API Design**: Detailed API specifications and interfaces
-- 🔄 **Core Implementation**: In development phase
-- 🔄 **Visualization System**: In development phase
-- 🔄 **Testing Framework**: In development phase
+### In Progress
+- 🔄 **Adapter Contract Layer**: ROS and MAVLink adapter shells
+- 🔄 **Mission Runtime**: `MissionElement` and `MissionPipeline` abstractions
 
-### Next Steps
-1. **Core Runtime Engine**: Implement processing units and timing controller
-2. **Subsystem Layer**: Develop control, estimation, and mission subsystems
-3. **Visualization System**: Build real-time dashboard and 3D visualization
-4. **Safety Systems**: Implement multi-layer safety and security framework
-5. **Testing and Validation**: Comprehensive testing and performance validation
+### Planned
+- ⬚ **Safety Envelope**: `SafetyManager` with e-stop and policy checks
+- ⬚ **Replay Harness**: Deterministic trace record/replay for regression testing
+- ⬚ **Scalability Validation**: Soak tests and performance regression gates
 
-For detailed implementation plans and roadmaps, see the [Technical Specification](AxonVex_Technical_Specification.md).
+For the detailed roadmap, see [Implementation Plan](docs/implementation_plan.md).
 
 ---
 

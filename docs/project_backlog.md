@@ -19,8 +19,8 @@
 
 | Epic | Title | Priority | Status |
 |---|---|---|---|
-| E01 | Core Runtime Integrity | P0 | In Progress |
-| E02 | Adapter Contract Layer | P0 | Not Started |
+| E01 | Core Runtime Integrity | P0 | Done |
+| E02 | Adapter Contract Layer | P0 | Done (Baseline) |
 | E03 | Mission Runtime Engine | P0 | Not Started |
 | E04 | Safety Envelope | P0 | Not Started |
 | E05 | Replay and Regression Harness | P0 | Not Started |
@@ -34,13 +34,13 @@
 
 | ID | Item | Effort | Status |
 |---|---|---|---|
-| B01.1 | Register all built tests in CTest (including configuration/path) | 0.5d | Planned |
-| B01.2 | Add interface contract tests for TCP/UDP/WebSocket | 1.5d | Planned |
-| B01.3 | Align README/API examples with orchestrator API | 0.5d | Planned |
-| B01.4 | Guard docs build option against missing docs subproject | 0.25d | Planned |
-| B02.1 | Define adapter contract spec | 1d | Planned |
-| B02.2 | Implement ROS adapter baseline shell | 2d | Planned |
-| B02.3 | Implement MAVLink adapter baseline shell | 2d | Planned |
+| B01.1 | Register all built tests in CTest (including configuration/path) | 0.5d | Done |
+| B01.2 | Add interface contract tests for TCP/UDP/WebSocket | 1.5d | Done |
+| B01.3 | Align README/API examples with orchestrator API | 0.5d | Done |
+| B01.4 | Guard docs build option against missing docs subproject | 0.25d | Done |
+| B02.1 | Define adapter contract spec | 1d | Done |
+| B02.2 | Implement ROS adapter baseline shell | 2d | Done |
+| B02.3 | Implement MAVLink adapter baseline shell | 2d | Done |
 | B03.1 | Implement `MissionElement` abstraction | 1d | Planned |
 | B03.2 | Implement `MissionPipeline` with sequential/conditional transitions | 2d | Planned |
 | B04.1 | Implement baseline `SafetyManager` + e-stop | 2d | Planned |

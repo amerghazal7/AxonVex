@@ -469,6 +469,27 @@ void AxonVexSystem::emergencyShutdown() {
     notifyStateChange(oldState, SystemState::FATAL_ERROR);
 }
 
+// =================================================================
+// ADAPTER INJECTION IMPLEMENTATION
+// =================================================================
+
+void AxonVexSystem::addAdapter(axonvex::adapters::AdapterInterface* adapter,
+                               const std::string& uri) {
+    adapters_[uri] = adapter;
+    if (logger_) {
+        logger_->info("System", "Registered adapter: " + uri);
+    }
+}
+
+axonvex::adapters::AdapterInterface* AxonVexSystem::getAdapter(
+    const std::string& uri) const {
+    auto it = adapters_.find(uri);
+    if (it != adapters_.end()) {
+        return it->second;
+    }
+    return nullptr;
+}
+
 void AxonVexSystem::reset() {
     emergencyShutdown();
 

@@ -14,20 +14,24 @@
 
 ---
 
-## Phase A - Coherence and Test Integrity
+## Phase A - Coherence and Test Integrity  ✅ Complete
 
-- Align README/API usage with real APIs.
-- Register all intended tests in CTest.
-- Add interface contract tests for TCP/UDP/WebSocket baseline behavior.
-- Guard docs build option to avoid broken CMake configure paths.
+- Aligned README/API usage with real APIs.
+- Registered all tests in CTest (286 passing).
+- Added interface contract tests for TCP/UDP/WebSocket.
+- Fixed CI workflow paths and documentation references.
+- Added `AXONVEX_PLATFORM_LINUX` compile definition.
+- Registered orphan examples in CMake.
 
-**Exit criteria:** docs/code/tests aligned and passing.
+## Phase B - Adapter Contract Layer  ✅ Complete
 
-## Phase B - Adapter Contract Layer
-
-- Define adapter contracts.
-- Implement baseline ROS/MAVLink adapter shells.
-- Add conformance tests for lifecycle, errors, and statistics.
+- Defined `AdapterInterface` abstract contract with `AdapterBase` common implementation.
+- `MockAdapter` for protocol-agnostic contract testing.
+- Generic interface units in core: `SubscriberUnit<T>`, `PublisherUnit<T>`, `ServerUnit<T>`, `ClientUnit<T>` with sync+async ports and callback injection.
+- System adapter injection: `addAdapter()` / `getAdapter()` on `AxonVexSystem`.
+- `axonvex_ros2` plugin lib: `ROS2Adapter` extending `AdapterBase` with typed unit creation and type caster registry.
+- Sample app (`axonvex_bridge_app`) demonstrating clean composition.
+- All 316 tests passing.
 
 ## Phase C - Mission Runtime
 

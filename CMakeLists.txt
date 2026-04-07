@@ -49,19 +49,19 @@ install(EXPORT axonvexTargets
 
 configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/AxonVexConfig.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/axonvexConfig.cmake"
     INSTALL_DESTINATION lib/cmake/axonvex
 )
 
 write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfigVersion.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/axonvexConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY AnyNewerVersion
 )
 
 install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfig.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/AxonVexConfigVersion.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/axonvexConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/axonvexConfigVersion.cmake"
     DESTINATION lib/cmake/axonvex
 )
 
@@ -94,6 +94,8 @@ if(BUILD_TESTING)
             tests/plugins/pluginSample.cpp
             tests/safety/watchdogTest.cpp
             tests/interfaces/protocolInterfacesContractTest.cpp
+            tests/core/interfaceUnitsTest.cpp
+            tests/adapters/adapterContractTest.cpp
         )
         target_link_libraries(test_core
             PRIVATE
@@ -103,6 +105,7 @@ if(BUILD_TESTING)
                 axonvex_safety
                 axonvex_io
                 axonvex_visualization
+                axonvex_adapters
                 GTest::GTest
                 GTest::Main
         )

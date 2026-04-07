@@ -22,11 +22,31 @@
 #include <axonvex_core/axonvex.hpp>
 #include <chrono>
 #include <iomanip>
+#include <iostream>
 #include <random>
 #include <thread>
 #include <vector>
 
-using namespace axonvex;
+#undef LOG_INFO
+#undef LOG_WARNING
+#undef LOG_ERROR
+#define LOG_INFO(msg)  std::cout << "[INFO]  " << (msg) << std::endl
+#define LOG_WARN(msg)  std::cout << "[WARN]  " << (msg) << std::endl
+#define LOG_ERROR(msg) std::cerr << "[ERROR] " << (msg) << std::endl
+
+using namespace axonvex::core;
+
+// =================================================================
+// CONCRETE SYSTEM CLASS (AxonVexSystem is abstract)
+// =================================================================
+
+class DemoSystem : public AxonVexSystem {
+  public:
+    using AxonVexSystem::AxonVexSystem;
+
+  protected:
+    bool initializeBlocksLayout() override { return true; }
+};
 
 // =================================================================
 // EXAMPLE PROCESSING UNITS
@@ -84,6 +104,8 @@ class DataGenerator : public ProcessingUnit {
     void finalize() override {
         setState(ExecutionState::STOPPED);
     }
+
+    std::string getTypeDescription() override { return "DataGenerator"; }
 };
 
 /**
@@ -148,6 +170,8 @@ class DataProcessor : public ProcessingUnit {
     void finalize() override {
         setState(ExecutionState::STOPPED);
     }
+
+    std::string getTypeDescription() override { return "DataProcessor"; }
 };
 
 /**
@@ -156,11 +180,11 @@ class DataProcessor : public ProcessingUnit {
 class SystemMonitor : public ProcessingUnit {
   private:
     InputPort<double>* input_;
-    AxonVexSystem* system_;
+    DemoSystem* system_;
     std::atomic<uint64_t> monitoringCycles_{0};
 
   public:
-    explicit SystemMonitor(const std::string& name, AxonVexSystem* sys)
+    explicit SystemMonitor(const std::string& name, DemoSystem* sys)
         : ProcessingUnit(name), system_(sys) {
         input_ = createInputPort<double>(1003, "monitor_in");
     }
@@ -207,6 +231,8 @@ class SystemMonitor : public ProcessingUnit {
     void finalize() override {
         setState(ExecutionState::STOPPED);
     }
+
+    std::string getTypeDescription() override { return "SystemMonitor"; }
 };
 
 // =================================================================
@@ -220,15 +246,14 @@ void demonstrateSystemLifecycle() {
     LOG_INFO("=== System Lifecycle Management ===");
 
     // Create system with configuration
-    SystemConfig config;
-    config.name = "LifecycleDemo";
+    SystemConfiguration config;
+    config.systemName = "LifecycleDemo";
     config.maxProcessingUnits = 10;
-    config.enableStatistics = true;
-    config.statisticsUpdateInterval =
-        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds(500));
-    config.enableRealTimeScheduling = false; // Disable for demo
+    config.enablePerformanceMonitoring = true;
+    config.statisticsUpdateInterval = std::chrono::seconds(1);
+    config.enableRealTimeScheduling = false;
 
-    auto system = std::make_unique<AxonVexSystem>(config);
+    auto system = std::make_unique<DemoSystem>(config);
 
     // Register processing units
     auto generator = std::make_unique<DataGenerator>("DataGen", 10.0);
@@ -247,15 +272,15 @@ void demonstrateSystemLifecycle() {
     LOG_INFO("Registered processing units - Gen: " + std::to_string(genId) +
              ", Proc: " + std::to_string(procId) + ", Mon: " + std::to_string(monId));
 
-    // Connect ports (simplified connection - in real implementation would be more robust)
-    auto* genOutput = genPtr->findPort("data_out");
-    auto* procInput = procPtr->findPort("data_in");
-    auto* procOutput = procPtr->findPort("processed_out");
-    auto* monInput = monPtr->findPort("monitor_in");
+    // Connect ports via typed port API
+    auto* genOutput = dynamic_cast<OutputPort<double>*>(genPtr->getOutputPorts().at(1000));
+    auto* procInput = dynamic_cast<InputPort<double>*>(procPtr->getInputPorts().at(1001));
+    auto* procOutput = dynamic_cast<OutputPort<double>*>(procPtr->getOutputPorts().at(1002));
+    auto* monInput = dynamic_cast<InputPort<double>*>(monPtr->getInputPorts().at(1003));
 
     if (genOutput && procInput && procOutput && monInput) {
-        // Note: Port connection would need proper implementation
-        // For now, we'll demonstrate system lifecycle without connections
+        genOutput->connect(procInput);
+        procOutput->connect(monInput);
         LOG_INFO("Port connection setup completed");
     }
 
@@ -287,11 +312,11 @@ void demonstrateSystemLifecycle() {
     system->stop();
 
     // Print final statistics
-    auto stats = system->getStatistics();
+    const auto& stats = system->getStatistics();
     LOG_INFO("Final Statistics:");
-    LOG_INFO("  Total Units: " + std::to_string(stats.totalProcessingUnits));
-    LOG_INFO("  Active Units: " + std::to_string(stats.activeProcessingUnits));
-    LOG_INFO("  System Uptime: " + std::to_string(stats.uptimeMilliseconds) + " ms");
+    LOG_INFO("  Total Units: " + std::to_string(stats.totalProcessingUnits.load()));
+    LOG_INFO("  Active Units: " + std::to_string(stats.activeProcessingUnits.load()));
+    LOG_INFO("  System Uptime: " + std::to_string(stats.getUptimeSeconds()) + " s");
 
     LOG_INFO("System lifecycle demonstration completed successfully!");
 }
@@ -302,12 +327,12 @@ void demonstrateSystemLifecycle() {
 void demonstrateProcessingUnitOrchestration() {
     LOG_INFO("\n=== Processing Unit Orchestration ===");
 
-    SystemConfig config;
-    config.name = "OrchestrationDemo";
+    SystemConfiguration config;
+    config.systemName = "OrchestrationDemo";
     config.maxProcessingUnits = 5;
-    config.enableStatistics = true;
+    config.enablePerformanceMonitoring = true;
 
-    auto system = std::make_unique<AxonVexSystem>(config);
+    auto system = std::make_unique<DemoSystem>(config);
 
     // Create and register multiple processing units
     auto dataGen = std::make_unique<DataGenerator>("DataGenerator");
@@ -354,18 +379,18 @@ void demonstrateProcessingUnitOrchestration() {
 void demonstrateEventSystem() {
     LOG_INFO("\n=== Event System and Callbacks ===");
 
-    SystemConfig config;
-    config.name = "EventDemo";
-    config.enableStatistics = true;
+    SystemConfiguration config;
+    config.systemName = "EventDemo";
+    config.enablePerformanceMonitoring = true;
 
-    auto system = std::make_unique<AxonVexSystem>(config);
+    auto system = std::make_unique<DemoSystem>(config);
 
     // Set up event callback
     std::atomic<int> eventCount{0};
     system->registerEventCallback([&eventCount](const SystemEvent& event) {
         eventCount.fetch_add(1);
-        LOG_INFO("Event received: " + std::to_string(static_cast<int>(event.type)) + " from " +
-                 event.source);
+        LOG_INFO("Event received: " + std::to_string(static_cast<int>(event.type)) + " - " +
+                 event.description);
     });
 
     // Register units to generate events
@@ -389,11 +414,11 @@ void demonstrateEventSystem() {
 void demonstrateErrorHandling() {
     LOG_INFO("\n=== Error Handling and Recovery ===");
 
-    SystemConfig config;
-    config.name = "ErrorDemo";
-    config.enableStatistics = true;
+    SystemConfiguration config;
+    config.systemName = "ErrorDemo";
+    config.enablePerformanceMonitoring = true;
 
-    auto system = std::make_unique<AxonVexSystem>(config);
+    auto system = std::make_unique<DemoSystem>(config);
 
     // This would demonstrate error scenarios and recovery
     // For this example, we'll show basic error logging
@@ -417,12 +442,12 @@ void demonstrateErrorHandling() {
 void demonstratePerformanceMonitoring() {
     LOG_INFO("\n=== Performance Monitoring ===");
 
-    SystemConfig config;
-    config.name = "PerfDemo";
-    config.enableStatistics = true;
+    SystemConfiguration config;
+    config.systemName = "PerfDemo";
+    config.enablePerformanceMonitoring = true;
     config.statisticsUpdateInterval = std::chrono::seconds(1);
 
-    auto system = std::make_unique<AxonVexSystem>(config);
+    auto system = std::make_unique<DemoSystem>(config);
 
     // Create high-throughput units for performance testing
     auto highFreqGen = std::make_unique<DataGenerator>("HighFreqGen", 1000.0);
@@ -440,19 +465,19 @@ void demonstratePerformanceMonitoring() {
     for (int i = 0; i < 5; ++i) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
-        auto stats = system->getStatistics();
-        LOG_INFO("Performance Stats - Uptime: " + std::to_string(stats.uptimeMilliseconds) +
-                 " ms, Active Units: " + std::to_string(stats.activeProcessingUnits));
+        auto& stats = system->getStatistics();
+        LOG_INFO("Performance Stats - Uptime: " + std::to_string(stats.getUptimeSeconds()) +
+                 " s, Active Units: " + std::to_string(stats.activeProcessingUnits.load()));
     }
 
     system->stop();
 
     // Final performance report
-    auto finalStats = system->getStatistics();
+    const auto& finalStats = system->getStatistics();
     LOG_INFO("=== Final Performance Report ===");
-    LOG_INFO("Total Processing Units: " + std::to_string(finalStats.totalProcessingUnits));
-    LOG_INFO("Peak Active Units: " + std::to_string(finalStats.activeProcessingUnits));
-    LOG_INFO("Total Uptime: " + std::to_string(finalStats.uptimeMilliseconds) + " ms");
+    LOG_INFO("Total Processing Units: " + std::to_string(finalStats.totalProcessingUnits.load()));
+    LOG_INFO("Peak Active Units: " + std::to_string(finalStats.activeProcessingUnits.load()));
+    LOG_INFO("Total Uptime: " + std::to_string(finalStats.getUptimeSeconds()) + " s");
 }
 
 // =================================================================

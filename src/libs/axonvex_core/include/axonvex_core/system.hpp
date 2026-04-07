@@ -14,6 +14,8 @@
 
 #pragma once
 
+namespace axonvex::adapters { class AdapterInterface; }
+
 #include <atomic>
 #include <axonvex_core/configuration.hpp>
 #include <axonvex_core/logger.hpp>
@@ -266,6 +268,14 @@ class AxonVexSystem {
      */
     virtual bool initializeBlocksLayout() = 0;
 
+    /**
+     * @brief Retrieve a previously registered adapter by URI
+     *
+     * Available inside initializeBlocksLayout(). Cast to the concrete
+     * adapter type to access typed unit creation methods.
+     */
+    axonvex::adapters::AdapterInterface* getAdapter(const std::string& uri) const;
+
   public:
     /**
      * @brief Start the system and all registered components
@@ -384,6 +394,20 @@ class AxonVexSystem {
      * @brief Get processing unit count
      */
     size_t getProcessingUnitCount() const noexcept;
+
+    // =================================================================
+    // ADAPTER INJECTION
+    // =================================================================
+
+    /**
+     * @brief Register an adapter with the system under a URI key
+     *
+     * Call before initialize(). The system does NOT own the adapter —
+     * the caller manages its lifetime. Retrieve inside
+     * initializeBlocksLayout() via getAdapter().
+     */
+    void addAdapter(axonvex::adapters::AdapterInterface* adapter,
+                    const std::string& uri);
 
     // =================================================================
     // CONFIGURATION MANAGEMENT
@@ -658,6 +682,9 @@ class AxonVexSystem {
     std::unordered_map<uint32_t, std::unique_ptr<ProcessingUnit>> processingUnits_;
     std::unordered_map<ProcessingUnit*, uint32_t> unitToIdMap_;
     std::atomic<uint32_t> nextUnitId_{1};
+
+    // Adapter injection
+    std::unordered_map<std::string, axonvex::adapters::AdapterInterface*> adapters_;
 
     // System port management
     mutable std::mutex systemPortsMutex_;
