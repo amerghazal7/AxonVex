@@ -409,7 +409,7 @@ TEST_F(PathTest, StringConversionTest) {
 TEST_F(PathTest, AxonVexIntegrationTest) {
     // Create configuration path
     Path config_path = Path::createConfigPath("system");
-    EXPECT_NE(config_path.extension(), ".json"); // Should have .json extension
+    EXPECT_EQ(config_path.extension(), ".json");
     EXPECT_NE(config_path.toString().find("config"), std::string::npos);
     EXPECT_EQ(config_path.filename(), "system.json");
 

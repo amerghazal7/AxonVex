@@ -195,7 +195,11 @@ endif()
 
 # Documentation
 if(AXONVEX_BUILD_DOCS)
-    add_subdirectory(docs)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/docs/CMakeLists.txt")
+        add_subdirectory(docs)
+    else()
+        message(WARNING "AXONVEX_BUILD_DOCS is ON but docs/CMakeLists.txt is missing; skipping docs target.")
+    endif()
 endif()
 
 # Plugins
