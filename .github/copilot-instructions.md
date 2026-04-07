@@ -24,6 +24,8 @@ CMake 3.20+, Conan for dependencies. Six libraries under `src/libs/`:
 | `axonvex_safety` | INTERFACE | Safety abstractions |
 | `axonvex_io` | INTERFACE | I/O abstractions |
 | `axonvex_visualization` | INTERFACE | Visualization abstractions |
+| `axonvex_adapters` | INTERFACE | Adapter contract (AdapterInterface, AdapterBase, MockAdapter) |
+| `axonvex_ros2` | INTERFACE | ROS 2 plugin (ROS2Adapter, type caster registry) — optional |
 
 All interface libraries depend only on `axonvex_core`. Exported under the `axonvex::` CMake namespace.
 

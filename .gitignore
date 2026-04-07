@@ -1,6 +1,7 @@
 # Prerequisites
 *.d
 build/
+install/
 *.log
 .cache/
 .vscode/*.db

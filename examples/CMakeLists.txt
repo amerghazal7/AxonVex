@@ -48,6 +48,14 @@ target_link_libraries(simple_callback_demo axonvex_core)
 add_executable(custom_system_example custom_system_example.cpp)
 target_link_libraries(custom_system_example axonvex_core)
 
+# Full system management example
+add_executable(system_example system_example.cpp)
+target_link_libraries(system_example axonvex_core)
+
+# MemoryPool + ports integration example
+add_executable(memory_pool_ports_simple_example memory_pool_ports_simple_example.cpp)
+target_link_libraries(memory_pool_ports_simple_example axonvex_core)
+
 # Telemetry bus example
 add_executable(telemetry_bus_example telemetry_bus_example.cpp)
 target_link_libraries(telemetry_bus_example axonvex_core axonvex_visualization)

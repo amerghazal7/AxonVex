@@ -18,6 +18,11 @@ add_library(axonvex_core SHARED
 
 set_target_properties(axonvex_core PROPERTIES EXPORT_NAME core)
 
+target_compile_definitions(axonvex_core
+    PUBLIC
+        $<$<PLATFORM_ID:Linux>:AXONVEX_PLATFORM_LINUX>
+)
+
 target_include_directories(axonvex_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

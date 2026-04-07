@@ -115,7 +115,7 @@ jobs:
 
     - name: Check code formatting
       run: |
-        find include src tests examples -name "*.hpp" -o -name "*.cpp" | xargs clang-format --dry-run --Werror
+        find src tests examples -name "*.hpp" -o -name "*.cpp" | xargs clang-format --dry-run --Werror
 
     - name: Setup Python for Conan
       uses: actions/setup-python@v4
@@ -137,7 +137,7 @@ jobs:
     - name: Run clang-tidy
       run: |
         cd build
-        find ../src ../include -name "*.cpp" -o -name "*.hpp" | xargs clang-tidy -p .
+        find ../src -name "*.cpp" -o -name "*.hpp" | xargs clang-tidy -p .
 
   documentation:
     name: Documentation Check
@@ -152,8 +152,10 @@ jobs:
         echo "Checking for required documentation files..."
         test -f README.md && echo "✓ README.md exists"
         test -f LICENSE && echo "✓ LICENSE exists"
-        test -f AxonVex_Technical_Specification.md && echo "✓ Technical specification exists"
-        test -f AxonVex_Implementation_Plan.md && echo "✓ Implementation plan exists"
+        test -f docs/software_requirements_specification.md && echo "✓ SRS exists"
+        test -f docs/architecture_and_design.md && echo "✓ Architecture doc exists"
+        test -f docs/implementation_plan.md && echo "✓ Implementation plan exists"
+        test -f docs/project_backlog.md && echo "✓ Project backlog exists"
         echo "Documentation check completed"
 
   performance-benchmark:

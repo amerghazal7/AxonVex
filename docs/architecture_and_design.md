@@ -48,15 +48,21 @@ flowchart TD
 
 ## 3. Current Snapshot
 
-### Implemented strengths
-- Runtime core and orchestration (`include/axonvex/core`)
-- Protocol abstraction + transport scaffolds (`include/axonvex/interfaces`)
-- Unit-test harness (`tests`, CTest/GTest)
+### Implemented
+- Runtime core and orchestration (`axonvex_core`)
+- Interface units: SubscriberUnit, PublisherUnit, ServerUnit, ClientUnit with sync+async ports
+- Protocol abstraction + transport scaffolds (`axonvex_interfaces`)
+- Adapter contract: AdapterInterface + AdapterBase + MockAdapter (`axonvex_adapters`)
+- ROS 2 plugin: ROS2Adapter with typed unit creation + type caster registry (`axonvex_ros2`)
+- System adapter injection: `addAdapter()` / `getAdapter()` on AxonVexSystem
+- Plugin system, safety primitives, I/O, telemetry bus
+- Unit-test harness: 316 tests (`tests/`, CTest/GTest)
 
 ### Next-milestone gaps
-- Mission runtime module
-- ROS/MAVLink/PX4 adapter layer
-- Safety manager and policy engine
+- Mission runtime module (`MissionElement`, `MissionPipeline`)
+- Safety manager and policy engine (`SafetyManager`)
+- Deterministic replay harness
+- MAVLink plugin lib (`axonvex_mavlink`)
 - Non-placeholder streaming/websocket stack
 
 ---
