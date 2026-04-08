@@ -25,6 +25,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <typeinfo>
 #include <vector>
 
@@ -593,16 +594,21 @@ void InputPort<T>::reset() {
     hasNanWarned_ = false;
 }
 
+namespace detail {
+template <typename U>
+typename std::enable_if<std::is_floating_point<U>::value, bool>::type nanCheck(const U& data) {
+    return !std::isnan(data);
+}
+template <typename U>
+typename std::enable_if<!std::is_floating_point<U>::value, bool>::type nanCheck(const U&) {
+    return true;
+}
+} // namespace detail
+
 // Helper function for NaN validation
 template <typename T>
 bool BasePort::validateData(const T& data) {
-    if constexpr (std::is_floating_point_v<T>) {
-        if (std::isnan(data)) {
-            // Log warning only once per port
-            return false;
-        }
-    }
-    return true;
+    return detail::nanCheck(data);
 }
 
 // OutputPort template implementations

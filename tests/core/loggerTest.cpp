@@ -1,31 +1,46 @@
 #include <atomic>
+#include <axonvex_core/detail/filesystem_compat.hpp>
 #include <axonvex_core/logger.hpp>
 #include <chrono>
-#include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <sstream>
 #include <thread>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace axonvex::core;
+
+namespace {
+long testProcessId() {
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(getpid());
+#endif
+}
+} // namespace
 
 class LoggerTest : public ::testing::Test {
   protected:
     void SetUp() override {
         // Create a clean test environment
-        test_log_file_ = "test_log.txt";
-        if (std::filesystem::exists(test_log_file_)) {
-            std::filesystem::remove(test_log_file_);
+        test_log_file_ = "test_log_" + std::to_string(testProcessId()) + ".txt";
+        if (axonvex_fs::exists(test_log_file_)) {
+            axonvex_fs::remove(test_log_file_);
         }
     }
 
     void TearDown() override {
         // Clean up test files
-        if (std::filesystem::exists(test_log_file_)) {
-            std::filesystem::remove(test_log_file_);
+        if (axonvex_fs::exists(test_log_file_)) {
+            axonvex_fs::remove(test_log_file_);
         }
-        if (std::filesystem::exists(test_log_file_ + ".old")) {
-            std::filesystem::remove(test_log_file_ + ".old");
+        if (axonvex_fs::exists(test_log_file_ + ".old")) {
+            axonvex_fs::remove(test_log_file_ + ".old");
         }
     }
 
@@ -429,7 +444,7 @@ TEST_F(LoggerTest, FileOutput) {
     logger.stop();
 
     // Verify file exists and contains messages
-    EXPECT_TRUE(std::filesystem::exists(test_log_file_));
+    EXPECT_TRUE(axonvex_fs::exists(test_log_file_));
 
     std::ifstream file(test_log_file_);
     std::string line, content;

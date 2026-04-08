@@ -2,10 +2,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <axonvex_core/utils/optional.hpp>
 #include <chrono>
 #include <memory>
 #include <new>
-#include <optional>
 #include <thread>
 
 namespace axonvex::utils::containers {
@@ -49,8 +49,8 @@ class ThreadSafeQueue {
 
     bool enqueue(const T& item) noexcept;
     bool enqueue(T&& item) noexcept;
-    std::optional<T> dequeue() noexcept;
-    std::optional<T> tryDequeue(const std::chrono::nanoseconds& timeout) noexcept;
+    axonvex::optional<T> dequeue() noexcept;
+    axonvex::optional<T> tryDequeue(const std::chrono::nanoseconds& timeout) noexcept;
     bool isEmpty() const noexcept;
     bool isFull() const noexcept;
     size_t size() const noexcept;
@@ -151,7 +151,7 @@ bool ThreadSafeQueue<T>::enqueue(T&& item) noexcept {
 }
 
 template <typename T>
-std::optional<T> ThreadSafeQueue<T>::dequeue() noexcept {
+axonvex::optional<T> ThreadSafeQueue<T>::dequeue() noexcept {
     try {
         uint64_t pos = dequeue_pos_.load(relaxed);
         for (;;) {
@@ -167,25 +167,25 @@ std::optional<T> ThreadSafeQueue<T>::dequeue() noexcept {
                 }
             } else if (seq < pos + 1) {
                 stats_.dequeue_failures.fetch_add(1, relaxed);
-                return std::nullopt;
+                return axonvex::nullopt;
             } else {
                 pos = dequeue_pos_.load(relaxed);
             }
         }
     } catch (...) {
         stats_.dequeue_failures.fetch_add(1, relaxed);
-        return std::nullopt;
+        return axonvex::nullopt;
     }
 }
 
 template <typename T>
-std::optional<T> ThreadSafeQueue<T>::tryDequeue(const std::chrono::nanoseconds& timeout) noexcept {
+axonvex::optional<T> ThreadSafeQueue<T>::tryDequeue(const std::chrono::nanoseconds& timeout) noexcept {
     auto start_time = std::chrono::high_resolution_clock::now();
     while (true) {
         auto result = dequeue();
         if (result.has_value()) return result;
         auto current_time = std::chrono::high_resolution_clock::now();
-        if (current_time - start_time >= timeout) return std::nullopt;
+        if (current_time - start_time >= timeout) return axonvex::nullopt;
         std::this_thread::sleep_for(std::chrono::nanoseconds(1));
     }
 }
@@ -244,5 +244,12 @@ size_t ThreadSafeQueue<T>::nextPowerOf2(size_t value) noexcept {
     value |= value >> 32;
     return ++value;
 }
+
+template <typename T>
+constexpr size_t ThreadSafeQueue<T>::DEFAULT_CAPACITY;
+template <typename T>
+constexpr size_t ThreadSafeQueue<T>::MIN_CAPACITY;
+template <typename T>
+constexpr size_t ThreadSafeQueue<T>::MAX_CAPACITY;
 
 } // namespace axonvex::utils::containers

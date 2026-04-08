@@ -105,8 +105,8 @@ class MissionPipeline : public ProcessingUnit {
     void restart() {
         if (currentElement_) currentElement_->onExit();
         currentElement_ = nullptr;
-        for (auto& [_, elem] : elements_) {
-            elem->reset();
+        for (auto& kv : elements_) {
+            kv.second->reset();
         }
         status_ = PipelineStatus::Idle;
         startPipeline();
@@ -216,8 +216,8 @@ class MissionPipeline : public ProcessingUnit {
     void reset() override {
         if (currentElement_) currentElement_->onExit();
         currentElement_ = nullptr;
-        for (auto& [_, elem] : elements_) {
-            elem->reset();
+        for (auto& kv : elements_) {
+            kv.second->reset();
         }
         status_ = PipelineStatus::Idle;
         setState(ExecutionState::INITIALIZED);

@@ -47,8 +47,8 @@ bool Configuration::loadFromFile(const std::string& filename, bool merge_with_ex
 
         if (loadFromJson(json_data, merge_with_existing)) {
             watched_file_ = filename;
-            if (std::filesystem::exists(filename)) {
-                last_write_time_ = std::filesystem::last_write_time(filename);
+            if (axonvex_fs::exists(filename)) {
+                last_write_time_ = axonvex_fs::last_write_time(filename);
             }
             stats_.total_loads.fetch_add(1, relaxed);
             return true;
@@ -137,7 +137,7 @@ bool Configuration::loadFromEnvironment(const std::string& prefix, bool merge_wi
 
 bool Configuration::saveToFile(const std::string& filename, bool pretty_print) const {
     try {
-        std::shared_lock<std::shared_mutex> lock(config_mutex_);
+        std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
         std::ofstream file(filename);
         if (!file.is_open()) {
@@ -157,7 +157,7 @@ bool Configuration::saveToFile(const std::string& filename, bool pretty_print) c
 
 std::string Configuration::toString(bool pretty_print) const {
     try {
-        std::shared_lock<std::shared_mutex> lock(config_mutex_);
+        std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
         if (pretty_print) {
             return config_data_.dump(4);
@@ -172,13 +172,13 @@ std::string Configuration::toString(bool pretty_print) const {
 //==============================================================================
 
 bool Configuration::has(const std::string& key) const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
     const auto* json_ptr = getJsonPointer(key);
     return json_ptr != nullptr;
 }
 
 bool Configuration::remove(const std::string& key) {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
+    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         auto keys = splitKey(key);
@@ -207,7 +207,7 @@ bool Configuration::remove(const std::string& key) {
 }
 
 std::vector<std::string> Configuration::getKeys(const std::string& pattern) const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     std::vector<std::string> result;
     std::function<void(const nlohmann::json&, const std::string&)> traverse =
@@ -268,7 +268,7 @@ bool Configuration::loadSchema(const std::string& schema_file) {
 }
 
 std::vector<ValidationError> Configuration::validate() const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
     return validateInternal(config_data_);
 }
 
@@ -327,7 +327,7 @@ void Configuration::clearCallbacks() {
 }
 
 bool Configuration::applyUpdates(const nlohmann::json& updates, bool validate) {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
+    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         // Validate updates if requested
@@ -398,7 +398,7 @@ bool Configuration::loadTemplate(const std::string& template_name) {
 
 bool Configuration::saveTemplate(const std::string& template_name, const std::string& description) {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
-    std::shared_lock<std::shared_mutex> config_lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> config_lock(config_mutex_);
 
     ConfigurationTemplate template_obj(template_name, config_data_, description);
     templates_[template_name] = template_obj;
@@ -416,7 +416,7 @@ std::vector<std::string> Configuration::getAvailableTemplates() const {
     return result;
 }
 
-std::optional<ConfigurationTemplate> Configuration::getTemplate(
+axonvex::optional<ConfigurationTemplate> Configuration::getTemplate(
     const std::string& template_name) const {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
 
@@ -424,7 +424,7 @@ std::optional<ConfigurationTemplate> Configuration::getTemplate(
     if (it != templates_.end()) {
         return it->second;
     }
-    return std::nullopt;
+    return axonvex::nullopt;
 }
 
 //==============================================================================
@@ -433,7 +433,7 @@ std::optional<ConfigurationTemplate> Configuration::getTemplate(
 
 std::string Configuration::createSnapshot(const std::string& name) {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(snapshots_mutex_));
-    std::shared_lock<std::shared_mutex> config_lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> config_lock(config_mutex_);
 
     std::string snapshot_id = name.empty() ? generateSnapshotId() : name;
     snapshots_[snapshot_id] = config_data_;
@@ -480,7 +480,7 @@ void Configuration::resetStatistics() noexcept {
 }
 
 size_t Configuration::getMemoryUsage() const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     // Approximate memory usage calculation
     std::string json_str = config_data_.dump();
@@ -488,7 +488,7 @@ size_t Configuration::getMemoryUsage() const {
 }
 
 size_t Configuration::getKeyCount() const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     size_t count = 0;
     std::function<void(const nlohmann::json&)> traverse = [&](const nlohmann::json& obj) {
@@ -505,12 +505,12 @@ size_t Configuration::getKeyCount() const {
 }
 
 bool Configuration::isEmpty() const noexcept {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
     return config_data_.empty();
 }
 
 void Configuration::clear() {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
+    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
     config_data_.clear();
     stats_.total_updates.fetch_add(1, relaxed);
 }
@@ -537,7 +537,7 @@ std::string Configuration::getPerformanceMetrics() const {
 //==============================================================================
 
 bool Configuration::loadFromJson(const nlohmann::json& json_data, bool merge_with_existing) {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
+    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         if (validation_enabled_.load(relaxed)) {
@@ -685,8 +685,8 @@ void Configuration::updateFileWatcher() {
     }
 
     try {
-        if (std::filesystem::exists(watched_file_)) {
-            auto current_write_time = std::filesystem::last_write_time(watched_file_);
+        if (axonvex_fs::exists(watched_file_)) {
+            auto current_write_time = axonvex_fs::last_write_time(watched_file_);
             if (current_write_time != last_write_time_) {
                 // File has been modified - reload it
                 loadFromFile(watched_file_, false);

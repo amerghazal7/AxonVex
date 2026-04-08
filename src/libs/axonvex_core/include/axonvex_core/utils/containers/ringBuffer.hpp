@@ -4,10 +4,10 @@
 #include <atomic>
 #include <axonvex_core/coreUtilities.hpp>
 #include <axonvex_core/performanceStatistics.hpp>
+#include <axonvex_core/utils/optional.hpp>
 #include <chrono>
 #include <cstring>
 #include <memory>
-#include <optional>
 
 namespace axonvex::utils::containers {
 
@@ -128,8 +128,8 @@ class RingBuffer {
 
     bool write(const T& item) noexcept;
     bool write(T&& item) noexcept;
-    std::optional<T> read() noexcept;
-    std::optional<T> peek() const noexcept;
+    axonvex::optional<T> read() noexcept;
+    axonvex::optional<T> peek() const noexcept;
     size_t writeMany(const T* items, size_t count) noexcept;
     size_t readMany(T* items, size_t count) noexcept;
     bool isEmpty() const noexcept;
@@ -190,11 +190,11 @@ bool RingBuffer<T>::write(T&& item) noexcept {
 }
 
 template <typename T>
-std::optional<T> RingBuffer<T>::read() noexcept {
+axonvex::optional<T> RingBuffer<T>::read() noexcept {
     const size_t current_read = read_index_.load(axonvex::core::MemoryOrdering::relaxed);
     if (current_read == write_index_.load(axonvex::core::MemoryOrdering::acquire)) {
         stats_.recordReadFailure();
-        return std::nullopt;
+        return axonvex::nullopt;
     }
     T item = std::move(buffer_[current_read]);
     const size_t next_read = (current_read + 1) & capacity_mask_;
@@ -204,10 +204,10 @@ std::optional<T> RingBuffer<T>::read() noexcept {
 }
 
 template <typename T>
-std::optional<T> RingBuffer<T>::peek() const noexcept {
+axonvex::optional<T> RingBuffer<T>::peek() const noexcept {
     const size_t current_read = read_index_.load(axonvex::core::MemoryOrdering::relaxed);
     if (current_read == write_index_.load(axonvex::core::MemoryOrdering::acquire)) {
-        return std::nullopt;
+        return axonvex::nullopt;
     }
     return buffer_[current_read];
 }

@@ -7,7 +7,7 @@ set(CMAKE_BUILD_TYPE Debug)
 
 set(CMAKE_ENABLE_EXPORTS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -99,9 +99,12 @@ if(BUILD_TESTING)
             tests/io/fileManagerTest.cpp
             tests/plugins/pluginSample.cpp
             tests/safety/watchdogTest.cpp
+            tests/safety/safetyManagerTest.cpp
             tests/interfaces/protocolInterfacesContractTest.cpp
             tests/core/interfaceUnitsTest.cpp
             tests/core/missionTest.cpp
+            tests/core/traceReplayTest.cpp
+            tests/core/soakScalabilityTest.cpp
             tests/adapters/adapterContractTest.cpp
         )
         target_link_libraries(test_core

@@ -359,7 +359,9 @@ void demonstrateAdvancedFeatures() {
         {"data.xml", "config_file_validator"},    {"application.log", "log_file_validator"},
         {"debug.txt", "log_file_validator"},      {"binary.exe", "log_file_validator"}};
 
-    for (const auto& [filename, validator] : test_files) {
+    for (const auto& pr : test_files) {
+        const std::string& filename = pr.first;
+        const std::string& validator = pr.second;
         Path test_path(filename);
         bool valid = test_path.validateWith(validator);
         Info() << "  " << filename << " → " << validator << ": " << (valid ? "VALID" : "INVALID");
@@ -368,8 +370,8 @@ void demonstrateAdvancedFeatures() {
     // System information
     Info() << "\n💻 System Information:";
     auto system_info = Path::getSystemInfo();
-    for (const auto& [key, value] : system_info) {
-        Info() << "  " << key << ": " << value;
+    for (const auto& kv : system_info) {
+        Info() << "  " << kv.first << ": " << kv.second;
     }
 
     // Temporary file creation with automatic cleanup

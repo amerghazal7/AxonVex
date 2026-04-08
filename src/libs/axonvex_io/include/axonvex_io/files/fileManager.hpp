@@ -1,22 +1,22 @@
 #pragma once
 
+#include <axonvex_core/detail/filesystem_compat.hpp>
+#include <fstream>
 #include <string>
 #include <vector>
-#include <filesystem>
-#include <fstream>
 
 namespace axonvex::io::files {
 
 class FileManager {
 public:
     static bool exists(const std::string& path) {
-        return std::filesystem::exists(path);
+        return axonvex_fs::exists(path);
     }
     static bool isFile(const std::string& path) {
-        return std::filesystem::is_regular_file(path);
+        return axonvex_fs::is_regular_file(path);
     }
     static bool isDirectory(const std::string& path) {
-        return std::filesystem::is_directory(path);
+        return axonvex_fs::is_directory(path);
     }
 
     static std::string readText(const std::string& path) {
@@ -34,8 +34,8 @@ public:
 
     static std::vector<std::string> listFiles(const std::string& directory) {
         std::vector<std::string> result;
-        for (auto& p : std::filesystem::directory_iterator(directory)) {
-            if (std::filesystem::is_regular_file(p.status()))
+        for (auto& p : axonvex_fs::directory_iterator(directory)) {
+            if (axonvex_fs::is_regular_file(p.status()))
                 result.push_back(p.path().string());
         }
         return result;
@@ -43,8 +43,8 @@ public:
 
     static std::vector<std::string> listDirectories(const std::string& directory) {
         std::vector<std::string> result;
-        for (auto& p : std::filesystem::directory_iterator(directory)) {
-            if (std::filesystem::is_directory(p.status()))
+        for (auto& p : axonvex_fs::directory_iterator(directory)) {
+            if (axonvex_fs::is_directory(p.status()))
                 result.push_back(p.path().string());
         }
         return result;

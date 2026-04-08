@@ -82,9 +82,7 @@ class MockProcessingUnit : public ProcessingUnit {
         processingTime_ = time;
     }
 
-    std::atomic<int> getProcessCallCount() const {
-        return processCallCount_.load();
-    }
+    int getProcessCallCount() const { return processCallCount_.load(); }
     int getInitializeCallCount() const {
         return initializeCallCount_;
     }

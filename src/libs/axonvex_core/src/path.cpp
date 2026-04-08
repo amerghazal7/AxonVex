@@ -16,7 +16,6 @@
 #include <axonvex_core/path.hpp>
 #include <cctype>
 #include <chrono>
-#include <filesystem>
 #include <fstream>
 #include <random>
 #include <regex>
@@ -33,10 +32,37 @@
 #include <unistd.h>
 #endif
 
+namespace {
+
+axonvex_fs::path pathRelativeCompat(const axonvex_fs::path& p, const axonvex_fs::path& base) {
+    try {
+        axonvex_fs::path c1 = axonvex_fs::canonical(p);
+        axonvex_fs::path c2 = axonvex_fs::canonical(base);
+        axonvex_fs::path result;
+        auto it1 = c1.begin(), e1 = c1.end();
+        auto it2 = c2.begin(), e2 = c2.end();
+        while (it1 != e1 && it2 != e2 && *it1 == *it2) {
+            ++it1;
+            ++it2;
+        }
+        for (; it2 != e2; ++it2) {
+            result /= "..";
+        }
+        for (; it1 != e1; ++it1) {
+            result /= *it1;
+        }
+        return result;
+    } catch (...) {
+        return p;
+    }
+}
+
+} // namespace
+
 namespace axonvex::core {
 
 // Static member definitions
-std::unordered_map<Path::DefaultDir, std::filesystem::path> Path::default_dirs_;
+std::unordered_map<Path::DefaultDir, axonvex_fs::path> Path::default_dirs_;
 Path::SecurityLevel Path::default_security_level_ = Path::SecurityLevel::BASIC;
 bool Path::initialized_ = false;
 std::mutex Path::static_mutex_;
@@ -66,7 +92,7 @@ Path::Path(const char* path_str) : path_(path_str) {
     }
 }
 
-Path::Path(const std::filesystem::path& fs_path) : path_(fs_path) {
+Path::Path(const axonvex_fs::path& fs_path) : path_(fs_path) {
     if (!initialized_) {
         std::lock_guard<std::mutex> lock(static_mutex_);
         if (!initialized_) {
@@ -95,7 +121,7 @@ void Path::initializeDefaultDirs() {
         default_dirs_[DefaultDir::LOG] = default_dirs_[DefaultDir::APP] / "logs";
         default_dirs_[DefaultDir::CACHE] = default_dirs_[DefaultDir::APP] / "cache";
         default_dirs_[DefaultDir::DATA] = default_dirs_[DefaultDir::APP] / "data";
-        default_dirs_[DefaultDir::TEMP] = std::filesystem::temp_directory_path() / "AxonVex";
+        default_dirs_[DefaultDir::TEMP] = axonvex_fs::temp_directory_path() / "AxonVex";
         default_dirs_[DefaultDir::PLUGINS] = default_dirs_[DefaultDir::APP] / "plugins";
         default_dirs_[DefaultDir::TEMPLATES] = default_dirs_[DefaultDir::APP] / "templates";
         default_dirs_[DefaultDir::BACKUP] = default_dirs_[DefaultDir::APP] / "backup";
@@ -107,7 +133,7 @@ void Path::initializeDefaultDirs() {
         default_dirs_[DefaultDir::LOG] = home_dir / ".local" / "share" / "axonvex" / "logs";
         default_dirs_[DefaultDir::CACHE] = home_dir / ".cache" / "axonvex";
         default_dirs_[DefaultDir::DATA] = home_dir / ".local" / "share" / "axonvex";
-        default_dirs_[DefaultDir::TEMP] = std::filesystem::temp_directory_path() / "axonvex";
+        default_dirs_[DefaultDir::TEMP] = axonvex_fs::temp_directory_path() / "axonvex";
         default_dirs_[DefaultDir::PLUGINS] = default_dirs_[DefaultDir::DATA] / "plugins";
         default_dirs_[DefaultDir::TEMPLATES] = default_dirs_[DefaultDir::DATA] / "templates";
         default_dirs_[DefaultDir::BACKUP] = default_dirs_[DefaultDir::DATA] / "backup";
@@ -117,17 +143,17 @@ void Path::initializeDefaultDirs() {
     } catch (const std::exception&) {
         // Fallback to current working directory
         auto cwd = getCurrentWorkingDirectory();
-        for (auto& [dir_type, path] : default_dirs_) {
-            default_dirs_[dir_type] = cwd / "axonvex";
+        for (auto& kv : default_dirs_) {
+            kv.second = cwd / "axonvex";
         }
     }
 }
 
-std::filesystem::path Path::getHomeDirectory() {
+axonvex_fs::path Path::getHomeDirectory() {
 #ifdef _WIN32
     wchar_t* profile_path = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profile_path))) {
-        std::filesystem::path result(profile_path);
+        axonvex_fs::path result(profile_path);
         CoTaskMemFree(profile_path);
         return result;
     }
@@ -135,30 +161,30 @@ std::filesystem::path Path::getHomeDirectory() {
     // Fallback
     const char* home = std::getenv("USERPROFILE");
     if (home) {
-        return std::filesystem::path(home);
+        return axonvex_fs::path(home);
     }
-    return std::filesystem::path("C:\\");
+    return axonvex_fs::path("C:\\");
 #else
     const char* home = std::getenv("HOME");
     if (home) {
-        return std::filesystem::path(home);
+        return axonvex_fs::path(home);
     }
 
     // Fallback using getpwuid
     struct passwd* pwd = getpwuid(getuid());
     if (pwd && pwd->pw_dir) {
-        return std::filesystem::path(pwd->pw_dir);
+        return axonvex_fs::path(pwd->pw_dir);
     }
 
-    return std::filesystem::path("/tmp");
+    return axonvex_fs::path("/tmp");
 #endif
 }
 
-std::filesystem::path Path::getSystemAppDataDirectory() {
+axonvex_fs::path Path::getSystemAppDataDirectory() {
 #ifdef _WIN32
     wchar_t* app_data_path = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &app_data_path))) {
-        std::filesystem::path result(app_data_path);
+        axonvex_fs::path result(app_data_path);
         CoTaskMemFree(app_data_path);
         return result;
     }
@@ -166,7 +192,7 @@ std::filesystem::path Path::getSystemAppDataDirectory() {
     // Fallback
     const char* app_data = std::getenv("APPDATA");
     if (app_data) {
-        return std::filesystem::path(app_data);
+        return axonvex_fs::path(app_data);
     }
     return getHomeDirectory();
 #else
@@ -174,10 +200,10 @@ std::filesystem::path Path::getSystemAppDataDirectory() {
 #endif
 }
 
-std::filesystem::path Path::getCurrentWorkingDirectory() {
+axonvex_fs::path Path::getCurrentWorkingDirectory() {
     try {
-        return std::filesystem::current_path();
-    } catch (const std::exception&) { return std::filesystem::path("."); }
+        return axonvex_fs::current_path();
+    } catch (const std::exception&) { return axonvex_fs::path("."); }
 }
 
 //==============================================================================
@@ -283,28 +309,30 @@ std::string Path::stem() const {
 
 Path Path::relativeTo(const Path& base) const {
     try {
-        return Path(std::filesystem::relative(path_, base.path_));
+        return Path(pathRelativeCompat(path_, base.path_));
     } catch (const std::exception&) { return *this; }
 }
 
 Path Path::absolute() const {
     try {
-        return Path(std::filesystem::absolute(path_));
+        return Path(axonvex_fs::absolute(path_));
     } catch (const std::exception&) { return *this; }
 }
 
 Path Path::canonical() const {
     try {
-        return Path(std::filesystem::canonical(path_));
+        return Path(axonvex_fs::canonical(path_));
     } catch (const std::exception&) { return absolute(); }
 }
 
 Path Path::normalize() const {
     try {
-        auto normalized = path_;
-        normalized = normalized.lexically_normal();
-        return Path(normalized);
-    } catch (const std::exception&) { return *this; }
+        return Path(axonvex_fs::canonical(path_));
+    } catch (const std::exception&) {
+        try {
+            return Path(axonvex_fs::absolute(path_));
+        } catch (const std::exception&) { return *this; }
+    }
 }
 
 Path Path::replaceExtension(const std::string& new_extension) const {
@@ -325,19 +353,19 @@ Path Path::replaceFilename(const std::string& new_filename) const {
 
 bool Path::exists() const {
     try {
-        return std::filesystem::exists(path_);
+        return axonvex_fs::exists(path_);
     } catch (const std::exception&) { return false; }
 }
 
 bool Path::isFile() const {
     try {
-        return std::filesystem::is_regular_file(path_);
+        return axonvex_fs::is_regular_file(path_);
     } catch (const std::exception&) { return false; }
 }
 
 bool Path::isDirectory() const {
     try {
-        return std::filesystem::is_directory(path_);
+        return axonvex_fs::is_directory(path_);
     } catch (const std::exception&) { return false; }
 }
 
@@ -409,16 +437,16 @@ std::vector<std::string> Path::validateSecurity(SecurityLevel level) const {
 std::uintmax_t Path::size() const {
     try {
         if (isFile()) {
-            return std::filesystem::file_size(path_);
+            return axonvex_fs::file_size(path_);
         }
         return 0;
     } catch (const std::exception&) { return 0; }
 }
 
-std::filesystem::file_time_type Path::lastWriteTime() const {
+axonvex_fs::file_time_type Path::lastWriteTime() const {
     try {
-        return std::filesystem::last_write_time(path_);
-    } catch (const std::exception&) { return std::filesystem::file_time_type{}; }
+        return axonvex_fs::last_write_time(path_);
+    } catch (const std::exception&) { return axonvex_fs::file_time_type{}; }
 }
 
 bool Path::isReadable() const {
@@ -429,7 +457,7 @@ bool Path::isReadable() const {
             return file.good();
         } else if (isDirectory()) {
             // Try to list directory
-            std::filesystem::directory_iterator it(path_);
+            axonvex_fs::directory_iterator it(path_);
             return true;
         }
         return false;
@@ -452,7 +480,7 @@ bool Path::isWritable() const {
                 std::ofstream file(temp_path);
                 if (file.good()) {
                     file.close();
-                    std::filesystem::remove(temp_path);
+                    axonvex_fs::remove(temp_path);
                     return true;
                 }
                 return false;
@@ -475,9 +503,9 @@ bool Path::isWritable() const {
 bool Path::createDirectory(bool recursive) const {
     try {
         if (recursive) {
-            return std::filesystem::create_directories(path_);
+            return axonvex_fs::create_directories(path_);
         } else {
-            return std::filesystem::create_directory(path_);
+            return axonvex_fs::create_directory(path_);
         }
     } catch (const std::exception&) { return false; }
 }
@@ -488,13 +516,13 @@ bool Path::createDirectories() const {
 
 bool Path::remove() const {
     try {
-        return std::filesystem::remove(path_);
+        return axonvex_fs::remove(path_);
     } catch (const std::exception&) { return false; }
 }
 
 std::uintmax_t Path::removeAll() const {
     try {
-        return std::filesystem::remove_all(path_);
+        return axonvex_fs::remove_all(path_);
     } catch (const std::exception&) { return 0; }
 }
 
@@ -507,11 +535,11 @@ std::vector<Path> Path::listDirectory(bool recursive) const {
         }
 
         if (recursive) {
-            for (const auto& entry : std::filesystem::recursive_directory_iterator(path_)) {
+            for (const auto& entry : axonvex_fs::recursive_directory_iterator(path_)) {
                 result.emplace_back(entry.path());
             }
         } else {
-            for (const auto& entry : std::filesystem::directory_iterator(path_)) {
+            for (const auto& entry : axonvex_fs::directory_iterator(path_)) {
                 result.emplace_back(entry.path());
             }
         }
@@ -562,9 +590,9 @@ bool Path::copyTo(const Path& destination, bool overwrite) const {
         // Create parent directories if needed
         destination.parent().createDirectories();
 
-        std::filesystem::copy_file(path_, destination.path_,
-                                   overwrite ? std::filesystem::copy_options::overwrite_existing
-                                             : std::filesystem::copy_options::none);
+        axonvex_fs::copy_file(path_, destination.path_,
+                                   overwrite ? axonvex_fs::copy_options::overwrite_existing
+                                             : axonvex_fs::copy_options::none);
         return true;
     } catch (const std::exception&) { return false; }
 }
@@ -574,7 +602,7 @@ bool Path::moveTo(const Path& destination) const {
         // Create parent directories if needed
         destination.parent().createDirectories();
 
-        std::filesystem::rename(path_, destination.path_);
+        axonvex_fs::rename(path_, destination.path_);
         return true;
     } catch (const std::exception&) { return false; }
 }
@@ -631,7 +659,7 @@ const char* Path::c_str() const {
     return cached_string_->c_str();
 }
 
-const std::filesystem::path& Path::native() const noexcept {
+const axonvex_fs::path& Path::native() const noexcept {
     return path_;
 }
 
@@ -683,8 +711,8 @@ std::unordered_map<std::string, std::string> Path::getSystemInfo() {
     std::unordered_map<std::string, std::string> info;
 
     try {
-        info["current_path"] = std::filesystem::current_path().string();
-        info["temp_directory"] = std::filesystem::temp_directory_path().string();
+        info["current_path"] = axonvex_fs::current_path().string();
+        info["temp_directory"] = axonvex_fs::temp_directory_path().string();
 
         // Path limits (platform-specific)
 #ifdef _WIN32
@@ -697,7 +725,7 @@ std::unordered_map<std::string, std::string> Path::getSystemInfo() {
         info["case_sensitive"] = "true";
 #endif
 
-        info["filesystem_space"] = std::to_string(std::filesystem::space(".").available);
+        info["filesystem_space"] = std::to_string(axonvex_fs::space(".").available);
 
     } catch (const std::exception& e) { info["error"] = e.what(); }
 
@@ -780,10 +808,11 @@ bool Path::isInWhitelist() const {
         auto canonical_path = canonical();
 
         // Check if path is within any of the default directories
-        for (const auto& [dir_type, dir_path] : default_dirs_) {
+        for (const auto& kv : default_dirs_) {
             try {
-                auto canonical_dir = std::filesystem::canonical(dir_path);
-                auto relative = std::filesystem::relative(canonical_path.path_, canonical_dir);
+                const axonvex_fs::path& dir_path = kv.second;
+                auto canonical_dir = axonvex_fs::canonical(dir_path);
+                auto relative = pathRelativeCompat(canonical_path.path_, canonical_dir);
 
                 // If relative path doesn't start with "..", it's within the directory
                 if (!relative.empty() && relative.begin()->string() != "..") {

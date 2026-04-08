@@ -1,5 +1,7 @@
 name: AxonVex CI/CD Pipeline
 
+# C++ standard is set in CMakeLists.txt (currently C++14). Builds pick it up via the Conan toolchain.
+
 on:
   push:
     branches: [ main, develop ]

@@ -490,6 +490,22 @@ axonvex::adapters::AdapterInterface* AxonVexSystem::getAdapter(
     return nullptr;
 }
 
+// =================================================================
+// SAFETY MANAGER INJECTION IMPLEMENTATION
+// =================================================================
+
+void AxonVexSystem::setSafetyManager(axonvex::safety::SafetyManager* manager) {
+    safetyManager_ = manager;
+    if (logger_) {
+        logger_->info("System",
+                      manager ? "SafetyManager registered" : "SafetyManager cleared");
+    }
+}
+
+axonvex::safety::SafetyManager* AxonVexSystem::getSafetyManager() const {
+    return safetyManager_;
+}
+
 void AxonVexSystem::reset() {
     emergencyShutdown();
 
