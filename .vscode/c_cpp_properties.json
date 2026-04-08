@@ -17,13 +17,13 @@
             ],
             "compilerPath": "/usr/bin/g++",
             "cStandard": "c17",
-            "cppStandard": "c++17",
+            "cppStandard": "c++14",
             "intelliSenseMode": "linux-gcc-x64",
             "compilerArgs": [
                 "-Wall",
                 "-Wextra",
                 "-Wpedantic",
-                "-std=c++17"
+                "-std=c++14"
             ],
             "browse": {
                 "path": [

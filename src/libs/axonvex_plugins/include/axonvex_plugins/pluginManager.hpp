@@ -103,8 +103,8 @@ class PluginManager {
     }
 
     void unloadAllPlugins() {
-        for (auto& [name, p] : plugins_) {
-            (void)name;
+        for (auto& kv : plugins_) {
+            auto& p = kv.second;
             if (p.instance) {
                 p.instance->shutdown();
                 p.destroy(p.instance);
@@ -134,7 +134,7 @@ class PluginManager {
     std::vector<std::string> getLoadedPlugins() const {
         std::vector<std::string> names;
         names.reserve(plugins_.size());
-        for (const auto& [name, _] : plugins_) names.push_back(name);
+        for (const auto& kv : plugins_) names.push_back(kv.first);
         return names;
     }
 

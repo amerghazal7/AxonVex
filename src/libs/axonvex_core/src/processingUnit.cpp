@@ -85,17 +85,17 @@ void ProcessingUnit::setBlockUID(uint32_t uid) {
 
     // Update all port UIDs
     std::lock_guard<std::mutex> lock(portsMutex_);
-    for (auto& [idx, port] : inputPorts_) {
-        port->setPortUID(uid * 256 + idx);
+    for (auto& kv : inputPorts_) {
+        kv.second->setPortUID(uid * 256 + kv.first);
     }
-    for (auto& [idx, port] : outputPorts_) {
-        port->setPortUID(uid * 256 + idx);
+    for (auto& kv : outputPorts_) {
+        kv.second->setPortUID(uid * 256 + kv.first);
     }
-    for (auto& [idx, port] : asyncInputPorts_) {
-        port->setPortUID(uid * 256 + idx);
+    for (auto& kv : asyncInputPorts_) {
+        kv.second->setPortUID(uid * 256 + kv.first);
     }
-    for (auto& [idx, port] : asyncOutputPorts_) {
-        port->setPortUID(uid * 256 + idx);
+    for (auto& kv : asyncOutputPorts_) {
+        kv.second->setPortUID(uid * 256 + kv.first);
     }
 }
 
@@ -125,33 +125,33 @@ void ProcessingUnit::resetBlock() {
 
 void ProcessingUnit::resetPorts() {
     std::lock_guard<std::mutex> lock(portsMutex_);
-    for (auto& [idx, port] : inputPorts_) {
-        port->reset();
+    for (auto& kv : inputPorts_) {
+        kv.second->reset();
     }
-    for (auto& [idx, port] : outputPorts_) {
-        port->reset();
+    for (auto& kv : outputPorts_) {
+        kv.second->reset();
     }
-    for (auto& [idx, port] : asyncInputPorts_) {
-        port->reset();
+    for (auto& kv : asyncInputPorts_) {
+        kv.second->reset();
     }
-    for (auto& [idx, port] : asyncOutputPorts_) {
-        port->reset();
+    for (auto& kv : asyncOutputPorts_) {
+        kv.second->reset();
     }
 }
 
 void ProcessingUnit::setPortsThreadSafe(bool threadSafe) {
     std::lock_guard<std::mutex> lock(portsMutex_);
-    for (auto& [idx, port] : inputPorts_) {
-        port->setThreadSafe(threadSafe);
+    for (auto& kv : inputPorts_) {
+        kv.second->setThreadSafe(threadSafe);
     }
-    for (auto& [idx, port] : outputPorts_) {
-        port->setThreadSafe(threadSafe);
+    for (auto& kv : outputPorts_) {
+        kv.second->setThreadSafe(threadSafe);
     }
-    for (auto& [idx, port] : asyncInputPorts_) {
-        port->setThreadSafe(threadSafe);
+    for (auto& kv : asyncInputPorts_) {
+        kv.second->setThreadSafe(threadSafe);
     }
-    for (auto& [idx, port] : asyncOutputPorts_) {
-        port->setThreadSafe(threadSafe);
+    for (auto& kv : asyncOutputPorts_) {
+        kv.second->setThreadSafe(threadSafe);
     }
 }
 

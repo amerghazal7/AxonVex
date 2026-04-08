@@ -6,7 +6,6 @@
 #include <cstring>
 #include <memory>
 #include <new>
-#include <optional>
 
 namespace axonvex::utils::containers {
 
@@ -274,5 +273,12 @@ typename MemoryPool<T>::Block* MemoryPool<T>::getBlockFromPointer(const T* ptr) 
     const char* blocks_start = reinterpret_cast<const char*>(blocks_.get());
     size_t offset = char_ptr - blocks_start; size_t block_index = offset / sizeof(Block); return &blocks_[block_index];
 }
+
+template <typename T>
+constexpr size_t MemoryPool<T>::DEFAULT_POOL_SIZE;
+template <typename T>
+constexpr size_t MemoryPool<T>::MIN_POOL_SIZE;
+template <typename T>
+constexpr size_t MemoryPool<T>::MAX_POOL_SIZE;
 
 } // namespace axonvex::utils::containers

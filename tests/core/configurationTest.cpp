@@ -24,8 +24,23 @@
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace axonvex::core;
+
+namespace {
+long testProcessId() {
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(getpid());
+#endif
+}
+} // namespace
 
 class ConfigurationTest : public ::testing::Test {
   protected:
@@ -72,9 +87,10 @@ class ConfigurationTest : public ::testing::Test {
             }
         })";
 
-        // Test file paths
-        test_config_file = "test_config.json";
-        test_schema_file = "test_schema.json";
+        // Unique per process so parallel ctest does not clobber shared filenames in CWD
+        const std::string pid = std::to_string(testProcessId());
+        test_config_file = "test_config_" + pid + ".json";
+        test_schema_file = "test_schema_" + pid + ".json";
     }
 
     void TearDown() override {

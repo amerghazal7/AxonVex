@@ -29,7 +29,7 @@ AxonVex is a comprehensive real-time framework built upon proven hierarchical bl
 - 🎯 **Precision Execution**: Deterministic timing with <1 microsecond accuracy
 - 📈 **Scalable Architecture**: From single-node to distributed systems (10,000+ processing blocks)
 - 🧩 **Modular Design**: Hierarchical block-based architecture with plugin system
-- 🔍 **Real-time Visualization**: Interactive dashboards, 3D visualization, VR/AR support
+- 🔍 **Real-time Visualization**: Angular 17+ web dashboard with live telemetry charts, 3D scene view, and system topology
 - 🛡️ **Mission-Critical Safety**: Multi-layer safety systems with hardware/software watchdogs
 - 🔒 **Enterprise Security**: Multi-factor authentication, role-based access, end-to-end encryption
 - ⚡ **High Performance**: Sub-millisecond latency, 1M+ messages/second throughput
@@ -177,7 +177,8 @@ ctest --test-dir build --output-on-failure
 ## Technology Stack
 
 ### Core System
-- **Language**: C++17
+- **Language**: C++14 (ISO/IEC 14882:2014). The tree avoids C++17-only features so the project stays portable on older toolchains.
+- **Filesystem**: Path and file utilities use `std::experimental::filesystem` under a small compatibility layer. On **Linux** with GCC or **non-Apple Clang**, link `axonvex_core` with **`stdc++fs`** (handled in `src/libs/axonvex_core/CMakeLists.txt`). libc++ on macOS generally provides experimental filesystem in the main C++ library; adjust if your SDK requires a separate `-lc++fs`-style link flag.
 - **Build System**: CMake 3.20+ with Conan 2 dependency management
 - **Dependencies**: oneTBB (concurrency), nlohmann_json (configuration), GoogleTest (testing)
 - **Threading**: Custom thread pool with real-time scheduling via `TimingController`
@@ -186,7 +187,14 @@ ctest --test-dir build --output-on-failure
 - **Protocol Abstraction**: `ProtocolInterface` base with lifecycle, stats, and error reporting
 - **TCP Client**: BSD socket implementation (Linux) with simulation fallback
 - **UDP Socket**: BSD socket implementation (Linux) with simulation fallback
-- **WebSocket**: Placeholder implementation (full stack planned)
+- **WebSocket**: Placeholder implementation (production server + telemetry gateway planned)
+
+### Visualization Stack (Planned)
+- **Dashboard**: Angular 17+ (standalone components, signals, new control flow)
+- **Charts**: ngx-charts / D3.js for real-time telemetry visualization
+- **3D Rendering**: Three.js for spatial data (poses, point clouds, trajectories)
+- **Transport**: WebSocket gateway bridging C++ `TelemetryBus` to Angular clients (JSON + MessagePack/CBOR)
+- **Layout**: Configurable drag-and-drop panel system with session persistence
 
 ---
 
@@ -203,7 +211,7 @@ AxonVex is split into libraries under `src/libs/`:
 | `axonvex_plugins` | Interface | Plugin API and dynamic loading |
 | `axonvex_safety` | Interface | Safety primitives (Watchdog) |
 | `axonvex_io` | Interface | Filesystem helpers |
-| `axonvex_visualization` | Interface | Telemetry pub/sub bus |
+| `axonvex_visualization` | Interface | Telemetry pub/sub bus + WebSocket gateway (Angular 17+ dashboard planned) |
 
 All interface libraries depend only on `axonvex_core`. See [Architecture](docs/architecture_and_design.md) for the full design.
 
@@ -220,18 +228,21 @@ All interface libraries depend only on `axonvex_core`. See [Architecture](docs/a
 - ✅ **Protocol Abstraction**: TCP, UDP, WebSocket scaffolds with `ProtocolInterface` contract
 - ✅ **Plugin System**: Dynamic plugin loading (Linux) with `PluginManager`
 - ✅ **Safety Primitives**: Watchdog timer with configurable callbacks
+- ✅ **Safety Envelope**: `SafetyManager` with policy registry, e-stop, periodic evaluation, and event notification
 - ✅ **I/O**: Filesystem helpers via `FileManager`
 - ✅ **Telemetry**: Keyed pub/sub bus for visualization data
-- ✅ **Test Suite**: 286 tests across all modules, CTest/GTest integrated
+- ✅ **Test Suite**: 364 tests across all modules, CTest/GTest integrated
 
 ### In Progress
 - 🔄 **Adapter Contract Layer**: ROS and MAVLink adapter shells
 - 🔄 **Mission Runtime**: `MissionElement` and `MissionPipeline` abstractions
 
 ### Planned
-- ⬚ **Safety Envelope**: `SafetyManager` with e-stop and policy checks
 - ⬚ **Replay Harness**: Deterministic trace record/replay for regression testing
 - ⬚ **Scalability Validation**: Soak tests and performance regression gates
+- ⬚ **WebSocket Gateway**: Production WebSocket server bridging `TelemetryBus` to web clients
+- ⬚ **Angular 17+ Dashboard**: Real-time charts, system topology, 3D scene, log viewer, mission/safety panels
+- ⬚ **Telemetry Recording**: Channel snapshot recording and dashboard playback
 
 For the detailed roadmap, see [Implementation Plan](docs/implementation_plan.md).
 

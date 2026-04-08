@@ -1,15 +1,16 @@
 #pragma once
 
 #include <atomic>
-#include <filesystem>
+#include <axonvex_core/detail/filesystem_compat.hpp>
+#include <axonvex_core/utils/optional.hpp>
 #include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <optional>
 #include <shared_mutex>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -235,7 +236,12 @@ class Configuration {
      * @return Configuration value or default
      */
     template <typename T>
-    T get(const std::string& key, const T& default_value = T{}) const;
+    typename std::enable_if<std::is_same<typename std::decay<T>::type, std::string>::value, T>::type
+    get(const std::string& key, const T& default_value = T{}) const;
+
+    template <typename T>
+    typename std::enable_if<!std::is_same<typename std::decay<T>::type, std::string>::value, T>::type
+    get(const std::string& key, const T& default_value = T{}) const;
 
     /**
      * @brief Get optional configuration value
@@ -245,7 +251,7 @@ class Configuration {
      * @return Optional value (empty if not found)
      */
     template <typename T>
-    std::optional<T> getOptional(const std::string& key) const;
+    axonvex::optional<T> getOptional(const std::string& key) const;
 
     /**
      * @brief Set configuration value
@@ -409,7 +415,7 @@ class Configuration {
      * @param template_name Name of template
      * @return Optional template object
      */
-    std::optional<ConfigurationTemplate> getTemplate(const std::string& template_name) const;
+    axonvex::optional<ConfigurationTemplate> getTemplate(const std::string& template_name) const;
 
     //==========================================================================
     // Versioning and Rollback
@@ -497,7 +503,7 @@ class Configuration {
   private:
     // Core configuration data
     nlohmann::json config_data_;
-    mutable std::shared_mutex config_mutex_;
+    mutable std::shared_timed_mutex config_mutex_;
 
     // Schema and validation
     std::unique_ptr<ConfigurationSchema> schema_;
@@ -518,7 +524,7 @@ class Configuration {
     // File watching
     std::atomic<bool> file_watching_enabled_;
     std::string watched_file_;
-    std::filesystem::file_time_type last_write_time_;
+    axonvex_fs::file_time_type last_write_time_;
 
     // Statistics
     mutable ConfigurationStatistics stats_;
@@ -547,8 +553,10 @@ class Configuration {
 //==============================================================================
 
 template <typename T>
-inline T Configuration::get(const std::string& key, const T& default_value) const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+inline typename std::enable_if<std::is_same<typename std::decay<T>::type, std::string>::value,
+                               T>::type
+Configuration::get(const std::string& key, const T& default_value) const {
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         const auto* json_ptr = getJsonPointer(key);
@@ -556,14 +564,10 @@ inline T Configuration::get(const std::string& key, const T& default_value) cons
             return default_value;
         }
 
-        if constexpr (std::is_same_v<T, std::string>) {
-            if (json_ptr->is_string()) {
-                return json_ptr->get<T>();
-            } else if (json_ptr->is_number() || json_ptr->is_boolean()) {
-                return std::to_string(json_ptr->get<double>());
-            }
-        } else {
+        if (json_ptr->is_string()) {
             return json_ptr->get<T>();
+        } else if (json_ptr->is_number() || json_ptr->is_boolean()) {
+            return std::to_string(json_ptr->get<double>());
         }
 
         return default_value;
@@ -571,22 +575,38 @@ inline T Configuration::get(const std::string& key, const T& default_value) cons
 }
 
 template <typename T>
-inline std::optional<T> Configuration::getOptional(const std::string& key) const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+inline typename std::enable_if<!std::is_same<typename std::decay<T>::type, std::string>::value,
+                               T>::type
+Configuration::get(const std::string& key, const T& default_value) const {
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         const auto* json_ptr = getJsonPointer(key);
         if (json_ptr == nullptr) {
-            return std::nullopt;
+            return default_value;
         }
 
         return json_ptr->get<T>();
-    } catch (const std::exception&) { return std::nullopt; }
+    } catch (const std::exception&) { return default_value; }
+}
+
+template <typename T>
+inline axonvex::optional<T> Configuration::getOptional(const std::string& key) const {
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
+
+    try {
+        const auto* json_ptr = getJsonPointer(key);
+        if (json_ptr == nullptr) {
+            return axonvex::nullopt;
+        }
+
+        return json_ptr->get<T>();
+    } catch (const std::exception&) { return axonvex::nullopt; }
 }
 
 template <typename T>
 inline bool Configuration::set(const std::string& key, const T& value, bool validate) {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
+    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         // Get old value for callback

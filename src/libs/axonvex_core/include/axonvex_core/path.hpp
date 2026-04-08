@@ -1,11 +1,11 @@
 #pragma once
 
-#include <filesystem>
+#include <axonvex_core/detail/filesystem_compat.hpp>
+#include <axonvex_core/utils/optional.hpp>
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -30,8 +30,8 @@ namespace axonvex::core {
  * Performance characteristics:
  * - Path operations: O(1) for most operations
  * - Path composition: Efficient string concatenation
- * - Filesystem operations: Delegated to std::filesystem
- * - Memory usage: Minimal overhead over std::filesystem::path
+ * - Filesystem operations: Delegated to axonvex_fs
+ * - Memory usage: Minimal overhead over axonvex_fs::path
  *
  * @example Basic usage:
  * @code
@@ -93,16 +93,16 @@ class Path {
     enum class FileMode { READ_ONLY, WRITE_ONLY, READ_WRITE, APPEND, CREATE_NEW, TRUNCATE };
 
   private:
-    std::filesystem::path path_;
-    static std::unordered_map<DefaultDir, std::filesystem::path> default_dirs_;
+    axonvex_fs::path path_;
+    static std::unordered_map<DefaultDir, axonvex_fs::path> default_dirs_;
     static SecurityLevel default_security_level_;
     static bool initialized_;
 
     // Thread-safe initialization
     static void initializeDefaultDirs();
-    static std::filesystem::path getHomeDirectory();
-    static std::filesystem::path getSystemAppDataDirectory();
-    static std::filesystem::path getCurrentWorkingDirectory();
+    static axonvex_fs::path getHomeDirectory();
+    static axonvex_fs::path getSystemAppDataDirectory();
+    static axonvex_fs::path getCurrentWorkingDirectory();
 
   public:
     //==========================================================================
@@ -129,11 +129,11 @@ class Path {
     explicit Path(const char* path_str);
 
     /**
-     * @brief Construct from std::filesystem::path
+     * @brief Construct from axonvex_fs::path
      *
      * @param fs_path Filesystem path object
      */
-    explicit Path(const std::filesystem::path& fs_path);
+    explicit Path(const axonvex_fs::path& fs_path);
 
     /**
      * @brief Copy constructor
@@ -418,7 +418,7 @@ class Path {
      *
      * @return Last write time as filesystem time
      */
-    std::filesystem::file_time_type lastWriteTime() const;
+    axonvex_fs::file_time_type lastWriteTime() const;
 
     /**
      * @brief Check if file/directory is readable
@@ -546,11 +546,11 @@ class Path {
     const char* c_str() const;
 
     /**
-     * @brief Get underlying std::filesystem::path
+     * @brief Get underlying axonvex_fs::path
      *
      * @return Reference to filesystem path
      */
-    const std::filesystem::path& native() const noexcept;
+    const axonvex_fs::path& native() const noexcept;
 
     /**
      * @brief Equality comparison
@@ -654,7 +654,7 @@ class Path {
     bool exceedsPathLimits() const;
 
     // Cached string for performance
-    mutable std::optional<std::string> cached_string_;
+    mutable axonvex::optional<std::string> cached_string_;
     mutable bool string_cache_valid_ = false;
 
     // Thread-safe static data

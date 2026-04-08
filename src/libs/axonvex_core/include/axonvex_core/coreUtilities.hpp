@@ -66,7 +66,7 @@ constexpr T clamp(T value, T min_val, T max_val) noexcept {
  */
 template <typename T>
 constexpr T alignTo(T value, T alignment) noexcept {
-    static_assert(std::is_unsigned_v<T>, "Alignment requires unsigned types");
+    static_assert(std::is_unsigned<T>::value, "Alignment requires unsigned types");
     return (value + alignment - 1) & ~(alignment - 1);
 }
 } // namespace MathUtils
@@ -215,8 +215,8 @@ namespace TypeTraits {
  */
 template <typename T>
 struct is_lockfree_suitable {
-    static constexpr bool value = std::is_trivially_copyable_v<T> &&
-                                  std::is_trivially_destructible_v<T> &&
+    static constexpr bool value = std::is_trivially_copyable<T>::value &&
+                                  std::is_trivially_destructible<T>::value &&
                                   (sizeof(T) <= sizeof(void*) * 2); // Reasonable size limit
 };
 
@@ -228,7 +228,7 @@ constexpr bool is_lockfree_suitable_v = is_lockfree_suitable<T>::value;
  */
 template <typename T>
 struct is_pool_suitable {
-    static constexpr bool value = std::is_destructible_v<T> && !std::is_abstract_v<T> &&
+    static constexpr bool value = std::is_destructible<T>::value && !std::is_abstract<T>::value &&
                                   (sizeof(T) >= sizeof(void*)); // Must be at least pointer size
 };
 
@@ -375,7 +375,7 @@ constexpr bool DEBUG_ENABLED = false;
  */
 template <typename Condition>
 void debugAssert(Condition&& condition, const char* message = "Debug assertion failed") {
-    if constexpr (DEBUG_ENABLED) {
+    if (DEBUG_ENABLED) {
         if (!condition()) {
             // In debug builds, you might want to break here or log
             // For now, just provide the interface
@@ -389,7 +389,7 @@ void debugAssert(Condition&& condition, const char* message = "Debug assertion f
  */
 template <typename Func>
 void debugOnly(Func&& func) {
-    if constexpr (DEBUG_ENABLED) {
+    if (DEBUG_ENABLED) {
         func();
     }
 }

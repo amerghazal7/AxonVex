@@ -18,8 +18,8 @@
 
 #include <atomic>
 #include <axonvex_core/precisionTimer.hpp>
+#include <axonvex_core/detail/filesystem_compat.hpp>
 #include <chrono>
-#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
@@ -331,14 +331,14 @@ class ProcessingUnit {
     /**
      * @brief Get relative URL
      */
-    std::filesystem::path getRelativeURL() const {
+    axonvex_fs::path getRelativeURL() const {
         return relativeURL_;
     }
 
     /**
      * @brief Get absolute URL
      */
-    std::filesystem::path getAbsoluteURL() const {
+    axonvex_fs::path getAbsoluteURL() const {
         return absoluteURL_;
     }
 
@@ -552,8 +552,8 @@ class ProcessingUnit {
     std::chrono::microseconds samplingPeriod_{std::chrono::milliseconds(10)};
 
     // Hierarchical addressing
-    std::filesystem::path relativeURL_;
-    std::filesystem::path absoluteURL_;
+    axonvex_fs::path relativeURL_;
+    axonvex_fs::path absoluteURL_;
     ProcessingUnit* parentBlock_{nullptr};
     bool hasURLBeenSet_{false};
 
@@ -743,9 +743,9 @@ AsyncInputPort<T>* ProcessingUnit::getAsyncInputPort() {
     std::lock_guard<std::mutex> lock(portsMutex_);
     if (asyncInputPorts_.size() == 3) { // 3 because reset and disable ports are defaults
         // Find the non-control port
-        for (auto& [idx, port] : asyncInputPorts_) {
-            if (idx != ControlPorts::RESET && idx != ControlPorts::DISABLE) {
-                return static_cast<AsyncInputPort<T>*>(port);
+        for (auto& kv : asyncInputPorts_) {
+            if (kv.first != ControlPorts::RESET && kv.first != ControlPorts::DISABLE) {
+                return static_cast<AsyncInputPort<T>*>(kv.second);
             }
         }
     }

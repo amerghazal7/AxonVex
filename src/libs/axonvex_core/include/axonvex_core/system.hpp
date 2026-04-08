@@ -15,6 +15,7 @@
 #pragma once
 
 namespace axonvex::adapters { class AdapterInterface; }
+namespace axonvex::safety { class SafetyManager; }
 
 #include <atomic>
 #include <axonvex_core/configuration.hpp>
@@ -410,6 +411,30 @@ class AxonVexSystem {
                     const std::string& uri);
 
     // =================================================================
+    // SAFETY MANAGER INJECTION
+    // =================================================================
+
+    /**
+     * @brief Register a SafetyManager with the system
+     *
+     * Call before initialize(). The system does NOT own the manager —
+     * the caller manages its lifetime. Retrieve inside
+     * initializeBlocksLayout() via getSafetyManager().
+     */
+    void setSafetyManager(axonvex::safety::SafetyManager* manager);
+
+  protected:
+    /**
+     * @brief Retrieve the previously registered SafetyManager
+     *
+     * Available inside initializeBlocksLayout() and during runtime.
+     *
+     * @return Pointer to the SafetyManager or nullptr if none registered
+     */
+    axonvex::safety::SafetyManager* getSafetyManager() const;
+
+  public:
+    // =================================================================
     // CONFIGURATION MANAGEMENT
     // =================================================================
 
@@ -685,6 +710,9 @@ class AxonVexSystem {
 
     // Adapter injection
     std::unordered_map<std::string, axonvex::adapters::AdapterInterface*> adapters_;
+
+    // Safety manager injection
+    axonvex::safety::SafetyManager* safetyManager_{nullptr};
 
     // System port management
     mutable std::mutex systemPortsMutex_;

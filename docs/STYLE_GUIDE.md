@@ -3,6 +3,8 @@
 ## Overview
 This document establishes the coding standards and naming conventions for the AxonVex framework. These conventions ensure consistency, readability, and maintainability across the codebase.
 
+**Active language standard:** the repository builds as **C++14**. Do not use C++17/20/23-only language or library features in production code unless the CMake standard is officially raised; the notes below that mention newer standards are forward-looking guidance only.
+
 ## Naming Conventions
 
 ### Files

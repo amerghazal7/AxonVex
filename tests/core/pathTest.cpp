@@ -22,16 +22,32 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <unordered_set>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace axonvex::core;
+
+namespace {
+long testProcessId() {
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(getpid());
+#endif
+}
+} // namespace
 
 class PathTest : public ::testing::Test {
   protected:
     void SetUp() override {
         // Create test directory structure
-        test_root = Path::getDefaultTempDir() / "axonvex_path_test";
+        test_root = Path::getDefaultTempDir() / ("axonvex_path_test_" + std::to_string(testProcessId()));
         test_root.createDirectories();
 
         test_file = test_root / "test_file.txt";
@@ -189,7 +205,7 @@ TEST_F(PathTest, PathManipulationTest) {
     EXPECT_TRUE(abs_path.isAbsolute());
 
     // Normalize path
-    Path with_dots = test_root / ".." / "axonvex_path_test" / "." / "test_file.txt";
+    Path with_dots = test_root / ".." / test_root.filename() / "." / "test_file.txt";
     Path normalized = with_dots.normalize();
     // Should resolve to something equivalent to test_file
 }

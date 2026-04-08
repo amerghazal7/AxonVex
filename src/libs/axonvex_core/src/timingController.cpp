@@ -266,7 +266,10 @@ void RealTimeScheduler::schedulerLoop() {
         // Calculate scheduling jitter
         auto expectedCycleTime =
             std::chrono::duration_cast<std::chrono::nanoseconds>(timerResolution_);
-        auto jitter = std::chrono::abs(cycleTime - expectedCycleTime);
+        std::chrono::nanoseconds jitter = cycleTime - expectedCycleTime;
+        if (jitter < std::chrono::nanoseconds::zero()) {
+            jitter = -jitter;
+        }
         updateSchedulingJitter(std::chrono::duration_cast<std::chrono::microseconds>(jitter));
 
         nextWakeup = now + timerResolution_;
@@ -294,7 +297,8 @@ void RealTimeScheduler::schedulerLoop() {
         // Check for tasks that need reactivation
         {
             std::lock_guard<std::mutex> lock(tasksMutex_);
-            for (auto& [taskId, task] : tasks_) {
+            for (auto& kv : tasks_) {
+                SchedulerTask* task = kv.second;
                 if (!task->active.load() && task->consecutiveFailures > 0 &&
                     now >= task->reactivationTime) {
                     task->active.store(true);

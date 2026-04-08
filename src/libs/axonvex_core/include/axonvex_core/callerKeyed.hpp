@@ -212,9 +212,9 @@ class CallerKeyed {
      *       callAllCallbacksSafe for exception-safe calling.
      */
     void callAllCallbacks(const DataType& data) {
-        for (const auto& [key, callback] : keyed_callbacks_) {
-            if (callback) {
-                callback->callbackPerform(data);
+        for (const auto& pr : keyed_callbacks_) {
+            if (pr.second) {
+                pr.second->callbackPerform(data);
             }
         }
     }
@@ -230,10 +230,10 @@ class CallerKeyed {
      */
     size_t callAllCallbacksSafe(const DataType& data) noexcept {
         size_t exceptions_count = 0;
-        for (const auto& [key, callback] : keyed_callbacks_) {
-            if (callback) {
+        for (const auto& pr : keyed_callbacks_) {
+            if (pr.second) {
                 try {
-                    callback->callbackPerform(data);
+                    pr.second->callbackPerform(data);
                 } catch (...) {
                     ++exceptions_count;
                     // Continue with the next callback
@@ -282,10 +282,10 @@ class CallerKeyed {
         KeyType current_key{};
         bool first = true;
 
-        for (const auto& [key, callback] : keyed_callbacks_) {
-            if (first || key != current_key) {
-                keys.push_back(key);
-                current_key = key;
+        for (const auto& pr : keyed_callbacks_) {
+            if (first || pr.first != current_key) {
+                keys.push_back(pr.first);
+                current_key = pr.first;
                 first = false;
             }
         }

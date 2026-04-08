@@ -1,9 +1,9 @@
 #pragma once
 
+#include <axonvex_core/utils/optional.hpp>
 #include <list>
-#include <unordered_map>
 #include <mutex>
-#include <optional>
+#include <unordered_map>
 
 namespace axonvex::utils::caching {
 
@@ -29,10 +29,10 @@ public:
         map_[key] = list_.begin();
     }
 
-    std::optional<V> get(const K& key) {
+    axonvex::optional<V> get(const K& key) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = map_.find(key);
-        if (it == map_.end()) return std::nullopt;
+        if (it == map_.end()) return axonvex::nullopt;
         list_.splice(list_.begin(), list_, it->second);
         return it->second->second;
     }
