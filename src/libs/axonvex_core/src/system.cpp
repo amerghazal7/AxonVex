@@ -481,8 +481,7 @@ void AxonVexSystem::addAdapter(axonvex::adapters::AdapterInterface* adapter,
     }
 }
 
-axonvex::adapters::AdapterInterface* AxonVexSystem::getAdapter(
-    const std::string& uri) const {
+axonvex::adapters::AdapterInterface* AxonVexSystem::getAdapter(const std::string& uri) const {
     auto it = adapters_.find(uri);
     if (it != adapters_.end()) {
         return it->second;
@@ -497,8 +496,7 @@ axonvex::adapters::AdapterInterface* AxonVexSystem::getAdapter(
 void AxonVexSystem::setSafetyManager(axonvex::safety::SafetyManager* manager) {
     safetyManager_ = manager;
     if (logger_) {
-        logger_->info("System",
-                      manager ? "SafetyManager registered" : "SafetyManager cleared");
+        logger_->info("System", manager ? "SafetyManager registered" : "SafetyManager cleared");
     }
 }
 
@@ -574,25 +572,27 @@ void AxonVexSystem::performHealthCheck() {
 
     SystemHealth health = performInternalHealthCheck();
 
+    // Snapshot under the lock, invoke outside it: user callbacks must never run
+    // while callbacksMutex_ is held (C18 — re-entrant callback API use deadlocks).
+    std::vector<HealthCheckCallback> callbacks;
     {
         std::lock_guard<std::mutex> lock(callbacksMutex_);
-        lastHealth_ = health;
+        callbacks = healthCheckCallbacks_;
+    }
 
-        // Call user health check callbacks
-        for (const auto& callback : healthCheckCallbacks_) {
-            if (callback) {
-                try {
-                    SystemHealth userHealth = callback();
-                    // Merge user health with system health
-                    if (userHealth.overallStatus > health.overallStatus) {
-                        health.overallStatus = userHealth.overallStatus;
-                    }
-                    health.warnings.insert(health.warnings.end(), userHealth.warnings.begin(),
-                                           userHealth.warnings.end());
-                    health.errors.insert(health.errors.end(), userHealth.errors.begin(),
-                                         userHealth.errors.end());
-                } catch (...) { health.errors.push_back("Health check callback failed"); }
-            }
+    for (const auto& callback : callbacks) {
+        if (callback) {
+            try {
+                SystemHealth userHealth = callback();
+                // Merge user health with system health
+                if (userHealth.overallStatus > health.overallStatus) {
+                    health.overallStatus = userHealth.overallStatus;
+                }
+                health.warnings.insert(health.warnings.end(), userHealth.warnings.begin(),
+                                       userHealth.warnings.end());
+                health.errors.insert(health.errors.end(), userHealth.errors.begin(),
+                                     userHealth.errors.end());
+            } catch (...) { health.errors.push_back("Health check callback failed"); }
         }
     }
 
@@ -1174,6 +1174,9 @@ bool AxonVexSystem::startComponents() {
 
 void AxonVexSystem::monitoringLoop() {
     auto lastUpdate = std::chrono::steady_clock::now();
+    // Loop-local timer: the old unlocked read of lastHealth_.lastCheckTime raced
+    // performHealthCheck() on other threads (C18).
+    auto lastHealthCheck = lastUpdate;
 
     while (monitoringEnabled_.load() && !isShuttingDown_.load()) {
         try {
@@ -1192,12 +1195,12 @@ void AxonVexSystem::monitoringLoop() {
             }
 
             // Perform health check periodically
-            auto lastHealthCheck = lastHealth_.lastCheckTime;
             auto healthElapsed =
                 std::chrono::duration_cast<std::chrono::seconds>(now - lastHealthCheck);
 
             if (healthElapsed >= systemConfig_.healthCheckInterval) {
                 performHealthCheck();
+                lastHealthCheck = std::chrono::steady_clock::now();
             }
 
             // Sleep for a short interval
@@ -1342,18 +1345,21 @@ void AxonVexSystem::eventProcessingLoop() {
         if (eventOpt.has_value()) {
             SystemEvent* eventPtr = eventOpt.value();
 
-            // Process the event
+            // Process the event. Snapshot under the lock, invoke outside it —
+            // same C18 rule as performHealthCheck.
+            std::vector<EventCallback> callbacks;
             {
                 std::lock_guard<std::mutex> lock(callbacksMutex_);
-                for (const auto& callback : eventCallbacks_) {
-                    if (callback) {
-                        try {
-                            callback(*eventPtr);
-                        } catch (const std::exception& e) {
-                            if (logger_) {
-                                logger_->warning("System",
-                                                 "Event callback failed: " + std::string(e.what()));
-                            }
+                callbacks = eventCallbacks_;
+            }
+            for (const auto& callback : callbacks) {
+                if (callback) {
+                    try {
+                        callback(*eventPtr);
+                    } catch (const std::exception& e) {
+                        if (logger_) {
+                            logger_->warning("System",
+                                             "Event callback failed: " + std::string(e.what()));
                         }
                     }
                 }

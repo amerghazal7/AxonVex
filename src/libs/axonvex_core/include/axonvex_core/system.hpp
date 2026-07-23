@@ -14,18 +14,22 @@
 
 #pragma once
 
-namespace axonvex::adapters { class AdapterInterface; }
-namespace axonvex::safety { class SafetyManager; }
+namespace axonvex::adapters {
+class AdapterInterface;
+}
+namespace axonvex::safety {
+class SafetyManager;
+}
 
 #include <atomic>
 #include <axonvex_core/configuration.hpp>
 #include <axonvex_core/logger.hpp>
-#include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <axonvex_core/path.hpp>
 #include <axonvex_core/precisionTimer.hpp>
 #include <axonvex_core/processingUnit.hpp>
-#include <axonvex_core/utils/containers/threadSafeQueue.hpp>
 #include <axonvex_core/timingController.hpp>
+#include <axonvex_core/utils/containers/memoryPool.hpp>
+#include <axonvex_core/utils/containers/threadSafeQueue.hpp>
 #include <chrono>
 #include <functional>
 #include <future>
@@ -407,8 +411,7 @@ class AxonVexSystem {
      * the caller manages its lifetime. Retrieve inside
      * initializeBlocksLayout() via getAdapter().
      */
-    void addAdapter(axonvex::adapters::AdapterInterface* adapter,
-                    const std::string& uri);
+    void addAdapter(axonvex::adapters::AdapterInterface* adapter, const std::string& uri);
 
     // =================================================================
     // SAFETY MANAGER INJECTION
@@ -737,7 +740,6 @@ class AxonVexSystem {
     std::atomic<uint32_t> nextCallbackId_{1};
 
     // Health and recovery
-    mutable SystemHealth lastHealth_;
     std::atomic<bool> debugMode_{false};
     std::atomic<uint32_t> currentRecoveryAttempts_{0};
     std::atomic<bool> isShuttingDown_{false}; // New flag for graceful shutdown
