@@ -4,7 +4,7 @@ build/
 install/
 *.log
 .cache/
-.vscode/*.db
+.vscode/*.db*
 
 # Compiled Object files
 *.slo
