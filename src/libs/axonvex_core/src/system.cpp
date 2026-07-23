@@ -11,6 +11,7 @@
  */
 
 #include <algorithm>
+#include <axonvex_core/safetyHook.hpp>
 #include <axonvex_core/system.hpp>
 #include <cstdlib>
 #include <fstream>
@@ -171,10 +172,20 @@ AxonVexSystem::AxonVexSystem(const SystemConfiguration& config) : systemConfig_(
 }
 
 AxonVexSystem::~AxonVexSystem() {
+    // Clear the hook registration first: it holds a callback capturing `this`.
+    // SafetyManager dispatches under its callback mutex, so this blocks until
+    // any in-flight emergency dispatch has finished (C2).
+    if (safetyHook_) {
+        safetyHook_->setEmergencyCallback(nullptr);
+        safetyHook_ = nullptr;
+    }
     if (currentState_.load() != SystemState::UNINITIALIZED &&
         currentState_.load() != SystemState::STOPPED) {
         emergencyShutdown();
     }
+    // If a concurrent emergencyShutdown owned the teardown (our call above
+    // skipped via try_lock), wait for it to finish before members are destroyed.
+    std::lock_guard<std::mutex> wait(shutdownMutex_);
 }
 
 // Move constructor - removed due to atomic members
@@ -393,25 +404,37 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
     systemTimer_.start();        // Start timing shutdown
 
     try {
-        // Stop event processing thread first
+        // Thread-handle teardown serialized against emergencyShutdown (C2),
+        // which may fire concurrently from any thread via the SafetyHook.
+        // Flags are set before locking so a system thread that enters
+        // emergencyShutdown (try_lock fails) still exits its loop promptly.
         eventProcessingRunning_.store(false);
+        monitoringEnabled_.store(false);
+        // Held through component stop/cleanup as well: a hook-triggered
+        // emergencyShutdown must not touch timingController_ while
+        // cleanupComponents() resets it (it try_locks and skips instead)
+        std::unique_lock<std::mutex> teardownLock(shutdownMutex_);
+        // Stop event processing thread first
         if (eventProcessingThread_ && eventProcessingThread_->joinable()) {
             eventProcessingThread_->join();
             eventProcessingThread_.reset();
         }
         // Stop monitoring thread next
-        monitoringEnabled_.store(false);
         if (monitoringThread_ && monitoringThread_->joinable()) {
             monitoringThread_->join();
             monitoringThread_.reset();
         }
         // Now stop all components
         if (!stopComponents(timeoutMs)) {
+            // Release first: emergencyShutdown try_locks this mutex and must
+            // own the teardown here, not skip it
+            teardownLock.unlock();
             emergencyShutdown();
             return false;
         }
         // Finally, clean up resources
         cleanupComponents();
+        teardownLock.unlock();
         // Transition to stopped state
         if (!transitionState(SystemState::STOPPED)) {
             return false;
@@ -436,15 +459,30 @@ void AxonVexSystem::emergencyShutdown() {
     SystemState oldState = currentState_.load();
     currentState_.store(SystemState::FATAL_ERROR);
     isShuttingDown_.store(true);
-    // Stop event processing thread first
     eventProcessingRunning_.store(false);
-    if (eventProcessingThread_ && eventProcessingThread_->joinable()) {
+    monitoringEnabled_.store(false);
+
+    // Single-owner teardown: e-stop can fire from any thread via the SafetyHook
+    // (C2), racing stop() or another e-stop on the thread handles. try_lock, not
+    // lock: a system thread entering here while stop() joins it under the mutex
+    // must return (flags above end its loop) or the join would deadlock. The
+    // teardown owner finishes the joins; the destructor waits on this mutex.
+    std::unique_lock<std::mutex> teardownLock(shutdownMutex_, std::try_to_lock);
+    if (!teardownLock.owns_lock()) {
+        return;
+    }
+
+    // Stop event processing thread first. Self-join guard: the emergency
+    // callback may run on a system thread; skip the join and reset there —
+    // the destructor's second pass joins from the owner thread.
+    if (eventProcessingThread_ && eventProcessingThread_->joinable() &&
+        eventProcessingThread_->get_id() != std::this_thread::get_id()) {
         eventProcessingThread_->join();
         eventProcessingThread_.reset();
     }
     // Stop monitoring thread next
-    monitoringEnabled_.store(false);
-    if (monitoringThread_ && monitoringThread_->joinable()) {
+    if (monitoringThread_ && monitoringThread_->joinable() &&
+        monitoringThread_->get_id() != std::this_thread::get_id()) {
         monitoringThread_->join();
         monitoringThread_.reset();
     }
@@ -490,18 +528,30 @@ axonvex::adapters::AdapterInterface* AxonVexSystem::getAdapter(const std::string
 }
 
 // =================================================================
-// SAFETY MANAGER INJECTION IMPLEMENTATION
+// SAFETY HOOK INJECTION IMPLEMENTATION
 // =================================================================
 
-void AxonVexSystem::setSafetyManager(axonvex::safety::SafetyManager* manager) {
-    safetyManager_ = manager;
+void AxonVexSystem::setSafetyHook(SafetyHook* hook) {
+    if (safetyHook_ && safetyHook_ != hook) {
+        safetyHook_->setEmergencyCallback(nullptr);
+    }
+    safetyHook_ = hook;
+    if (hook) {
+        // C2: an engaged e-stop must actually halt the system
+        hook->setEmergencyCallback([this](const std::string& reason) {
+            if (logger_) {
+                logger_->critical("System", "Safety e-stop: " + reason);
+            }
+            emergencyShutdown();
+        });
+    }
     if (logger_) {
-        logger_->info("System", manager ? "SafetyManager registered" : "SafetyManager cleared");
+        logger_->info("System", hook ? "SafetyHook registered" : "SafetyHook cleared");
     }
 }
 
-axonvex::safety::SafetyManager* AxonVexSystem::getSafetyManager() const {
-    return safetyManager_;
+SafetyHook* AxonVexSystem::getSafetyHook() const {
+    return safetyHook_;
 }
 
 void AxonVexSystem::reset() {

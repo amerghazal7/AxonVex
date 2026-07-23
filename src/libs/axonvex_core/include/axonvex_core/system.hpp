@@ -17,9 +17,6 @@
 namespace axonvex::adapters {
 class AdapterInterface;
 }
-namespace axonvex::safety {
-class SafetyManager;
-}
 
 #include <atomic>
 #include <axonvex_core/configuration.hpp>
@@ -45,6 +42,8 @@ namespace axonvex::core {
 // Bring utils containers into core namespace for convenience
 using axonvex::utils::containers::MemoryPool;
 using axonvex::utils::containers::ThreadSafeQueue;
+
+class SafetyHook; // core-owned safety hook interface (safetyHook.hpp)
 
 /**
  * @brief System state enumeration
@@ -414,29 +413,28 @@ class AxonVexSystem {
     void addAdapter(axonvex::adapters::AdapterInterface* adapter, const std::string& uri);
 
     // =================================================================
-    // SAFETY MANAGER INJECTION
+    // SAFETY HOOK INJECTION
     // =================================================================
 
     /**
-     * @brief Register a SafetyManager with the system
+     * @brief Register a core-owned SafetyHook with the system (C2)
      *
-     * Call before initialize(). The system does NOT own the manager —
-     * the caller manages its lifetime. Retrieve inside
-     * initializeBlocksLayout() via getSafetyManager().
+     * The system registers an emergency callback on the hook: when the hook's
+     * emergency stop engages, the system performs an emergency shutdown.
+     * Call before initialize(). The system does NOT own the hook — the caller
+     * manages its lifetime. The hook must outlive the system OR be cleared
+     * (setSafetyHook(nullptr)) before the hook is destroyed; the system's
+     * destructor clears its registration on the hook automatically. Passing
+     * nullptr clears the registration.
      */
-    void setSafetyManager(axonvex::safety::SafetyManager* manager);
+    void setSafetyHook(SafetyHook* hook);
 
-  protected:
     /**
-     * @brief Retrieve the previously registered SafetyManager
+     * @brief Retrieve the previously registered SafetyHook
      *
-     * Available inside initializeBlocksLayout() and during runtime.
-     *
-     * @return Pointer to the SafetyManager or nullptr if none registered
+     * @return Pointer to the SafetyHook or nullptr if none registered
      */
-    axonvex::safety::SafetyManager* getSafetyManager() const;
-
-  public:
+    SafetyHook* getSafetyHook() const;
     // =================================================================
     // CONFIGURATION MANAGEMENT
     // =================================================================
@@ -715,7 +713,7 @@ class AxonVexSystem {
     std::unordered_map<std::string, axonvex::adapters::AdapterInterface*> adapters_;
 
     // Safety manager injection
-    axonvex::safety::SafetyManager* safetyManager_{nullptr};
+    SafetyHook* safetyHook_{nullptr};
 
     // System port management
     mutable std::mutex systemPortsMutex_;
@@ -743,6 +741,9 @@ class AxonVexSystem {
     std::atomic<bool> debugMode_{false};
     std::atomic<uint32_t> currentRecoveryAttempts_{0};
     std::atomic<bool> isShuttingDown_{false}; // New flag for graceful shutdown
+    // Serializes thread-handle teardown between stop() and emergencyShutdown(),
+    // which can now fire from any thread via the SafetyHook (C2)
+    std::mutex shutdownMutex_;
 
     // =================================================================
     // INTERNAL METHODS
