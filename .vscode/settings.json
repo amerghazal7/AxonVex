@@ -47,5 +47,16 @@
     },
     "chat.tools.terminal.autoApprove": {
         "cp": true
-    }
+    },
+    "ROS2.distro": "humble",
+    "python.autoComplete.extraPaths": [
+        "/usr/local/usd/lib/python",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/usr/local/usd/lib/python",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
 } 
