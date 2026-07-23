@@ -48,6 +48,8 @@ Correctness bugs, each with location, verified by direct code reading:
 | C23 | LOW | `nextPowerOf2` `value >> 32` UB on 32-bit `size_t` (3 copies of the function) | `coreUtilities.hpp:36-45`, `memoryPool.hpp:247-257`, `threadSafeQueue.hpp:234` |
 | C24 | LOW | TCP/UDP fd close race (`sock_` non-atomic, closed while recvLoop uses it); IPv4-only, `inet_pton`-only (no DNS, "localhost" fails); non-Linux builds silently no-op and return `true` | `tcpClient.hpp:57-60,197` |
 
+**Status (2026-07-23):** C4, C10, C16, C17, C23 **fixed** with regression tests (C4/C16/C17; C10/C23 not observably testable until Phase 4 loopback tests). During verification, C18 was **confirmed live**: `AxonVexSystemTest.HealthCheckCallbacks` segfaults intermittently on the *pristine* tree (12/30 standalone runs; repro: `./build/test_core --gtest_filter=AxonVexSystemTest.HealthCheckCallbacks`). The suite's historical green runs were luck. C18 is the top of the Phase 1 queue.
+
 ## 4. Honesty audit (docs vs reality)
 
 The README's "Key Features" block claims things that do not exist **yet**. Since all of them are v1.0 scope, the fix is not deletion but truthful status: each claim becomes a tracked commitment ("in development, targeted for v1.0") until its workstream ships it, at which point the claim points at code, tests, and benchmarks. What must still be fixed immediately: fictional community URLs/professional-services copy, the broken `CONTRIBUTING.md` link, the static build badge, and the bridge-app README documenting a nonexistent app.

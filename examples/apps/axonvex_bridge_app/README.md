@@ -1,7 +1,8 @@
-# axonvex_bridge_app — ROS 2 ↔ AxonVex Bridge
+# axonvex_bridge_app — ROS 2 ↔ AxonVex String Echo Demo
 
-A sample application demonstrating how the AxonVex adapter layer connects
-a ROS 2 network to an AxonVex processing pipeline.
+A sample application demonstrating real ROS 2 integration via the
+`ROS2Adapter`: it subscribes to `/chatter` (`std_msgs/String`), pipes each
+message through an AxonVex processing pipeline, and prints it to the console.
 
 ## Architecture
 
@@ -9,59 +10,47 @@ a ROS 2 network to an AxonVex processing pipeline.
 ┌─────────────────────────────────────────────────────────────┐
 │  ROS 2 Network                                              │
 │                                                             │
-│   /imu/data (sensor_msgs/Imu)                               │
+│   /chatter (std_msgs/String)                                │
 │       │                                                     │
 └───────┼─────────────────────────────────────────────────────┘
-        │ rclcpp subscription
+        │ rclcpp subscription (created by ROS2Adapter)
         ▼
-┌──────────────────┐     Adapter Layer (outside the system)
-│   Ros2AdapterNode │ ──► Converts sensor_msgs::Imu to bytes,
-│   (rclcpp::Node) │     calls adapter.publish("sensor/imu", payload)
-└──────────────────┘
-        │
-        ▼
-┌──────────────────┐
-│   RosAdapter      │ ──► Manages topic subscriptions and fan-out.
-│   (AdapterInterface)    In simulation: loopback. In production:
-└──────────────────┘     backed by real rclcpp transport.
-        │ adapter.subscribe("sensor/imu", callback)
-        ▼
+┌──────────────────────┐
+│  ROS2Adapter          │ ──► Owns the rclcpp::Node. A registered
+│  (axonvex::ros2)      │     type caster converts std_msgs::String
+└──────────┬───────────┘     ◄──► std::string in both directions.
+           │ createSubscriber<std::string, std_msgs::msg::String>("/chatter")
+           ▼
 ┌═══════════════════════════════════════════════════════════════┐
-║  AxonVexSystem ("ImuPipeline")                                ║
+║  EchoSystem (AxonVexSystem)                                   ║
 ║                                                               ║
-║  ┌──────────────────┐                                         ║
-║  │ AdapterBridgePU   │ ◄── adapter callback writes to port    ║
-║  │ port 100: imu_out │                                        ║
-║  └────────┬─────────┘                                         ║
-║           │  OutputPort<ImuData>                               ║
-║           ▼                                                   ║
-║  ┌──────────────────┐                                         ║
-║  │ ImuProcessorPU    │ ◄── complementary filter                ║
-║  │ port 200: imu_in  │                                        ║
-║  │ port 201: att_out │                                        ║
-║  └────────┬─────────┘                                         ║
-║           │  OutputPort<AttitudeEstimate>                      ║
-║           ▼                                                   ║
-║  ┌──────────────────┐                                         ║
-║  │ DataLoggerPU      │ ◄── prints roll/pitch/yaw to console   ║
-║  │ port 300: att_in  │                                        ║
-║  └──────────────────┘                                         ║
-║                                                               ║
+║  ┌────────────────────┐                                       ║
+║  │ Subscriber unit     │ ◄── created by the adapter; writes    ║
+║  │ (from ROS2Adapter)  │     each message to its output port   ║
+║  └─────────┬──────────┘                                       ║
+║            │  OutputPort<std::string>                          ║
+║            ▼                                                  ║
+║  ┌────────────────────┐                                       ║
+║  │ PrinterPU           │ ◄── prints "#N: <message>" and        ║
+║  │ port 0: input       │     counts messages received          ║
+║  └────────────────────┘                                       ║
 ╚═══════════════════════════════════════════════════════════════╝
 ```
 
 ### Key patterns
 
-1. **Ros2AdapterNode** — the only file that touches ROS types. It converts
-   `sensor_msgs::Imu` into a byte buffer and calls `adapter.publish()`.
+1. **Type casters** — `main()` registers a caster pair on the adapter that
+   converts `std_msgs::msg::String` ↔ `std::string`. The pipeline only ever
+   sees `std::string`; ROS types stay at the adapter boundary.
 
-2. **AdapterBridgePU** — a ProcessingUnit that subscribes to the adapter
-   via callbacks, decodes the bytes, and writes typed data to its output
-   port. This is the **bridge** between the callback-based adapter world
-   and the port-based processing pipeline.
+2. **Adapter-created subscriber unit** — `EchoSystem::initializeBlocksLayout()`
+   asks the adapter for a typed subscriber
+   (`createSubscriber<std::string, std_msgs::msg::String>("/chatter")`) and
+   registers it as a ProcessingUnit like any other, then wires its output
+   port to `PrinterPU`.
 
-3. **ImuProcessorPU / DataLoggerPU** — pure AxonVex processing units.
-   They know nothing about ROS or adapters — they only see typed ports.
+3. **PrinterPU** — a pure AxonVex processing unit. It knows nothing about
+   ROS — it only reads a typed input port.
 
 ## Prerequisites
 
@@ -83,14 +72,14 @@ cmake --build build -j8
 cmake --install build   # installs to install/libs by default
 
 # Build this ROS 2 package (point CMAKE_PREFIX_PATH at the AxonVex install)
-cd src/apps/axonvex_bridge_app
+cd examples/apps/axonvex_bridge_app
 colcon build --packages-select axonvex_bridge_app \
     --cmake-args -DCMAKE_PREFIX_PATH=/path/to/AxonVex/install/libs
 ```
 
-The app's `CMakeLists.txt` only does `find_package(axonvex REQUIRED)` and
-links `axonvex::core` + `axonvex::adapters`. All transitive dependencies
-(Threads, TBB, nlohmann_json) are resolved automatically by the AxonVex
+The app's `CMakeLists.txt` does `find_package(axonvex REQUIRED)` and links
+`axonvex::core`, `axonvex::adapters`, and `axonvex::ros2`. Transitive
+dependencies (Threads, TBB, nlohmann_json) are resolved by the AxonVex
 CMake package config.
 
 ## Run
@@ -100,13 +89,11 @@ source install/setup.bash
 ros2 run axonvex_bridge_app axonvex_bridge_node
 ```
 
-In another terminal, publish IMU data:
+In another terminal, publish a message:
 
 ```bash
-ros2 topic pub /imu/data sensor_msgs/msg/Imu "{
-  linear_acceleration: {x: 0.1, y: 0.0, z: 9.81},
-  angular_velocity: {x: 0.01, y: 0.02, z: 0.0}
-}" --rate 100
+ros2 topic pub /chatter std_msgs/msg/String "data: 'hello axonvex'"
 ```
 
-You should see attitude estimates printed by the DataLoggerPU.
+The app prints each message as `[PrinterPU] #N: hello axonvex` and reports
+the total message count on shutdown (Ctrl-C).
