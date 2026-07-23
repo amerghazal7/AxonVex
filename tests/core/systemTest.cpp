@@ -82,7 +82,9 @@ class MockProcessingUnit : public ProcessingUnit {
         processingTime_ = time;
     }
 
-    int getProcessCallCount() const { return processCallCount_.load(); }
+    int getProcessCallCount() const {
+        return processCallCount_.load();
+    }
     int getInitializeCallCount() const {
         return initializeCallCount_;
     }
@@ -524,22 +526,69 @@ TEST_F(AxonVexSystemTest, BasicHealthCheck) {
 TEST_F(AxonVexSystemTest, HealthCheckCallbacks) {
     EXPECT_TRUE(system_->initialize());
 
-    bool healthCheckCalled = false;
+    // Captured by value (shared_ptr): the monitoring thread may invoke this callback
+    // after the test body returns — a stack-local captured by reference dangles (C18 crash).
+    auto healthCheckCalled = std::make_shared<std::atomic<bool>>(false);
 
     // Register health check callback
-    uint32_t callbackId = system_->registerHealthCheckCallback([&]() -> SystemHealth {
-        healthCheckCalled = true;
-        SystemHealth customHealth;
-        customHealth.overallStatus = SystemHealth::Status::HEALTHY;
-        return customHealth;
-    });
+    uint32_t callbackId =
+        system_->registerHealthCheckCallback([healthCheckCalled]() -> SystemHealth {
+            healthCheckCalled->store(true);
+            SystemHealth customHealth;
+            customHealth.overallStatus = SystemHealth::Status::HEALTHY;
+            return customHealth;
+        });
 
     EXPECT_GT(callbackId, 0);
 
     // Perform health check
     system_->performHealthCheck();
 
-    EXPECT_TRUE(healthCheckCalled);
+    EXPECT_TRUE(healthCheckCalled->load());
+}
+
+// Regression test for C18: user callbacks must not be invoked while callbacksMutex_
+// is held — a callback that re-enters the callback API would deadlock.
+TEST_F(AxonVexSystemTest, HealthCheckCallbackReentrantRegistration) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto innerId = std::make_shared<std::atomic<uint32_t>>(0);
+    AxonVexSystem* sys = system_.get();
+
+    system_->registerHealthCheckCallback([sys, innerId]() -> SystemHealth {
+        // Re-entrant use of the callback API from inside a callback
+        uint32_t id = sys->registerHealthCheckCallback([]() -> SystemHealth {
+            SystemHealth h;
+            h.overallStatus = SystemHealth::Status::HEALTHY;
+            return h;
+        });
+        innerId->store(id);
+        SystemHealth h;
+        h.overallStatus = SystemHealth::Status::HEALTHY;
+        return h;
+    });
+
+    std::atomic<bool> done{false};
+    std::thread worker([&done, sys] {
+        sys->performHealthCheck();
+        done.store(true);
+    });
+
+    // Poll with timeout: before the C18 fix this deadlocks and never completes.
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(10ms);
+    }
+
+    // Detach on the failure path: destroying a joinable thread calls std::terminate,
+    // which would abort the whole binary instead of reporting this test's failure.
+    if (!done.load()) {
+        worker.detach();
+    }
+    ASSERT_TRUE(done.load())
+        << "performHealthCheck deadlocked: callbacks invoked under callbacksMutex_ (C18)";
+    worker.join();
+    EXPECT_GT(innerId->load(), 0u);
 }
 
 // =================================================================

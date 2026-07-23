@@ -521,45 +521,51 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         auto executionTime =
             std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
 
-        std::lock_guard<std::mutex> lock(statsMutex_);
-        statistics_.totalExecutions++; // Count failed executions in total
-        statistics_.failedExecutions++;
-        statistics_.totalExecutionTime += executionTime;
-
-        // Update task statistics for failed execution
-        task.executionCount++;
-        task.totalExecutionTime += executionTime;
-        task.consecutiveFailures++;
-        task.lastFailureTime = executionEnd;
-
-        // Temporarily deactivate task if too many consecutive failures
         const uint64_t MAX_CONSECUTIVE_FAILURES = 10;
-        const auto FAILURE_BACKOFF_TIME = std::chrono::milliseconds(100);
+        bool deactivated = false;
+        uint64_t consecutiveFailures = 0;
 
-        if (task.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-            task.active.store(false);
-            task.reactivationTime = executionEnd + FAILURE_BACKOFF_TIME;
+        {
+            std::lock_guard<std::mutex> lock(statsMutex_);
+            statistics_.totalExecutions++; // Count failed executions in total
+            statistics_.failedExecutions++;
+            statistics_.totalExecutionTime += executionTime;
 
-            // Log task deactivation
-            if (errorCallback_) {
+            // Update task statistics for failed execution
+            task.executionCount++;
+            task.totalExecutionTime += executionTime;
+            task.consecutiveFailures++;
+            task.lastFailureTime = executionEnd;
+            consecutiveFailures = task.consecutiveFailures;
+
+            // Temporarily deactivate task if too many consecutive failures
+            const auto FAILURE_BACKOFF_TIME = std::chrono::milliseconds(100);
+            if (task.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                task.active.store(false);
+                task.reactivationTime = executionEnd + FAILURE_BACKOFF_TIME;
+                deactivated = true;
+            }
+
+            if (hasDeadlinePassed(task)) {
+                statistics_.missedDeadlines++;
+                task.missedDeadlines++;
+            }
+        }
+
+        // User callback + I/O outside statsMutex_ (C18). Still under the caller's
+        // tasksMutex_ — removing that hold is C1's scheduler-loop fix.
+        if (errorCallback_) {
+            if (deactivated) {
                 std::string msg = "Task temporarily deactivated after " +
                                   std::to_string(MAX_CONSECUTIVE_FAILURES) +
                                   " consecutive failures: " + e.what();
                 errorCallback_(task.unit, msg.c_str());
             }
-        }
-
-        // Notify error callback if available
-        if (errorCallback_) {
             errorCallback_(task.unit, e.what());
-        }
-        if (hasDeadlinePassed(task)) {
-            statistics_.missedDeadlines++;
-            task.missedDeadlines++;
         }
 
         // Log error if debugging is enabled (but throttled)
-        if (task.consecutiveFailures <= MAX_CONSECUTIVE_FAILURES) {
+        if (consecutiveFailures <= MAX_CONSECUTIVE_FAILURES) {
             std::cerr << "Task execution failed: " << e.what() << std::endl;
         }
     }
