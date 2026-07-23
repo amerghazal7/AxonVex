@@ -62,8 +62,8 @@ TEST_F(MemoryPoolTest, Construction) {
     EXPECT_EQ(pool.getCapacity(), 1024); // Default capacity
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 1024);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
     EXPECT_DOUBLE_EQ(pool.getUtilization(), 0.0);
 }
 
@@ -73,8 +73,8 @@ TEST_F(MemoryPoolTest, CustomCapacityConstruction) {
     EXPECT_EQ(pool.getCapacity(), 512);
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 512);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
 
     // Test power-of-2 rounding
     MemoryPool<int> pool2(500);
@@ -102,8 +102,10 @@ TEST_F(MemoryPoolTest, BasicAllocationDeallocation) {
     EXPECT_TRUE(pool.deallocate(ptr));
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 64);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    // C4 fix: an unused/cleared pool is empty, not full (these assertions previously encoded the
+    // swapped semantics)
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
     EXPECT_DOUBLE_EQ(pool.getUtilization(), 0.0);
 }
 
@@ -155,8 +157,8 @@ TEST_F(MemoryPoolTest, PoolExhaustion) {
 
     EXPECT_EQ(pool.getUsage(), 16);
     EXPECT_EQ(pool.getAvailable(), 0);
-    EXPECT_FALSE(pool.isFull());
-    EXPECT_TRUE(pool.isEmpty());
+    EXPECT_TRUE(pool.isFull());
+    EXPECT_FALSE(pool.isEmpty());
     EXPECT_DOUBLE_EQ(pool.getUtilization(), 1.0);
 
     // Try to allocate more (should fail)
@@ -176,8 +178,8 @@ TEST_F(MemoryPoolTest, PoolExhaustion) {
 
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 16);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
 }
 
 // Test invalid pointer deallocation
@@ -328,8 +330,10 @@ TEST_F(MemoryPoolTest, ClearOperation) {
 
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 64);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    // C4 fix: an unused/cleared pool is empty, not full (these assertions previously encoded the
+    // swapped semantics)
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
     EXPECT_DOUBLE_EQ(pool.getUtilization(), 0.0);
 }
 
@@ -546,4 +550,26 @@ TEST_F(MemoryPoolTest, ErrorHandling) {
     // Check error statistics
     const auto& stats = pool.getStatistics();
     EXPECT_EQ(stats.getDeallocationFailures(), 6); // 5 null + 1 double deallocation
+}
+
+// Regression test for defect C4: isEmpty()/isFull() bodies were swapped.
+TEST_F(MemoryPoolTest, EmptyFullPredicates) {
+    MemoryPool<int> pool(4);
+    EXPECT_TRUE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
+
+    std::vector<int*> ptrs;
+    for (size_t i = 0; i < pool.getCapacity(); ++i) {
+        int* p = pool.allocate();
+        ASSERT_NE(p, nullptr);
+        ptrs.push_back(p);
+    }
+    EXPECT_FALSE(pool.isEmpty());
+    EXPECT_TRUE(pool.isFull());
+
+    for (int* p : ptrs) {
+        pool.deallocate(p);
+    }
+    EXPECT_TRUE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
 }

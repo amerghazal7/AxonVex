@@ -1,8 +1,8 @@
 #pragma once
 
-#include <axonvex_interfaces/protocolInterface.hpp>
-#include <atomic>
 #include <array>
+#include <atomic>
+#include <axonvex_interfaces/protocolInterface.hpp>
 #include <condition_variable>
 #include <mutex>
 #include <string>
@@ -28,7 +28,8 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         : host_(std::move(host)), port_(port) {}
 
     bool start() override {
-        if (running_.load()) return true;
+        if (running_.load())
+            return true;
 #if defined(AXONVEX_PLATFORM_LINUX)
         if (!connectSocket()) {
             reportError("tcp: failed to connect to " + host_ + ":" + std::to_string(port_));
@@ -50,7 +51,8 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
     }
 
     void stop() override {
-        if (!running_.load()) return;
+        if (!running_.load())
+            return;
         running_.store(false);
 #if defined(AXONVEX_PLATFORM_LINUX)
         // Wake recv thread and close socket
@@ -60,18 +62,22 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
             sock_ = -1;
         }
 #endif
-        if (worker_.joinable()) worker_.join();
+        if (worker_.joinable())
+            worker_.join();
     }
 
-    bool isRunning() const override { return running_.load(); }
+    bool isRunning() const override {
+        return running_.load();
+    }
 
     bool send(const std::vector<uint8_t>& data) override {
 #if defined(AXONVEX_PLATFORM_LINUX)
-        if (sock_ < 0) return false;
+        if (sock_ < 0)
+            return false;
         // Send data plus a newline as frame delimiter
         ssize_t total = 0;
         if (!data.empty()) {
-            ssize_t n = ::send(sock_, data.data(), data.size(), 0);
+            ssize_t n = ::send(sock_, data.data(), data.size(), MSG_NOSIGNAL);
             if (n < 0) {
                 reportError("tcp: send failed: " + std::string(strerror(errno)));
                 return false;
@@ -79,7 +85,7 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
             total += n;
         }
         const char nl = '\n';
-        if (::send(sock_, &nl, 1, 0) < 0) {
+        if (::send(sock_, &nl, 1, MSG_NOSIGNAL) < 0) {
             reportError("tcp: send delimiter failed: " + std::string(strerror(errno)));
             return false;
         }
@@ -134,7 +140,10 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
             struct FnAdapter : public ErrorHandler {
                 ErrorCallback fn;
                 explicit FnAdapter(ErrorCallback f) : fn(std::move(f)) {}
-                void callbackPerform(const std::string s) override { if (fn) fn(s); }
+                void callbackPerform(const std::string s) override {
+                    if (fn)
+                        fn(s);
+                }
             };
             errorAdapter_ = std::make_unique<FnAdapter>(std::move(cb));
             this->registerErrorHandler(defaultKey(), errorAdapter_.get());
@@ -157,34 +166,48 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
     }
 
     bool configure(const std::string& key, const std::string& value) override {
-        if (key == "host") { host_ = value; return true; }
+        if (key == "host") {
+            host_ = value;
+            return true;
+        }
         if (key == "port") {
-            try { port_ = static_cast<uint16_t>(std::stoul(value)); return true; }
-            catch (...) { return false; }
+            try {
+                port_ = static_cast<uint16_t>(std::stoul(value));
+                return true;
+            } catch (...) { return false; }
         }
         return false;
     }
 
-    ProtocolStatistics getStatistics() const override { return stats_; }
+    ProtocolStatistics getStatistics() const override {
+        return stats_;
+    }
 
   private:
-    static constexpr const char* defaultKey() { return "default"; }
+    static constexpr const char* defaultKey() {
+        return "default";
+    }
 
 #if defined(AXONVEX_PLATFORM_LINUX)
     bool connectSocket() {
         // Create socket
         sock_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (sock_ < 0) return false;
+        if (sock_ < 0)
+            return false;
 
         // Resolve host
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port_);
         if (::inet_pton(AF_INET, host_.c_str(), &addr.sin_addr) <= 0) {
-            ::close(sock_); sock_ = -1; return false;
+            ::close(sock_);
+            sock_ = -1;
+            return false;
         }
         if (::connect(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            ::close(sock_); sock_ = -1; return false;
+            ::close(sock_);
+            sock_ = -1;
+            return false;
         }
         return true;
     }
@@ -200,7 +223,8 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
                 break;
             }
             if (n < 0) {
-                if (errno == EINTR) continue;
+                if (errno == EINTR)
+                    continue;
                 reportError(std::string("tcp: recv error: ") + strerror(errno));
                 break;
             }

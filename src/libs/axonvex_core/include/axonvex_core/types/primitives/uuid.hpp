@@ -1,16 +1,16 @@
 #pragma once
 
-#include <string>
+#include <algorithm>
+#include <cstdint>
+#include <iomanip>
 #include <random>
 #include <sstream>
-#include <iomanip>
-#include <cstdint>
-#include <algorithm>
+#include <string>
 
 namespace axonvex::types::primitives {
 
 class UUID {
-public:
+  public:
     // Constructs an empty (invalid) UUID
     UUID() : high_(0), low_(0) {}
     UUID(uint64_t high, uint64_t low) : high_(high), low_(low) {}
@@ -23,9 +23,9 @@ public:
         uint64_t h = dist(gen);
         uint64_t l = dist(gen);
         // Set UUID version (v4) and variant bits
-        // Version: set 4 high bits of time_hi_and_version
-        l &= 0xFFFFFFFFFFFF0FFFULL;
-        l |= 0x0000000000004000ULL;
+        // Version: top nibble of time_hi_and_version, which toString() reads from high_ & 0xFFFF
+        h &= 0xFFFFFFFFFFFF0FFFULL;
+        h |= 0x0000000000004000ULL;
         // Variant: 10xx in the high bits of clock_seq_hi_and_reserved
         l &= 0x3FFFFFFFFFFFFFFFULL;
         l |= 0x8000000000000000ULL;
@@ -37,19 +37,24 @@ public:
         std::string hex;
         hex.reserve(32);
         for (char c : s) {
-            if (c == '-' || c == '{' || c == '}') continue;
+            if (c == '-' || c == '{' || c == '}')
+                continue;
             hex.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
         }
-        if (hex.size() != 32) return UUID();
+        if (hex.size() != 32)
+            return UUID();
         auto nibble = [](char c) -> int {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'a' && c <= 'f')
+                return 10 + (c - 'a');
             return -1;
         };
-        uint64_t parts[2] {0, 0};
+        uint64_t parts[2]{0, 0};
         for (size_t i = 0; i < 32; ++i) {
             int n = nibble(hex[i]);
-            if (n < 0) return UUID();
+            if (n < 0)
+                return UUID();
             size_t idx = (i < 16) ? 0 : 1;
             parts[idx] = (parts[idx] << 4) | static_cast<uint64_t>(n);
         }
@@ -59,9 +64,7 @@ public:
     std::string toString(bool withHyphens = true) const {
         std::ostringstream oss;
         oss << std::hex << std::setfill('0') << std::nouppercase;
-        auto write64 = [&](uint64_t v) {
-            oss << std::setw(16) << v;
-        };
+        auto write64 = [&](uint64_t v) { oss << std::setw(16) << v; };
         // Compose canonical 8-4-4-4-12 from the two 64-bit values
         // Extract 32 high bits of high_, then 16, 16, 16 from low_/high_, then 48 from low_
         uint32_t time_low = static_cast<uint32_t>(high_ >> 32);
@@ -71,32 +74,48 @@ public:
         uint64_t node = (low_ & 0x0000FFFFFFFFFFFFULL);
 
         auto write_hex = [&](uint64_t v, int width) {
-            oss << std::setw(width) << (v & ((width >= 16) ? 0xFFFFFFFFFFFFFFFFULL : ((1ULL << (width*4)) - 1)));
+            oss << std::setw(width)
+                << (v & ((width >= 16) ? 0xFFFFFFFFFFFFFFFFULL : ((1ULL << (width * 4)) - 1)));
         };
 
         write_hex(time_low, 8);
-        if (withHyphens) oss << '-';
+        if (withHyphens)
+            oss << '-';
         write_hex(time_mid, 4);
-        if (withHyphens) oss << '-';
+        if (withHyphens)
+            oss << '-';
         write_hex(time_hi_and_version, 4);
-        if (withHyphens) oss << '-';
+        if (withHyphens)
+            oss << '-';
         write_hex(clock_seq, 4);
-        if (withHyphens) oss << '-';
+        if (withHyphens)
+            oss << '-';
         write_hex(node, 12);
         return oss.str();
     }
 
-    bool isValid() const { return high_ != 0 || low_ != 0; }
-
-    bool operator==(const UUID& other) const { return high_ == other.high_ && low_ == other.low_; }
-    bool operator!=(const UUID& other) const { return !(*this == other); }
-    bool operator<(const UUID& other) const { return (high_ < other.high_) || (high_ == other.high_ && low_ < other.low_); }
-
-    uint64_t high() const { return high_;
+    bool isValid() const {
+        return high_ != 0 || low_ != 0;
     }
-    uint64_t low() const { return low_; }
 
-private:
+    bool operator==(const UUID& other) const {
+        return high_ == other.high_ && low_ == other.low_;
+    }
+    bool operator!=(const UUID& other) const {
+        return !(*this == other);
+    }
+    bool operator<(const UUID& other) const {
+        return (high_ < other.high_) || (high_ == other.high_ && low_ < other.low_);
+    }
+
+    uint64_t high() const {
+        return high_;
+    }
+    uint64_t low() const {
+        return low_;
+    }
+
+  private:
     uint64_t high_;
     uint64_t low_;
 };
