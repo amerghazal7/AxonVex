@@ -101,6 +101,7 @@ if(BUILD_TESTING)
             tests/plugins/pluginSample.cpp
             tests/safety/watchdogTest.cpp
             tests/safety/safetyManagerTest.cpp
+            tests/safety/systemSafetyTest.cpp
             tests/interfaces/protocolInterfacesContractTest.cpp
             tests/core/interfaceUnitsTest.cpp
             tests/core/missionTest.cpp

@@ -1,10 +1,10 @@
 #pragma once
 
-#include <axonvex_core/caller.hpp>
-#include <axonvex_core/callback.hpp>
-#include <axonvex_safety/safetyPolicy.hpp>
-
 #include <atomic>
+#include <axonvex_core/callback.hpp>
+#include <axonvex_core/caller.hpp>
+#include <axonvex_core/safetyHook.hpp>
+#include <axonvex_safety/safetyPolicy.hpp>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -34,7 +34,7 @@ struct SafetyManagerStatistics {
  * The evaluation loop runs on a dedicated thread (like Watchdog). Call
  * start() after adding policies and stop() before destruction.
  */
-class SafetyManager {
+class SafetyManager : public axonvex::core::SafetyHook {
   public:
     using Duration = std::chrono::milliseconds;
     using Handler = axonvex::core::Callback<SafetyEvent>;
@@ -42,7 +42,9 @@ class SafetyManager {
     explicit SafetyManager(Duration evaluationPeriod = Duration(100))
         : evaluationPeriod_(evaluationPeriod) {}
 
-    ~SafetyManager() { stop(); }
+    ~SafetyManager() {
+        stop();
+    }
 
     SafetyManager(const SafetyManager&) = delete;
     SafetyManager& operator=(const SafetyManager&) = delete;
@@ -52,25 +54,31 @@ class SafetyManager {
     // -----------------------------------------------------------------
 
     bool start() {
-        if (running_.exchange(true)) return true;
+        if (running_.exchange(true))
+            return true;
         emergencyStopped_.store(false);
         worker_ = std::thread([this]() { evaluationLoop(); });
         return true;
     }
 
     void stop() {
-        if (!running_.exchange(false)) return;
-        if (worker_.joinable()) worker_.join();
+        if (!running_.exchange(false))
+            return;
+        if (worker_.joinable())
+            worker_.join();
     }
 
-    bool isRunning() const { return running_.load(); }
+    bool isRunning() const {
+        return running_.load();
+    }
 
     // -----------------------------------------------------------------
     // E-stop
     // -----------------------------------------------------------------
 
     void triggerEmergencyStop(const std::string& reason) {
-        if (emergencyStopped_.exchange(true)) return;
+        if (emergencyStopped_.exchange(true))
+            return;
 
         {
             std::lock_guard<std::mutex> lock(statsMutex_);
@@ -84,10 +92,24 @@ class SafetyManager {
         event.description = "E-STOP: " + reason;
         event.timestamp = std::chrono::steady_clock::now();
         caller_.callCallbacksSafe(event);
+
+        // Fire the core SafetyHook emergency callback (C2). Deliberately invoked
+        // UNDER emergencyCallbackMutex_ (unlike user handlers): the mutex makes
+        // setEmergencyCallback(nullptr) block until an in-flight dispatch
+        // finishes, so the system can safely tear down after clearing the hook.
+        // No deadlock: the callback never re-enters this manager (a re-entrant
+        // triggerEmergencyStop early-returns on emergencyStopped_ above).
+        {
+            std::lock_guard<std::mutex> lock(emergencyCallbackMutex_);
+            if (emergencyCallback_) {
+                emergencyCallback_(reason);
+            }
+        }
     }
 
     bool resetEmergencyStop() {
-        if (!emergencyStopped_.load()) return false;
+        if (!emergencyStopped_.load())
+            return false;
         emergencyStopped_.store(false);
 
         SafetyEvent event;
@@ -99,14 +121,22 @@ class SafetyManager {
         return true;
     }
 
-    bool isEmergencyStopped() const { return emergencyStopped_.load(); }
+    bool isEmergencyStopped() const override {
+        return emergencyStopped_.load();
+    }
+
+    void setEmergencyCallback(core::SafetyHook::EmergencyCallback callback) override {
+        std::lock_guard<std::mutex> lock(emergencyCallbackMutex_);
+        emergencyCallback_ = std::move(callback);
+    }
 
     // -----------------------------------------------------------------
     // Policy management
     // -----------------------------------------------------------------
 
     void addPolicy(std::unique_ptr<SafetyPolicy> policy) {
-        if (!policy) return;
+        if (!policy)
+            return;
         std::lock_guard<std::mutex> lock(policiesMutex_);
         const std::string& name = policy->getName();
         policies_[name] = std::move(policy);
@@ -148,7 +178,8 @@ class SafetyManager {
         std::lock_guard<std::mutex> lock(policiesMutex_);
         for (auto& kv : policies_) {
             SafetyPolicy* policy = kv.second.get();
-            if (!policy || !policy->isEnabled()) continue;
+            if (!policy || !policy->isEnabled())
+                continue;
 
             PolicyResult result = policy->evaluate();
             if (result.level > worst) {
@@ -189,8 +220,12 @@ class SafetyManager {
     // Event handlers
     // -----------------------------------------------------------------
 
-    void registerHandler(Handler* handler) { caller_.registerCallback(handler); }
-    bool unregisterHandler(Handler* handler) { return caller_.unregisterCallback(handler); }
+    void registerHandler(Handler* handler) {
+        caller_.registerCallback(handler);
+    }
+    bool unregisterHandler(Handler* handler) {
+        return caller_.unregisterCallback(handler);
+    }
 
     // -----------------------------------------------------------------
     // Configuration
@@ -236,6 +271,10 @@ class SafetyManager {
     axonvex::core::Caller<SafetyEvent> caller_;
 
     mutable std::mutex statsMutex_;
+
+    // Core SafetyHook emergency callback (C2)
+    core::SafetyHook::EmergencyCallback emergencyCallback_;
+    mutable std::mutex emergencyCallbackMutex_;
     SafetyManagerStatistics stats_;
 };
 

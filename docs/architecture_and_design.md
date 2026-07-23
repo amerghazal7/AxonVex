@@ -67,7 +67,7 @@ flowchart TD
 - ROS 2 plugin: ROS2Adapter with typed unit creation + type caster registry (`axonvex_ros2`)
 - System adapter injection: `addAdapter()` / `getAdapter()` on AxonVexSystem
 - Mission runtime: `MissionElement` + `MissionPipeline` (PU) with graph-based execution control
-- Safety envelope: `SafetyManager` with policy registry, e-stop, periodic evaluation, event notification
+- Safety envelope: `SafetyManager` with policy registry, e-stop, periodic evaluation, event notification; wired to `AxonVexSystem` via the core-owned `core::SafetyHook` interface (e-stop triggers emergency shutdown) so core never depends on the safety layer
 - Plugin system, safety primitives (Watchdog), I/O, telemetry bus
 - Unit-test harness: 364 tests (`tests/`, CTest/GTest)
 

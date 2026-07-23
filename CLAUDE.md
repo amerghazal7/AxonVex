@@ -34,7 +34,7 @@ Rules:
 
 ## Architecture rules (non-negotiable)
 
-1. **Layering:** `axonvex_core` depends on nothing internal. All other libs (`interfaces`, `adapters`, `plugins`, `safety`, `io`, `visualization`, ROS2 plugin) depend only on `axonvex_core` (+ external SDKs). Core headers must not name upper-layer types (the `SafetyManager` forward-decl in `system.hpp` is a known violation being fixed via a core-owned hook interface — don't replicate the pattern).
+1. **Layering:** `axonvex_core` depends on nothing internal. All other libs (`interfaces`, `adapters`, `plugins`, `safety`, `io`, `visualization`, ROS2 plugin) depend only on `axonvex_core` (+ external SDKs). Core headers must not name upper-layer types (the old `SafetyManager` forward-decl in `system.hpp` was fixed via the core-owned `core::SafetyHook` interface — follow that pattern, don't reintroduce upper-layer names in core).
 2. **RT-path invariant:** on scheduler/port hot paths — **no locks, no heap allocation, no string building, no I/O, no user callbacks**. Defer everything to the event thread. Any exception needs a comment naming the ceiling and a benchmark showing the cost.
 3. **Never invoke user callbacks while holding a lock.** Snapshot under the lock, release, then dispatch. This exact bug exists in 4+ places (C12, C18) — do not add a fifth.
 4. **No god classes.** New system-level responsibilities go into collaborators (`LifecycleController`, `UnitRegistry`, `SystemPortRegistry`, `EventBus`, `HealthMonitor` post-Phase-2), never into `AxonVexSystem` directly.
