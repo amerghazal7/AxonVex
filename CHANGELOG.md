@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project rules: `CLAUDE.md` and `.cursor/rules` (graphify-first codebase navigation, project conventions).
 - Regression tests for C4, C16, and C17.
 - Regression test for C18 (re-entrant health-check callback registration must not deadlock).
+- Regression tests for C1 (all ready tasks execute each scheduler cycle; removing a task mid-execution is safe).
 
 ### Fixed
 
@@ -21,4 +22,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - C16: `optional<>` move semantics now match `std::optional` (moved-from source stays engaged).
 - C17: UUID v4 version bits applied to the correct 64-bit half — generated strings are RFC-4122-compliant.
 - C23: `nextPowerOf2` `value >> 32` undefined behavior on 32-bit `size_t` removed (all 3 copies).
+- C1: the scheduler now executes every ready task each cycle (previously one per tick — with tick ≈ period, same-priority tasks starved entirely) and runs user code without holding `tasksMutex_`; `removeTask`/`removeAllTasks` defer pool deallocation while a task is mid-execution; `addTask`'s pool-exhaustion callback moved outside the lock.
 - C18: user callbacks are no longer invoked while holding locks — `performHealthCheck` and the event loop snapshot callbacks under `callbacksMutex_` and dispatch outside it; the scheduler's task-error callback and `std::cerr` moved outside `statsMutex_`. Fixed the unsynchronized `lastHealth_` read in the monitoring loop (member deleted; loop keeps a local timer) — this was the root cause of the intermittent `HealthCheckCallbacks` segfault (dangling stack write over a return address). Note: the first periodic health check now fires one `healthCheckInterval` after monitoring starts instead of immediately.

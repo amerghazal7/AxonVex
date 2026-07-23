@@ -42,12 +42,13 @@ uint32_t RealTimeScheduler::addTask(ProcessingUnit* unit, const TimingConstraint
         return 0; // Invalid task ID
     }
 
-    std::lock_guard<std::mutex> lock(tasksMutex_);
+    std::unique_lock<std::mutex> lock(tasksMutex_);
 
     // Allocate a new task from the memory pool
     SchedulerTask* task = taskPool_->allocateObject();
     if (!task) {
-        // Handle pool exhaustion
+        // Handle pool exhaustion — user callback runs outside the lock (C18 rule)
+        lock.unlock();
         if (errorCallback_) {
             errorCallback_(nullptr, "Task pool exhausted");
         }
@@ -78,8 +79,14 @@ bool RealTimeScheduler::removeTask(uint32_t taskId) {
     if (it != tasks_.end()) {
         SchedulerTask* task = it->second;
         task->active.store(false);
-        taskPool_->deallocateObject(task); // Deallocate back to the pool
         tasks_.erase(it);
+        if (task->executing.load()) {
+            // Mid-execution on the scheduler thread: defer deallocation to the
+            // scheduler loop, which checks pendingRemoval under tasksMutex_ (C1)
+            task->pendingRemoval.store(true);
+        } else {
+            taskPool_->deallocateObject(task); // Deallocate back to the pool
+        }
         return true;
     }
     return false;
@@ -88,8 +95,14 @@ bool RealTimeScheduler::removeTask(uint32_t taskId) {
 void RealTimeScheduler::removeAllTasks() {
     std::lock_guard<std::mutex> lock(tasksMutex_);
     for (auto& pair : tasks_) {
-        pair.second->active.store(false);
-        taskPool_->deallocateObject(pair.second);
+        SchedulerTask* task = pair.second;
+        task->active.store(false);
+        if (task->executing.load()) {
+            // Same deferral as removeTask: the scheduler loop deallocates (C1)
+            task->pendingRemoval.store(true);
+        } else {
+            taskPool_->deallocateObject(task);
+        }
     }
     tasks_.clear();
 }
@@ -274,27 +287,8 @@ void RealTimeScheduler::schedulerLoop() {
 
         nextWakeup = now + timerResolution_;
 
-        // Select next task to execute based on scheduling policy
-        uint32_t selectedTaskId = 0;
-        switch (policy_) {
-            case SchedulingPolicy::ROUND_ROBIN:
-                selectedTaskId = scheduleRoundRobin();
-                break;
-            case SchedulingPolicy::PRIORITY_BASED:
-                selectedTaskId = schedulePriorityBased();
-                break;
-            case SchedulingPolicy::EARLIEST_DEADLINE_FIRST:
-                selectedTaskId = scheduleEarliestDeadlineFirst();
-                break;
-            case SchedulingPolicy::RATE_MONOTONIC:
-                selectedTaskId = scheduleRateMonotonic();
-                break;
-            case SchedulingPolicy::CUSTOM:
-                selectedTaskId = scheduleCustom();
-                break;
-        }
-
         // Check for tasks that need reactivation
+        size_t taskCount = 0;
         {
             std::lock_guard<std::mutex> lock(tasksMutex_);
             for (auto& kv : tasks_) {
@@ -305,14 +299,62 @@ void RealTimeScheduler::schedulerLoop() {
                     task->consecutiveFailures = 0; // Reset failure count on reactivation
                 }
             }
+            taskCount = tasks_.size();
         }
 
-        // Execute selected task
-        if (selectedTaskId != 0) {
-            std::lock_guard<std::mutex> lock(tasksMutex_);
-            auto it = tasks_.find(selectedTaskId);
-            if (it != tasks_.end() && it->second->active.load()) {
-                executeTask(*it->second);
+        // Execute every ready task this cycle, not just one (C1). Each task is
+        // claimed (executing=true) under tasksMutex_ and its user code then runs
+        // WITHOUT the lock, so addTask/removeTask/getters are never blocked by
+        // user code. The hard cap of taskCount iterations guarantees termination;
+        // note an overloaded task (execution time > period) can be reselected
+        // within one cycle and consume several iterations before the cap hits.
+        for (size_t executed = 0; executed < taskCount && running_.load(); ++executed) {
+            uint32_t selectedTaskId = 0;
+            switch (policy_) {
+                case SchedulingPolicy::ROUND_ROBIN:
+                    selectedTaskId = scheduleRoundRobin();
+                    break;
+                case SchedulingPolicy::PRIORITY_BASED:
+                    selectedTaskId = schedulePriorityBased();
+                    break;
+                case SchedulingPolicy::EARLIEST_DEADLINE_FIRST:
+                    selectedTaskId = scheduleEarliestDeadlineFirst();
+                    break;
+                case SchedulingPolicy::RATE_MONOTONIC:
+                    selectedTaskId = scheduleRateMonotonic();
+                    break;
+                case SchedulingPolicy::CUSTOM:
+                    selectedTaskId = scheduleCustom();
+                    break;
+            }
+
+            if (selectedTaskId == 0) {
+                break; // No more ready tasks this cycle
+            }
+
+            SchedulerTask* task = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(tasksMutex_);
+                auto it = tasks_.find(selectedTaskId);
+                if (it != tasks_.end() && it->second->active.load() &&
+                    !it->second->executing.load()) {
+                    task = it->second;
+                    task->executing.store(true); // Claim before releasing the lock
+                }
+            }
+
+            if (task != nullptr) {
+                executeTask(*task);
+
+                // Release the claim under the lock. removeTask only defers
+                // deallocation (pendingRemoval) while executing is true and only
+                // reads/writes these flags under tasksMutex_, so exactly one side
+                // deallocates and never while the other still uses the task.
+                std::lock_guard<std::mutex> lock(tasksMutex_);
+                task->executing.store(false);
+                if (task->pendingRemoval.load()) {
+                    taskPool_->deallocateObject(task);
+                }
             }
         }
 
@@ -455,11 +497,8 @@ uint32_t RealTimeScheduler::scheduleCustom() {
 }
 
 void RealTimeScheduler::executeTask(SchedulerTask& task) {
-    if (task.executing.load()) {
-        return; // Already executing
-    }
-
-    task.executing.store(true);
+    // Precondition: the caller (scheduler loop) has already claimed the task
+    // (executing=true under tasksMutex_) and releases the claim afterwards.
     auto executionStart = std::chrono::steady_clock::now();
 
     try {
@@ -474,13 +513,23 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         auto executionTime =
             std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
 
-        // Update task statistics
-        updateTaskStatistics(task, executionTime);
+        // Task bookkeeping under tasksMutex_: user code above runs unlocked, but
+        // constraints/nextExecution/lastExecution race updateTaskConstraints()
+        // on user threads without it. Lock order: tasksMutex_ before statsMutex_.
+        bool missedDeadline = false;
+        {
+            std::lock_guard<std::mutex> lock(tasksMutex_);
+            updateTaskStatistics(task, executionTime);
 
-        // Update next execution time
-        task.lastExecution = executionStart;
-        task.nextExecution = calculateNextExecution(task);
-        task.consecutiveFailures = 0; // Reset failure count on successful execution
+            // Update next execution time
+            task.lastExecution = executionStart;
+            task.nextExecution = calculateNextExecution(task);
+            task.consecutiveFailures = 0; // Reset failure count on successful execution
+
+            // Evaluated AFTER nextExecution advances (original semantics): checks
+            // the upcoming slot, not the one that just ran
+            missedDeadline = hasDeadlinePassed(task);
+        }
 
         // Update global statistics
         {
@@ -509,8 +558,7 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
                 }
             }
 
-            // Check for deadline miss
-            if (hasDeadlinePassed(task)) {
+            if (missedDeadline) {
                 statistics_.missedDeadlines++;
             }
         }
@@ -523,15 +571,14 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
 
         const uint64_t MAX_CONSECUTIVE_FAILURES = 10;
         bool deactivated = false;
+        bool missedDeadline = false;
         uint64_t consecutiveFailures = 0;
 
+        // Task bookkeeping under tasksMutex_ (races updateTaskConstraints
+        // otherwise), then global stats under statsMutex_ — same order as the
+        // success path (tasksMutex_ before statsMutex_).
         {
-            std::lock_guard<std::mutex> lock(statsMutex_);
-            statistics_.totalExecutions++; // Count failed executions in total
-            statistics_.failedExecutions++;
-            statistics_.totalExecutionTime += executionTime;
-
-            // Update task statistics for failed execution
+            std::lock_guard<std::mutex> lock(tasksMutex_);
             task.executionCount++;
             task.totalExecutionTime += executionTime;
             task.consecutiveFailures++;
@@ -546,14 +593,23 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
                 deactivated = true;
             }
 
-            if (hasDeadlinePassed(task)) {
-                statistics_.missedDeadlines++;
+            missedDeadline = hasDeadlinePassed(task);
+            if (missedDeadline) {
                 task.missedDeadlines++;
             }
         }
 
-        // User callback + I/O outside statsMutex_ (C18). Still under the caller's
-        // tasksMutex_ — removing that hold is C1's scheduler-loop fix.
+        {
+            std::lock_guard<std::mutex> lock(statsMutex_);
+            statistics_.totalExecutions++; // Count failed executions in total
+            statistics_.failedExecutions++;
+            statistics_.totalExecutionTime += executionTime;
+            if (missedDeadline) {
+                statistics_.missedDeadlines++;
+            }
+        }
+
+        // User callback + I/O with no locks held (C18/C1)
         if (errorCallback_) {
             if (deactivated) {
                 std::string msg = "Task temporarily deactivated after " +
@@ -569,8 +625,7 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
             std::cerr << "Task execution failed: " << e.what() << std::endl;
         }
     }
-
-    task.executing.store(false);
+    // executing is cleared by the scheduler loop under tasksMutex_ (see schedulerLoop)
 }
 
 void RealTimeScheduler::updateTaskStatistics(SchedulerTask& task,
