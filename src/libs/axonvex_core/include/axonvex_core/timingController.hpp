@@ -1,8 +1,8 @@
 #pragma once
 
 #include <atomic>
-#include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <axonvex_core/precisionTimer.hpp>
+#include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <axonvex_core/utils/containers/threadSafeQueue.hpp>
 #include <chrono>
 #include <condition_variable>
@@ -101,6 +101,10 @@ struct SchedulerTask {
     std::chrono::steady_clock::time_point lastExecution;
     std::atomic<bool> active{true};
     std::atomic<bool> executing{false};
+    // Set by removeTask when the task is mid-execution: the scheduler loop
+    // deallocates it after the execution finishes (C1). Deliberately not
+    // copied/moved by the special members — a copy is not the pool-owned object.
+    std::atomic<bool> pendingRemoval{false};
     uint32_t taskId{0};
     std::string name;
 

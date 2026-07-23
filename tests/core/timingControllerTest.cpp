@@ -381,6 +381,66 @@ TEST_F(TimingControllerTest, RoundRobinScheduling) {
     EXPECT_LE(maxCount - minCount, maxCount / 2); // Within 50% of each other
 }
 
+// Regression test for C1: the scheduler must execute ALL ready tasks each cycle,
+// not one. With tick == period, three same-priority tasks are all ready every
+// cycle; one-task-per-cycle caps total throughput at ~1/3 of the required rate.
+TEST_F(TimingControllerTest, AllReadyTasksExecutePerCycle) {
+    controller->setTimerResolution(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(10)));
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(10);
+    constraints.priority = SchedulerPriority::NORMAL;
+
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+    controller->scheduleProcessingUnit(unit2.get(), constraints);
+    controller->scheduleProcessingUnit(unit3.get(), constraints);
+
+    controller->start();
+
+    // Poll until every unit reaches the threshold (or 3s timeout). With tick ==
+    // period == 10ms all three should get there in ~350ms; one-task-per-cycle
+    // starves at least one unit forever, so the timeout is the failure path.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while ((unit1->getProcessCallCount() < 35u || unit2->getProcessCallCount() < 35u ||
+            unit3->getProcessCallCount() < 35u) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    controller->stop();
+
+    EXPECT_GE(unit1->getProcessCallCount(), 35u);
+    EXPECT_GE(unit2->getProcessCallCount(), 35u);
+    EXPECT_GE(unit3->getProcessCallCount(), 35u);
+}
+
+// Regression test for C1: removing a task while it executes must not destroy
+// the task out from under the scheduler (use-after-free guarded by ASan runs).
+TEST_F(TimingControllerTest, RemoveTaskDuringExecutionIsSafe) {
+    controller->setTimerResolution(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(1)));
+    unit1->setProcessingDelay(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(50)));
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+
+    uint32_t taskId = controller->scheduleProcessingUnit(unit1.get(), constraints);
+    EXPECT_GT(taskId, 0u);
+    controller->start();
+
+    // Poll until the unit has started executing at least once
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (unit1->getProcessCallCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_GT(unit1->getProcessCallCount(), 0u);
+
+    // Remove while (likely) mid-execution: must not crash or corrupt the pool
+    EXPECT_TRUE(controller->removeProcessingUnit(taskId));
+    controller->stop();
+}
+
 TEST_F(TimingControllerTest, CustomScheduling) {
     controller->setSchedulingPolicy(SchedulingPolicy::CUSTOM);
 
