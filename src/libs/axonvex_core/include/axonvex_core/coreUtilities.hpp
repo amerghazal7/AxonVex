@@ -42,7 +42,7 @@ constexpr size_t nextPowerOf2(size_t value) noexcept {
     value |= value >> 4;
     value |= value >> 8;
     value |= value >> 16;
-    value |= value >> 32;
+    value |= (value >> 16) >> 16; // two shifts: '>> 32' is UB when size_t is 32-bit
     return ++value;
 }
 

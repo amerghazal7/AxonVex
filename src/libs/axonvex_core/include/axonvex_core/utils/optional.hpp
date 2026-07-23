@@ -19,8 +19,12 @@ class optional {
     alignas(T) unsigned char storage_[sizeof(T)];
     bool engaged_{false};
 
-    T* ptr() noexcept { return reinterpret_cast<T*>(storage_); }
-    const T* ptr() const noexcept { return reinterpret_cast<const T*>(storage_); }
+    T* ptr() noexcept {
+        return reinterpret_cast<T*>(storage_);
+    }
+    const T* ptr() const noexcept {
+        return reinterpret_cast<const T*>(storage_);
+    }
 
     void destroy() noexcept {
         if (engaged_) {
@@ -41,22 +45,26 @@ class optional {
         }
     }
 
-    optional(optional&& o) noexcept(std::is_nothrow_move_constructible<T>::value) : engaged_(false) {
+    // Matches std::optional: the moved-from optional stays engaged, holding a moved-from T.
+    optional(optional&& o) noexcept(std::is_nothrow_move_constructible<T>::value)
+        : engaged_(false) {
         if (o.engaged_) {
             new (storage_) T(std::move(*o.ptr()));
             engaged_ = true;
-            o.destroy();
         }
     }
 
-    optional(const T& v) : engaged_(true) { new (storage_) T(v); }
+    optional(const T& v) : engaged_(true) {
+        new (storage_) T(v);
+    }
 
-    optional(T&& v) noexcept(std::is_nothrow_move_constructible<T>::value)
-        : engaged_(true) {
+    optional(T&& v) noexcept(std::is_nothrow_move_constructible<T>::value) : engaged_(true) {
         new (storage_) T(std::move(v));
     }
 
-    ~optional() { destroy(); }
+    ~optional() {
+        destroy();
+    }
 
     optional& operator=(nullopt_t) noexcept {
         destroy();
@@ -64,7 +72,8 @@ class optional {
     }
 
     optional& operator=(const optional& o) {
-        if (this == &o) return *this;
+        if (this == &o)
+            return *this;
         if (o.engaged_) {
             if (engaged_)
                 *ptr() = *o.ptr();
@@ -78,9 +87,10 @@ class optional {
         return *this;
     }
 
-    optional& operator=(optional&& o) noexcept(
-        std::is_nothrow_move_assignable<T>::value&& std::is_nothrow_move_constructible<T>::value) {
-        if (this == &o) return *this;
+    optional& operator=(optional&& o) noexcept(std::is_nothrow_move_assignable<T>::value &&
+                                               std::is_nothrow_move_constructible<T>::value) {
+        if (this == &o)
+            return *this;
         if (o.engaged_) {
             if (engaged_)
                 *ptr() = std::move(*o.ptr());
@@ -88,7 +98,6 @@ class optional {
                 new (storage_) T(std::move(*o.ptr()));
                 engaged_ = true;
             }
-            o.destroy();
         } else {
             destroy();
         }
@@ -115,24 +124,40 @@ class optional {
         return *this;
     }
 
-    void reset() noexcept { destroy(); }
+    void reset() noexcept {
+        destroy();
+    }
 
-    bool has_value() const noexcept { return engaged_; }
-    explicit operator bool() const noexcept { return engaged_; }
+    bool has_value() const noexcept {
+        return engaged_;
+    }
+    explicit operator bool() const noexcept {
+        return engaged_;
+    }
 
-    T& operator*() noexcept { return *ptr(); }
-    const T& operator*() const noexcept { return *ptr(); }
+    T& operator*() noexcept {
+        return *ptr();
+    }
+    const T& operator*() const noexcept {
+        return *ptr();
+    }
 
-    T* operator->() noexcept { return ptr(); }
-    const T* operator->() const noexcept { return ptr(); }
+    T* operator->() noexcept {
+        return ptr();
+    }
+    const T* operator->() const noexcept {
+        return ptr();
+    }
 
     T& value() {
-        if (!engaged_) throw std::logic_error("optional: no value");
+        if (!engaged_)
+            throw std::logic_error("optional: no value");
         return *ptr();
     }
 
     const T& value() const {
-        if (!engaged_) throw std::logic_error("optional: no value");
+        if (!engaged_)
+            throw std::logic_error("optional: no value");
         return *ptr();
     }
 

@@ -18,13 +18,27 @@ struct MemoryPoolStatistics {
     std::atomic<uint64_t> peak_usage{0};
     std::atomic<uint64_t> current_usage{0};
 
-    uint64_t getAllocations() const noexcept { return allocations.load(); }
-    uint64_t getDeallocations() const noexcept { return deallocations.load(); }
-    uint64_t getAllocationFailures() const noexcept { return allocation_failures.load(); }
-    uint64_t getDeallocationFailures() const noexcept { return deallocation_failures.load(); }
-    uint64_t getPoolExhausted() const noexcept { return pool_exhausted.load(); }
-    uint64_t getPeakUsage() const noexcept { return peak_usage.load(); }
-    uint64_t getCurrentUsage() const noexcept { return current_usage.load(); }
+    uint64_t getAllocations() const noexcept {
+        return allocations.load();
+    }
+    uint64_t getDeallocations() const noexcept {
+        return deallocations.load();
+    }
+    uint64_t getAllocationFailures() const noexcept {
+        return allocation_failures.load();
+    }
+    uint64_t getDeallocationFailures() const noexcept {
+        return deallocation_failures.load();
+    }
+    uint64_t getPoolExhausted() const noexcept {
+        return pool_exhausted.load();
+    }
+    uint64_t getPeakUsage() const noexcept {
+        return peak_usage.load();
+    }
+    uint64_t getCurrentUsage() const noexcept {
+        return current_usage.load();
+    }
 
     void reset() noexcept {
         allocations.store(0);
@@ -74,9 +88,14 @@ class MemoryPool {
         std::atomic<Block*> next{nullptr};
         std::atomic<bool> is_allocated{false};
         alignas(T) char storage[sizeof(T)];
-        Block() = default; ~Block() = default;
-        T* data() noexcept { return reinterpret_cast<T*>(storage); }
-        const T* data() const noexcept { return reinterpret_cast<const T*>(storage); }
+        Block() = default;
+        ~Block() = default;
+        T* data() noexcept {
+            return reinterpret_cast<T*>(storage);
+        }
+        const T* data() const noexcept {
+            return reinterpret_cast<const T*>(storage);
+        }
     };
 
     const size_t pool_size_;
@@ -112,7 +131,9 @@ MemoryPool<T>::MemoryPool(size_t pool_size)
 }
 
 template <typename T>
-MemoryPool<T>::~MemoryPool() { clear(); }
+MemoryPool<T>::~MemoryPool() {
+    clear();
+}
 
 template <typename T>
 T* MemoryPool<T>::allocate() noexcept {
@@ -145,7 +166,13 @@ template <typename T>
 T* MemoryPool<T>::allocateObject() noexcept {
     T* ptr = allocate();
     if (ptr != nullptr) {
-        try { new (ptr) T{}; return ptr; } catch (...) { deallocate(ptr); return nullptr; }
+        try {
+            new (ptr) T{};
+            return ptr;
+        } catch (...) {
+            deallocate(ptr);
+            return nullptr;
+        }
     }
     return nullptr;
 }
@@ -154,7 +181,13 @@ template <typename T>
 T* MemoryPool<T>::allocateObject(const T& value) noexcept {
     T* ptr = allocate();
     if (ptr != nullptr) {
-        try { new (ptr) T(value); return ptr; } catch (...) { deallocate(ptr); return nullptr; }
+        try {
+            new (ptr) T(value);
+            return ptr;
+        } catch (...) {
+            deallocate(ptr);
+            return nullptr;
+        }
     }
     return nullptr;
 }
@@ -163,7 +196,13 @@ template <typename T>
 T* MemoryPool<T>::allocateObject(T&& value) noexcept {
     T* ptr = allocate();
     if (ptr != nullptr) {
-        try { new (ptr) T(std::move(value)); return ptr; } catch (...) { deallocate(ptr); return nullptr; }
+        try {
+            new (ptr) T(std::move(value));
+            return ptr;
+        } catch (...) {
+            deallocate(ptr);
+            return nullptr;
+        }
     }
     return nullptr;
 }
@@ -171,15 +210,21 @@ T* MemoryPool<T>::allocateObject(T&& value) noexcept {
 template <typename T>
 bool MemoryPool<T>::deallocate(T* ptr) noexcept {
     try {
-        if (!isValidPointer(ptr)) { stats_.deallocation_failures.fetch_add(1, relaxed); return false; }
+        if (!isValidPointer(ptr)) {
+            stats_.deallocation_failures.fetch_add(1, relaxed);
+            return false;
+        }
         Block* block = getBlockFromPointer(ptr);
         bool expected_allocated = true;
-        if (!block->is_allocated.compare_exchange_strong(expected_allocated, false, acq_rel, relaxed)) {
+        if (!block->is_allocated.compare_exchange_strong(expected_allocated, false, acq_rel,
+                                                         relaxed)) {
             stats_.deallocation_failures.fetch_add(1, relaxed);
             return false;
         }
         Block* head = free_head_.load(relaxed);
-        do { block->next.store(head, relaxed); } while (!free_head_.compare_exchange_weak(head, block, acq_rel, relaxed));
+        do {
+            block->next.store(head, relaxed);
+        } while (!free_head_.compare_exchange_weak(head, block, acq_rel, relaxed));
         size_t current_count = allocated_count_.fetch_sub(1, relaxed) - 1;
         stats_.current_usage.store(current_count, relaxed);
         stats_.deallocations.fetch_add(1, relaxed);
@@ -193,49 +238,77 @@ bool MemoryPool<T>::deallocate(T* ptr) noexcept {
 template <typename T>
 bool MemoryPool<T>::deallocateObject(T* ptr) noexcept {
     if (ptr != nullptr) {
-        try { ptr->~T(); return deallocate(ptr); } catch (...) { return deallocate(ptr); }
+        try {
+            ptr->~T();
+            return deallocate(ptr);
+        } catch (...) { return deallocate(ptr); }
     }
     return false;
 }
 
 template <typename T>
-size_t MemoryPool<T>::getUsage() const noexcept { return allocated_count_.load(acquire); }
+size_t MemoryPool<T>::getUsage() const noexcept {
+    return allocated_count_.load(acquire);
+}
 
 template <typename T>
-size_t MemoryPool<T>::getCapacity() const noexcept { return pool_size_; }
+size_t MemoryPool<T>::getCapacity() const noexcept {
+    return pool_size_;
+}
 
 template <typename T>
-size_t MemoryPool<T>::getAvailable() const noexcept { return pool_size_ - allocated_count_.load(acquire); }
+size_t MemoryPool<T>::getAvailable() const noexcept {
+    return pool_size_ - allocated_count_.load(acquire);
+}
 
 template <typename T>
-bool MemoryPool<T>::isEmpty() const noexcept { return allocated_count_.load(acquire) == pool_size_; }
+bool MemoryPool<T>::isEmpty() const noexcept {
+    return allocated_count_.load(acquire) == 0;
+}
 
 template <typename T>
-bool MemoryPool<T>::isFull() const noexcept { return allocated_count_.load(acquire) == 0; }
+bool MemoryPool<T>::isFull() const noexcept {
+    return allocated_count_.load(acquire) == pool_size_;
+}
 
 template <typename T>
-double MemoryPool<T>::getUtilization() const noexcept { return static_cast<double>(allocated_count_.load(acquire)) / static_cast<double>(pool_size_); }
+double MemoryPool<T>::getUtilization() const noexcept {
+    return static_cast<double>(allocated_count_.load(acquire)) / static_cast<double>(pool_size_);
+}
 
 template <typename T>
-const MemoryPoolStatistics& MemoryPool<T>::getStatistics() const noexcept { return stats_; }
+const MemoryPoolStatistics& MemoryPool<T>::getStatistics() const noexcept {
+    return stats_;
+}
 
 template <typename T>
-void MemoryPool<T>::resetStatistics() noexcept { stats_.reset(); }
+void MemoryPool<T>::resetStatistics() noexcept {
+    stats_.reset();
+}
 
 template <typename T>
 bool MemoryPool<T>::validate() const noexcept {
     try {
         size_t allocated = allocated_count_.load(acquire);
-        if (allocated > pool_size_) { return false; }
-        size_t free_count = 0; Block* current = free_head_.load(acquire);
-        while (current != nullptr && free_count <= pool_size_) { free_count++; current = current->next.load(relaxed); }
+        if (allocated > pool_size_) {
+            return false;
+        }
+        size_t free_count = 0;
+        Block* current = free_head_.load(acquire);
+        while (current != nullptr && free_count <= pool_size_) {
+            free_count++;
+            current = current->next.load(relaxed);
+        }
         return (free_count + allocated == pool_size_);
     } catch (...) { return false; }
 }
 
 template <typename T>
 void MemoryPool<T>::clear() noexcept {
-    for (size_t i = 0; i < pool_size_ - 1; ++i) { blocks_[i].next.store(&blocks_[i + 1], relaxed); blocks_[i].is_allocated.store(false, relaxed); }
+    for (size_t i = 0; i < pool_size_ - 1; ++i) {
+        blocks_[i].next.store(&blocks_[i + 1], relaxed);
+        blocks_[i].is_allocated.store(false, relaxed);
+    }
     blocks_[pool_size_ - 1].next.store(nullptr, relaxed);
     blocks_[pool_size_ - 1].is_allocated.store(false, relaxed);
     free_head_.store(&blocks_[0], relaxed);
@@ -254,13 +327,14 @@ size_t MemoryPool<T>::nextPowerOf2(size_t value) noexcept {
     value |= value >> 4;
     value |= value >> 8;
     value |= value >> 16;
-    value |= value >> 32;
+    value |= (value >> 16) >> 16; // two shifts: '>> 32' is UB when size_t is 32-bit
     return ++value;
 }
 
 template <typename T>
 bool MemoryPool<T>::isValidPointer(const T* ptr) const noexcept {
-    if (ptr == nullptr) return false;
+    if (ptr == nullptr)
+        return false;
     const char* char_ptr = reinterpret_cast<const char*>(ptr);
     const char* blocks_start = reinterpret_cast<const char*>(blocks_.get());
     const char* blocks_end = blocks_start + (pool_size_ * sizeof(Block));
@@ -271,7 +345,9 @@ template <typename T>
 typename MemoryPool<T>::Block* MemoryPool<T>::getBlockFromPointer(const T* ptr) const noexcept {
     const char* char_ptr = reinterpret_cast<const char*>(ptr);
     const char* blocks_start = reinterpret_cast<const char*>(blocks_.get());
-    size_t offset = char_ptr - blocks_start; size_t block_index = offset / sizeof(Block); return &blocks_[block_index];
+    size_t offset = char_ptr - blocks_start;
+    size_t block_index = offset / sizeof(Block);
+    return &blocks_[block_index];
 }
 
 template <typename T>

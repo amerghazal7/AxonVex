@@ -1,12 +1,12 @@
 #pragma once
 
-#include <axonvex_interfaces/protocolInterface.hpp>
+#include <array>
 #include <atomic>
+#include <axonvex_interfaces/protocolInterface.hpp>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
-#include <array>
 
 #if defined(AXONVEX_PLATFORM_LINUX)
 #include <arpa/inet.h>
@@ -26,7 +26,8 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         : bindAddress_(std::move(bindAddress)), port_(port) {}
 
     bool start() override {
-        if (running_.load()) return true;
+        if (running_.load())
+            return true;
 #if defined(AXONVEX_PLATFORM_LINUX)
         if (!openAndBind()) {
             reportError("udp: failed to bind to " + bindAddress_ + ":" + std::to_string(port_));
@@ -47,7 +48,8 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     }
 
     void stop() override {
-        if (!running_.load()) return;
+        if (!running_.load())
+            return;
         running_.store(false);
 #if defined(AXONVEX_PLATFORM_LINUX)
         if (sock_ >= 0) {
@@ -56,14 +58,18 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
             sock_ = -1;
         }
 #endif
-        if (worker_.joinable()) worker_.join();
+        if (worker_.joinable())
+            worker_.join();
     }
 
-    bool isRunning() const override { return running_.load(); }
+    bool isRunning() const override {
+        return running_.load();
+    }
 
     bool send(const std::vector<uint8_t>& data) override {
 #if defined(AXONVEX_PLATFORM_LINUX)
-        if (sock_ < 0) return false;
+        if (sock_ < 0)
+            return false;
         sockaddr_in dest{};
         socklen_t dlen = sizeof(dest);
         if (remoteSet_) {
@@ -71,10 +77,12 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         } else if (lastPeerSet_) {
             dest = lastPeer_;
         } else {
-            reportError("udp: no destination (configure remote_host/remote_port or receive a packet first)");
+            reportError("udp: no destination (configure remote_host/remote_port or receive a "
+                        "packet first)");
             return false;
         }
-        ssize_t n = ::sendto(sock_, data.data(), data.size(), 0, reinterpret_cast<sockaddr*>(&dest), dlen);
+        ssize_t n = ::sendto(sock_, data.data(), data.size(), MSG_NOSIGNAL,
+                             reinterpret_cast<sockaddr*>(&dest), dlen);
         if (n < 0) {
             reportError(std::string("udp: sendto failed: ") + strerror(errno));
             return false;
@@ -129,7 +137,10 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
             struct FnAdapter : public ErrorHandler {
                 ErrorCallback fn;
                 explicit FnAdapter(ErrorCallback f) : fn(std::move(f)) {}
-                void callbackPerform(const std::string s) override { if (fn) fn(s); }
+                void callbackPerform(const std::string s) override {
+                    if (fn)
+                        fn(s);
+                }
             };
             errorAdapter_ = std::make_unique<FnAdapter>(std::move(cb));
             this->registerErrorHandler(defaultKey(), errorAdapter_.get());
@@ -152,10 +163,15 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     }
 
     bool configure(const std::string& key, const std::string& value) override {
-        if (key == "bind") { bindAddress_ = value; return true; }
+        if (key == "bind") {
+            bindAddress_ = value;
+            return true;
+        }
         if (key == "port") {
-            try { port_ = static_cast<uint16_t>(std::stoul(value)); return true; }
-            catch (...) { return false; }
+            try {
+                port_ = static_cast<uint16_t>(std::stoul(value));
+                return true;
+            } catch (...) { return false; }
         }
         if (key == "remote_host") {
             remoteHost_ = value;
@@ -171,21 +187,25 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
                 updateRemote();
 #endif
                 return true;
-            }
-            catch (...) { return false; }
+            } catch (...) { return false; }
         }
         return false;
     }
 
-    ProtocolStatistics getStatistics() const override { return stats_; }
+    ProtocolStatistics getStatistics() const override {
+        return stats_;
+    }
 
   private:
-    static constexpr const char* defaultKey() { return "default"; }
+    static constexpr const char* defaultKey() {
+        return "default";
+    }
 
 #if defined(AXONVEX_PLATFORM_LINUX)
     bool openAndBind() {
         sock_ = ::socket(AF_INET, SOCK_DGRAM, 0);
-        if (sock_ < 0) return false;
+        if (sock_ < 0)
+            return false;
         int on = 1;
         ::setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 
@@ -193,22 +213,30 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port_);
         if (::inet_pton(AF_INET, bindAddress_.c_str(), &addr.sin_addr) <= 0) {
-            ::close(sock_); sock_ = -1; return false;
+            ::close(sock_);
+            sock_ = -1;
+            return false;
         }
         if (::bind(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            ::close(sock_); sock_ = -1; return false;
+            ::close(sock_);
+            sock_ = -1;
+            return false;
         }
         updateRemote();
         return true;
     }
 
     void updateRemote() {
-        if (remoteHost_.empty() || remotePort_ == 0) { remoteSet_ = false; return; }
+        if (remoteHost_.empty() || remotePort_ == 0) {
+            remoteSet_ = false;
+            return;
+        }
         sockaddr_in dest{};
         dest.sin_family = AF_INET;
         dest.sin_port = htons(remotePort_);
         if (::inet_pton(AF_INET, remoteHost_.c_str(), &dest.sin_addr) <= 0) {
-            remoteSet_ = false; return;
+            remoteSet_ = false;
+            return;
         }
         remoteAddr_ = dest;
         remoteSet_ = true;
@@ -217,15 +245,20 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     void recvLoop() {
         std::array<uint8_t, 2048> buf{};
         while (running_.load()) {
-            sockaddr_in peer{}; socklen_t plen = sizeof(peer);
-            ssize_t n = ::recvfrom(sock_, buf.data(), buf.size(), 0, reinterpret_cast<sockaddr*>(&peer), &plen);
+            sockaddr_in peer{};
+            socklen_t plen = sizeof(peer);
+            ssize_t n = ::recvfrom(sock_, buf.data(), buf.size(), 0,
+                                   reinterpret_cast<sockaddr*>(&peer), &plen);
             if (n < 0) {
-                if (errno == EINTR) continue;
+                if (errno == EINTR)
+                    continue;
                 reportError(std::string("udp: recvfrom error: ") + strerror(errno));
                 break;
             }
-            if (n == 0) continue;
-            lastPeer_ = peer; lastPeerSet_ = true;
+            if (n == 0)
+                continue;
+            lastPeer_ = peer;
+            lastPeerSet_ = true;
             stats_.bytesReceived += static_cast<uint64_t>(n);
             stats_.messagesReceived++;
             std::vector<uint8_t> data(buf.begin(), buf.begin() + n);
@@ -261,8 +294,10 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
 
 #if defined(AXONVEX_PLATFORM_LINUX)
     int sock_{-1};
-    sockaddr_in remoteAddr_{}; bool remoteSet_{false};
-    sockaddr_in lastPeer_{}; bool lastPeerSet_{false};
+    sockaddr_in remoteAddr_{};
+    bool remoteSet_{false};
+    sockaddr_in lastPeer_{};
+    bool lastPeerSet_{false};
 #endif
 };
 
