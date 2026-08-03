@@ -152,16 +152,16 @@ jobs:
     #   SchedulerPauseAndResume
     #       throughput/latency asserts that cannot hold under a sanitizer's
     #       slowdown (MemoryPoolTest.PerformanceTest asserts >10M ops/s).
-    #   UdpLifecycleAndStatsContract                   known race, defect C24.
     #   core_tests   runs the whole binary as one test, so it re-includes
     #                every quarantined case above.
+    # No known races remain quarantined: every entry here is a timing assert.
     # Anything else failing here is a real finding: fix it, do not extend this.
     - name: Run tests
       env:
         UBSAN_OPTIONS: print_stacktrace=1
         ASAN_OPTIONS: detect_leaks=1
       run: |
-        EXCLUDE='(PerformanceTest|PerformanceBenchmarkTest|HighLoadPerformance|SchedulerPauseAndResume|UdpLifecycleAndStatsContract|^core_tests$)'
+        EXCLUDE='(PerformanceTest|PerformanceBenchmarkTest|HighLoadPerformance|SchedulerPauseAndResume|^core_tests$)'
         echo "::notice::Quarantined from the ${{ matrix.sanitizer }} gate: $EXCLUDE"
         # TSan aborts during test discovery on kernels with high mmap_rnd_bits
         # (6.6+) unless ASLR is disabled for the process tree.
