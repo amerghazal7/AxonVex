@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Regression tests for C1 (all ready tasks execute each scheduler cycle; removing a task mid-execution is safe).
 - Regression tests for C2 (`SafetyManager` e-stop halts the system; hook registration/clearing).
 - Concurrent stress regression test for C3 (8-thread allocate/deallocate ownership stamping; TSan-clean).
+- Regression tests for C12 (a handler may mutate the policy registry during dispatch, call `evaluateAll()` or `triggerEmergencyStop()` re-entrantly; a policy may query the manager from `evaluate()`; the evaluation period may change while the loop runs).
 
 ### Changed
 
@@ -27,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - C2: a `SafetyManager` emergency stop now actually halts the system — `setSafetyHook` registers an emergency callback that performs an emergency shutdown. Teardown is safe from any thread: hook dispatch synchronizes with clearing (so destroying the system with a live hook cannot dangle), `emergencyShutdown`/`stop` serialize thread-handle teardown via a shutdown mutex, and self-join guards let the e-stop fire from a system thread.
 - C25: `SystemEvent` string leaks eliminated (LSan-clean) — events are dropped once shutdown begins, the queue is drained back to the pool after the event thread joins, and `initialize()` drains before its component rebuild replaces the event pool (the pool destructor does not destruct live blocks).
 - C3: `MemoryPool`'s lock-free free list is no longer ABA-vulnerable — the head is a tagged `{tag:32, index:32}` 64-bit atomic and every pop/push increments the tag, so a stale CAS can never install a stale `next` (the double-handout mechanism).
+- C12: `SafetyManager` no longer holds `policiesMutex_` across user code — `evaluateAll()` snapshots the policy set (as `shared_ptr`, so a policy removed mid-cycle stays alive), then runs `evaluate()`, event dispatch, and `triggerEmergencyStop` unlocked; a policy or handler can now call back into the manager without deadlocking, including a re-entrant `evaluateAll()` (which returns the in-progress cycle's worst level instead of blocking or recursing). Handlers moved off the unsynchronized `core::Caller` to a mutex-guarded list with snapshot-then-dispatch, and `evaluationPeriod_` is atomic (the evaluation loop read it unlocked).
 - C4: `MemoryPool::isEmpty()`/`isFull()` bodies were swapped.
 - C10: SIGPIPE protection (`MSG_NOSIGNAL`) on TCP/UDP sends — peer teardown no longer kills the process.
 - C16: `optional<>` move semantics now match `std::optional` (moved-from source stays engaged).
