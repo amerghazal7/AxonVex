@@ -167,6 +167,19 @@ class CallerKeyed {
      *       prevent subsequent callbacks from being called. Consider using
      *       callCallbacksByKeySafe for exception-safe calling.
      */
+    /**
+     * @brief Copy out the callbacks registered under @p key without calling them
+     *
+     * For callers that must not hold their registry lock across user code (C34):
+     * take the snapshot under the lock, release it, then invoke. Note the result
+     * holds raw pointers this class does not own — the caller is responsible for
+     * ensuring they stay alive across the dispatch (see `detail::DispatchBarrier`
+     * in the interfaces layer).
+     */
+    std::vector<Callback<DataType>*> snapshotCallbacksForKey(const KeyType& key) const {
+        return getCallbacksForKey(key);
+    }
+
     void callCallbacksByKey(const KeyType& key, const DataType& data) {
         auto callbacks = getCallbacksForKey(key);
         for (Callback<DataType>* callback : callbacks) {

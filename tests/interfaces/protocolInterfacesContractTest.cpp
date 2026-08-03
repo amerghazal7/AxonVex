@@ -3,7 +3,10 @@
 #include <axonvex_interfaces/tcp/tcpClient.hpp>
 #include <axonvex_interfaces/udp/udpSocket.hpp>
 #include <axonvex_interfaces/websocket/websocketServer.hpp>
+#include <chrono>
+#include <functional>
 #include <gtest/gtest.h>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -277,6 +280,88 @@ TEST(ProtocolInterfacesContractTest, StopFromCallbackDoesNotSelfJoin) {
     EXPECT_FALSE(rx.isRunning());
 
     tx.stop();
+}
+#endif
+
+#if defined(AXONVEX_PLATFORM_LINUX)
+// C34 regression: the transports dispatched user callbacks while holding
+// cbMutex_, so a callback that called back into the transport's own
+// registration API deadlocked on a non-recursive mutex — and because dispatch
+// runs on the receive thread, that wedged the transport permanently.
+//
+// Run in a worker with a deadline: a regression here is a hang, not a failed
+// assertion, and a hung test blocks CI forever. Polled rather than
+// condition-variable based because GCC 11's libtsan does not intercept
+// pthread_cond_clockwait and reports bogus races for wait_for.
+namespace {
+bool finishesWithin(std::function<void()> fn, std::chrono::milliseconds limit) {
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([fn, done]() {
+        fn();
+        done->store(true);
+    });
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!done->load()) {
+        worker.detach(); // wedged; leak it rather than block the suite
+        return false;
+    }
+    worker.join();
+    return true;
+}
+
+class ReentrantRegistrationCallback final : public axonvex::core::Callback<std::vector<uint8_t>> {
+  public:
+    axonvex::interfaces::udp::UdpSocket* target{nullptr};
+    VectorCallback extra;
+    std::atomic<int> count{0};
+
+    void callbackPerform(const std::vector<uint8_t>) override {
+        if (target) {
+            // Both directions of re-entry: registering takes cbMutex_ outright,
+            // unregistering additionally waits for dispatch to drain — which is
+            // this very dispatch, so it must not wait on itself.
+            target->registerMessageHandler("extra", &extra);
+            target->unregisterMessageHandler("extra", &extra);
+        }
+        ++count;
+    }
+};
+} // namespace
+
+TEST(ProtocolInterfacesContractTest, CallbackMayReenterRegistrationApi) {
+    const uint16_t kPort = 39418;
+
+    const bool finished = finishesWithin(
+        [kPort]() {
+            axonvex::interfaces::udp::UdpSocket rx("127.0.0.1", kPort);
+            ReentrantRegistrationCallback cb;
+            cb.target = &rx;
+            rx.setMessageCallback(&cb);
+            if (!rx.start()) {
+                return; // port busy; the outer EXPECT below still passes
+            }
+
+            axonvex::interfaces::udp::UdpSocket tx("127.0.0.1", 0);
+            tx.configure("remote_host", "127.0.0.1");
+            tx.configure("remote_port", std::to_string(kPort));
+            tx.start();
+
+            const std::vector<uint8_t> payload{7, 7, 7};
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (cb.count.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+                tx.send(payload);
+                std::this_thread::yield();
+            }
+
+            tx.stop();
+            rx.stop();
+        },
+        std::chrono::milliseconds(10000));
+
+    EXPECT_TRUE(finished) << "a callback re-entering the registration API deadlocked";
 }
 #endif
 

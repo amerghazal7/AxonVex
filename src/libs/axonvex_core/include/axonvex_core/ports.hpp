@@ -271,8 +271,29 @@ class OutputPort : public BasePort {
     void reset() override;
 
   private:
+    // Copy-on-write connection list (C35). write() must dispatch to the
+    // connected ports with no lock held — those calls run user callbacks, and
+    // holding connectionMutex_ across them is the C12/C18 bug class. Copying the
+    // vector per write would fix that but allocates on the port path, which is
+    // also banned. A shared_ptr snapshot costs one refcount bump on the write
+    // path and keeps the list alive for the dispatch even if a concurrent
+    // disconnect replaces it; the allocation moves to connect/disconnect, which
+    // are setup operations.
+    using ConnectionList = std::vector<InputPort<T>*>;
+    using ConnectionSnapshot = std::shared_ptr<const ConnectionList>;
+
+    ConnectionSnapshot snapshotConnections() const {
+        std::lock_guard<std::mutex> lock(connectionMutex_);
+        return connections_;
+    }
+
+    /// Caller must hold connectionMutex_.
+    ConnectionList copyForUpdateLocked() const {
+        return connections_ ? ConnectionList(*connections_) : ConnectionList();
+    }
+
     mutable std::mutex connectionMutex_;
-    std::vector<InputPort<T>*> connectedPorts_;
+    ConnectionSnapshot connections_;
     const bool isThreadSafe_;
 
     // Current data for thread-safe access
@@ -398,8 +419,24 @@ class AsyncOutputPort : public BasePort {
     }
 
   private:
+    // Copy-on-write connection list — see OutputPort for the rationale (C35).
+    // This also retires C30's two-critical-section dance: the emptiness check
+    // and the dispatch now read one immutable snapshot, so they cannot disagree.
+    using ConnectionList = std::vector<AsyncInputPort<T>*>;
+    using ConnectionSnapshot = std::shared_ptr<const ConnectionList>;
+
+    ConnectionSnapshot snapshotConnections() const {
+        std::lock_guard<std::mutex> lock(connectionMutex_);
+        return connections_;
+    }
+
+    /// Caller must hold connectionMutex_.
+    ConnectionList copyForUpdateLocked() const {
+        return connections_ ? ConnectionList(*connections_) : ConnectionList();
+    }
+
     mutable std::mutex connectionMutex_;
-    std::vector<AsyncInputPort<T>*> connectedPorts_;
+    ConnectionSnapshot connections_;
     const bool isThreadSafe_;
     std::atomic<bool> logAsyncWriteEvent_{false};
 
@@ -574,9 +611,13 @@ void OutputPort<T>::write(const T& data) {
         outputCallback_(data);
     }
 
-    // Send to all connected input ports
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    for (auto* inputPort : connectedPorts_) {
+    // Send to all connected input ports, with no lock held: writeData runs the
+    // receiving port's user callbacks (C35).
+    ConnectionSnapshot targets = snapshotConnections();
+    if (!targets) {
+        return;
+    }
+    for (auto* inputPort : *targets) {
         if (inputPort) {
             inputPort->writeData(data);
         }
@@ -589,43 +630,46 @@ void OutputPort<T>::connect(InputPort<T>* inputPort) {
         return;
 
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it == connectedPorts_.end()) {
-        connectedPorts_.push_back(inputPort);
+    ConnectionList updated = copyForUpdateLocked();
+    if (std::find(updated.begin(), updated.end(), inputPort) == updated.end()) {
+        updated.push_back(inputPort);
+        connections_ = std::make_shared<const ConnectionList>(std::move(updated));
     }
 }
 
 template <typename T>
 void OutputPort<T>::disconnect(InputPort<T>* inputPort) {
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it != connectedPorts_.end()) {
-        connectedPorts_.erase(it);
+    ConnectionList updated = copyForUpdateLocked();
+    auto it = std::find(updated.begin(), updated.end(), inputPort);
+    if (it != updated.end()) {
+        updated.erase(it);
+        connections_ = std::make_shared<const ConnectionList>(std::move(updated));
     }
 }
 
 template <typename T>
 void OutputPort<T>::disconnectAll() {
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    connectedPorts_.clear();
+    connections_.reset();
 }
 
 template <typename T>
 bool OutputPort<T>::isConnected() const noexcept {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return !connectedPorts_.empty();
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets && !targets->empty();
 }
 
 template <typename T>
 size_t OutputPort<T>::getConnectionCount() const noexcept {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return connectedPorts_.size();
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets ? targets->size() : 0;
 }
 
 template <typename T>
 std::vector<InputPort<T>*> OutputPort<T>::getConnectedPorts() const {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return connectedPorts_;
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets ? *targets : std::vector<InputPort<T>*>();
 }
 
 template <typename T>
@@ -783,16 +827,12 @@ template <typename T>
 void AsyncOutputPort<T>::write(const T& data) {
     incrementTotalMessages();
 
-    // Checked under the lock: connect/disconnect run on other threads and
-    // reallocate this vector, so an unlocked empty() read raced them (C30). The
-    // lock is released again before the callback rather than held through it —
-    // outputCallback_ is user code and must never run under a port lock.
-    {
-        std::lock_guard<std::mutex> lock(connectionMutex_);
-        if (connectedPorts_.empty()) {
-            // Log warning about unconnected port
-            return;
-        }
+    // One snapshot serves both the emptiness check and the dispatch, so they
+    // always agree, and neither runs under connectionMutex_ (C30, C35).
+    ConnectionSnapshot targets = snapshotConnections();
+    if (!targets || targets->empty()) {
+        // Log warning about unconnected port
+        return;
     }
 
     // Call output callback if set
@@ -800,10 +840,8 @@ void AsyncOutputPort<T>::write(const T& data) {
         outputCallback_(data);
     }
 
-    // Send to all connected async input ports. Re-checked under the lock, so a
-    // disconnect between the two critical sections is harmless.
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    for (auto* inputPort : connectedPorts_) {
+    // Send to all connected async input ports
+    for (auto* inputPort : *targets) {
         if (inputPort) {
             inputPort->update(data);
         }
@@ -816,43 +854,46 @@ void AsyncOutputPort<T>::connect(AsyncInputPort<T>* inputPort) {
         return;
 
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it == connectedPorts_.end()) {
-        connectedPorts_.push_back(inputPort);
+    ConnectionList updated = copyForUpdateLocked();
+    if (std::find(updated.begin(), updated.end(), inputPort) == updated.end()) {
+        updated.push_back(inputPort);
+        connections_ = std::make_shared<const ConnectionList>(std::move(updated));
     }
 }
 
 template <typename T>
 void AsyncOutputPort<T>::disconnect(AsyncInputPort<T>* inputPort) {
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it != connectedPorts_.end()) {
-        connectedPorts_.erase(it);
+    ConnectionList updated = copyForUpdateLocked();
+    auto it = std::find(updated.begin(), updated.end(), inputPort);
+    if (it != updated.end()) {
+        updated.erase(it);
+        connections_ = std::make_shared<const ConnectionList>(std::move(updated));
     }
 }
 
 template <typename T>
 void AsyncOutputPort<T>::disconnectAll() {
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    connectedPorts_.clear();
+    connections_.reset();
 }
 
 template <typename T>
 bool AsyncOutputPort<T>::isConnected() const noexcept {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return !connectedPorts_.empty();
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets && !targets->empty();
 }
 
 template <typename T>
 size_t AsyncOutputPort<T>::getConnectionCount() const noexcept {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return connectedPorts_.size();
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets ? targets->size() : 0;
 }
 
 template <typename T>
 std::vector<AsyncInputPort<T>*> AsyncOutputPort<T>::getConnectedPorts() const {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return connectedPorts_;
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets ? *targets : std::vector<AsyncInputPort<T>*>();
 }
 
 template <typename T>

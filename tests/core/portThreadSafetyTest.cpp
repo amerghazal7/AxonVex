@@ -15,7 +15,9 @@
 #include <axonvex_core/ports.hpp>
 #include <axonvex_core/processingUnit.hpp>
 #include <chrono>
+#include <functional>
 #include <gtest/gtest.h>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -251,6 +253,65 @@ TEST_F(PortThreadSafetyTest, CallbackRegistrationIsRejectedAfterTraffic) {
     EXPECT_THROW(inputPort->setValidationCallback([](const int&) { return true; }),
                  std::logic_error);
     EXPECT_THROW(outputPort->setOutputCallback([](const int&) {}), std::logic_error);
+}
+
+// C35: OutputPort::write and AsyncOutputPort::write used to hold
+// connectionMutex_ while calling into the connected ports, and that call runs
+// the receiving port's user callback. A callback that touched the sender's own
+// connection API therefore deadlocked on a non-recursive mutex. Dispatch now
+// runs off an immutable snapshot with no lock held.
+//
+// Guarded by a deadline: a regression here hangs rather than fails, and a hung
+// test blocks the suite. Polled, not condition-variable based — GCC 11's libtsan
+// does not intercept pthread_cond_clockwait and reports bogus races for wait_for.
+namespace {
+bool completesWithin(std::function<void()> fn, std::chrono::milliseconds limit) {
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([fn, done]() {
+        fn();
+        done->store(true);
+    });
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!done->load()) {
+        worker.detach();
+        return false;
+    }
+    worker.join();
+    return true;
+}
+} // namespace
+
+TEST_F(PortThreadSafetyTest, DownstreamCallbackMayReenterConnectionApi) {
+    auto* unit = processingUnit.get();
+    std::atomic<int> delivered{0};
+
+    const bool finished = completesWithin(
+        [unit, &delivered]() {
+            OutputPort<int> out(30, "reentrant_out", unit);
+            InputPort<int> first(31, "first", unit);
+            InputPort<int> second(32, "second", unit);
+
+            out.connect(&first);
+
+            // Runs while the sender is dispatching; every call below takes
+            // connectionMutex_, which the sender used to still be holding.
+            first.setDataCallback([&out, &second, &delivered](const int&) {
+                out.getConnectionCount();
+                out.isConnected();
+                out.connect(&second);
+                out.disconnect(&second);
+                delivered.fetch_add(1);
+            });
+
+            out.write(42);
+        },
+        std::chrono::milliseconds(5000));
+
+    EXPECT_TRUE(finished) << "a downstream callback re-entering the connection API deadlocked";
+    EXPECT_EQ(delivered.load(), 1);
 }
 
 TEST_F(PortThreadSafetyTest, ResetClearsData) {

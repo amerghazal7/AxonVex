@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <axonvex_interfaces/detail/addressResolver.hpp>
+#include <axonvex_interfaces/detail/dispatchBarrier.hpp>
 #include <axonvex_interfaces/protocolInterface.hpp>
 #include <mutex>
 #include <string>
@@ -152,7 +153,8 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     using ProtocolInterface::MessageCallback;
 
     void setMessageCallback(MessageCallback* cb) override {
-        std::lock_guard<std::mutex> lock(cbMutex_);
+        std::unique_lock<std::mutex> lock(cbMutex_);
+        dispatch_.waitQuiescent(lock); // it may unregister the previous handler
         if (defaultMsgCb_) {
             this->unregisterKeyedCallback(defaultKey(), defaultMsgCb_);
             defaultMsgCb_ = nullptr;
@@ -169,17 +171,20 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     }
 
     bool unregisterMessageHandler(const std::string& key, MessageCallback* cb) override {
-        std::lock_guard<std::mutex> lock(cbMutex_);
+        std::unique_lock<std::mutex> lock(cbMutex_);
+        dispatch_.waitQuiescent(lock);
         return this->unregisterKeyedCallback(key, cb);
     }
 
     size_t unregisterAllMessageHandlersForKey(const std::string& key) override {
-        std::lock_guard<std::mutex> lock(cbMutex_);
+        std::unique_lock<std::mutex> lock(cbMutex_);
+        dispatch_.waitQuiescent(lock);
         return this->unregisterAllCallbacksForKey(key);
     }
 
     void setErrorCallback(ErrorCallback cb) override {
-        std::lock_guard<std::mutex> lock(cbMutex_);
+        std::unique_lock<std::mutex> lock(cbMutex_);
+        dispatch_.waitQuiescent(lock); // it destroys the previous adapter
         errorAdapter_.reset();
         if (cb) {
             struct FnAdapter : public ErrorHandler {
@@ -201,12 +206,14 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     }
 
     bool unregisterErrorHandler(const std::string& key, ErrorHandler* cb) override {
-        std::lock_guard<std::mutex> lock(cbMutex_);
+        std::unique_lock<std::mutex> lock(cbMutex_);
+        dispatch_.waitQuiescent(lock);
         return errorKeyed_.unregisterKeyedCallback(key, cb);
     }
 
     size_t unregisterAllErrorHandlersForKey(const std::string& key) override {
-        std::lock_guard<std::mutex> lock(cbMutex_);
+        std::unique_lock<std::mutex> lock(cbMutex_);
+        dispatch_.waitQuiescent(lock);
         return errorKeyed_.unregisterAllCallbacksForKey(key);
     }
 
@@ -366,10 +373,7 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
             stats_.bytesReceived.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
             stats_.messagesReceived.fetch_add(1, std::memory_order_relaxed);
             std::vector<uint8_t> data(buf.begin(), buf.begin() + n);
-            {
-                std::lock_guard<std::mutex> lock(cbMutex_);
-                this->callCallbacksByKey(defaultKey(), data);
-            }
+            dispatchMessage(data);
         }
     }
 
@@ -377,9 +381,44 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
 
     /// Outside the platform guard: the non-Linux build needs it to report that
     /// it cannot do the operation at all.
+    /// Same contract as reportError: user code never runs under cbMutex_ (C34).
+    void dispatchMessage(const std::vector<uint8_t>& data) {
+        std::vector<MessageCallback*> targets;
+        {
+            std::lock_guard<std::mutex> lock(cbMutex_);
+            targets = this->snapshotCallbacksForKey(defaultKey());
+            if (targets.empty()) {
+                return;
+            }
+            dispatch_.begin();
+        }
+        detail::ScopedDispatch scope(dispatch_, cbMutex_);
+        for (auto* cb : targets) {
+            if (cb) {
+                cb->callbackPerform(data);
+            }
+        }
+    }
+
+    /// Snapshot under cbMutex_, dispatch outside it (C34). The barrier holds off
+    /// any unregister from another thread until this dispatch drains, so the raw
+    /// handler pointers cannot be torn down mid-call.
     void reportError(const std::string& msg) {
-        std::lock_guard<std::mutex> lock(cbMutex_);
-        errorKeyed_.callCallbacksByKey(defaultKey(), msg);
+        std::vector<ErrorHandler*> targets;
+        {
+            std::lock_guard<std::mutex> lock(cbMutex_);
+            targets = errorKeyed_.snapshotCallbacksForKey(defaultKey());
+            if (targets.empty()) {
+                return;
+            }
+            dispatch_.begin();
+        }
+        detail::ScopedDispatch scope(dispatch_, cbMutex_);
+        for (auto* handler : targets) {
+            if (handler) {
+                handler->callbackPerform(msg);
+            }
+        }
     }
 
     std::string bindAddress_;
@@ -395,6 +434,8 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     std::unique_ptr<ErrorHandler> errorAdapter_;
 
     mutable std::mutex cbMutex_;
+    /// Keeps handler pointers alive across an unlocked dispatch (C34).
+    detail::DispatchBarrier dispatch_;
     AtomicProtocolStatistics stats_{};
 
     // Remote destination configuration
