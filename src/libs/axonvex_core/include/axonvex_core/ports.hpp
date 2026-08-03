@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -30,9 +29,6 @@
 #include <vector>
 
 namespace axonvex::core {
-
-// Bring utils containers into core namespace for convenience
-using axonvex::utils::containers::MemoryPool;
 
 // Forward declarations
 class ProcessingUnit;
@@ -93,13 +89,15 @@ class BasePort {
         return description_;
     }
 
-    // Thread safety control
+    // Thread safety control.
+    //
+    // Configuration only: call this before any producer or consumer touches the
+    // port, never while one is in flight. The flag itself is atomic, but the
+    // discipline it selects is not — a writer that read `true` runs the locked
+    // path while a reader that read `false` runs the unlocked one, racing on the
+    // same payload. Nothing enforces this at compile time (C31).
     virtual void setThreadSafe(bool threadSafe) = 0;
     virtual bool isThreadSafe() const noexcept = 0;
-
-    // MemoryPool support for thread-safe data storage
-    virtual void setMemoryPoolSize(size_t poolSize) = 0;
-    virtual size_t getMemoryPoolSize() const noexcept = 0;
 
     // Reset functionality
     virtual void reset() = 0;
@@ -142,9 +140,7 @@ class InputPort : public BasePort {
     using DataCallback = std::function<void(const T&)>;
 
     explicit InputPort(int id, const std::string& name, ProcessingUnit* owner);
-    ~InputPort() override {
-        releasePooledData();
-    }
+    ~InputPort() override = default;
 
     // Data access
     T read() const;
@@ -179,32 +175,14 @@ class InputPort : public BasePort {
         return isThreadSafe_;
     }
 
-    // MemoryPool support
-    void setMemoryPoolSize(size_t poolSize) override;
-    size_t getMemoryPoolSize() const noexcept override;
-
     // Reset
     void reset() override;
 
   private:
-    /// The pool frees its blocks without running ~T, so the object still held
-    /// in pooledData_ must be released explicitly or every non-trivial T leaks.
-    void releasePooledData() noexcept {
-        T* pooled = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (pooled && memoryPool_) {
-            memoryPool_->deallocateObject(pooled);
-        }
-    }
-
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> hasNewData_{false};
     std::atomic<bool> isThreadSafe_{false};
-
-    // MemoryPool for thread-safe data storage
-    std::unique_ptr<MemoryPool<T>> memoryPool_;
-    std::atomic<T*> pooledData_{nullptr};
-    size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
 
     // Callbacks
     ValidationCallback validationCallback_;
@@ -228,9 +206,7 @@ class OutputPort : public BasePort {
     using OutputCallback = std::function<void(const T&)>;
 
     explicit OutputPort(int id, const std::string& name, ProcessingUnit* owner);
-    ~OutputPort() override {
-        releasePooledData();
-    }
+    ~OutputPort() override = default;
 
     // Data output
     void write(const T& data);
@@ -262,23 +238,10 @@ class OutputPort : public BasePort {
         return isThreadSafe_;
     }
 
-    // MemoryPool support
-    void setMemoryPoolSize(size_t poolSize) override;
-    size_t getMemoryPoolSize() const noexcept override;
-
     // Reset
     void reset() override;
 
   private:
-    /// The pool frees its blocks without running ~T, so the object still held
-    /// in pooledData_ must be released explicitly or every non-trivial T leaks.
-    void releasePooledData() noexcept {
-        T* pooled = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (pooled && memoryPool_) {
-            memoryPool_->deallocateObject(pooled);
-        }
-    }
-
     mutable std::mutex connectionMutex_;
     std::vector<InputPort<T>*> connectedPorts_;
     std::atomic<bool> isThreadSafe_{false};
@@ -286,11 +249,6 @@ class OutputPort : public BasePort {
     // Current data for thread-safe access
     mutable std::mutex dataMutex_;
     T currentData_;
-
-    // MemoryPool for thread-safe data storage
-    std::unique_ptr<MemoryPool<T>> memoryPool_;
-    std::atomic<T*> pooledData_{nullptr};
-    size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
 
     OutputCallback outputCallback_;
     bool hasNanWarned_{false};
@@ -306,9 +264,7 @@ class AsyncInputPort : public BasePort {
     using DataCallback = std::function<void(const T&)>;
 
     explicit AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner);
-    ~AsyncInputPort() override {
-        releasePooledData();
-    }
+    ~AsyncInputPort() override = default;
 
     // Async data operations
     void update(const T& data);
@@ -341,32 +297,14 @@ class AsyncInputPort : public BasePort {
         return isThreadSafe_;
     }
 
-    // MemoryPool support
-    void setMemoryPoolSize(size_t poolSize) override;
-    size_t getMemoryPoolSize() const noexcept override;
-
     // Reset
     void reset() override;
 
   private:
-    /// The pool frees its blocks without running ~T, so the object still held
-    /// in pooledData_ must be released explicitly or every non-trivial T leaks.
-    void releasePooledData() noexcept {
-        T* pooled = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (pooled && memoryPool_) {
-            memoryPool_->deallocateObject(pooled);
-        }
-    }
-
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> wasUpdated_{false};
     std::atomic<bool> isThreadSafe_{false};
-
-    // MemoryPool for thread-safe data storage
-    std::unique_ptr<MemoryPool<T>> memoryPool_;
-    std::atomic<T*> pooledData_{nullptr};
-    size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
 
     // Callbacks
     ValidationCallback validationCallback_;
@@ -419,10 +357,6 @@ class AsyncOutputPort : public BasePort {
         return isThreadSafe_;
     }
 
-    // MemoryPool support
-    void setMemoryPoolSize(size_t poolSize) override;
-    size_t getMemoryPoolSize() const noexcept override;
-
     // Reset
     void reset() override;
 
@@ -440,9 +374,6 @@ class AsyncOutputPort : public BasePort {
     std::atomic<bool> isThreadSafe_{false};
     std::atomic<bool> logAsyncWriteEvent_{false};
 
-    // MemoryPool for consistency (AsyncOutput doesn't store data but maintains interface)
-    size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
-
     OutputCallback outputCallback_;
 };
 
@@ -456,15 +387,7 @@ InputPort<T>::InputPort(int id, const std::string& name, ProcessingUnit* owner)
 
 template <typename T>
 T InputPort<T>::read() const {
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for thread-safe access
-        T* pooled = pooledData_.load(std::memory_order_acquire);
-        if (pooled) {
-            return *pooled;
-        }
-        return T{}; // Default value if no data in pool
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         return data_;
     }
@@ -500,22 +423,7 @@ void InputPort<T>::writeData(const T& data) {
     incrementValidMessages();
 
     // Store data
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for high-performance thread-safe storage
-        T* pooled = memoryPool_->allocateObject(data);
-        if (pooled) {
-            // Atomically update the pointer and deallocate old data
-            T* old = pooledData_.exchange(pooled, std::memory_order_acq_rel);
-            if (old) {
-                memoryPool_->deallocateObject(old);
-            }
-        } else {
-            // Pool exhausted, fallback to mutex-based storage
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            data_ = data;
-        }
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data_ = data;
     } else {
@@ -575,49 +483,12 @@ void InputPort<T>::removeBridgedPort(InputPort<T>* bridgedPort) {
 
 template <typename T>
 void InputPort<T>::setThreadSafe(bool threadSafe) {
-    if (threadSafe && !isThreadSafe_) {
-        // Initialize MemoryPool when enabling thread safety
-        if (!memoryPool_) {
-            memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-        }
-    } else if (!threadSafe && isThreadSafe_) {
-        // Clean up when disabling thread safety
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old && memoryPool_) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_.reset();
-    }
     isThreadSafe_ = threadSafe;
 }
 
 template <typename T>
-void InputPort<T>::setMemoryPoolSize(size_t poolSize) {
-    poolSize_ = std::max(static_cast<size_t>(16), poolSize);
-    if (isThreadSafe_ && memoryPool_) {
-        // Recreate memory pool with new size
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-    }
-}
-
-template <typename T>
-size_t InputPort<T>::getMemoryPoolSize() const noexcept {
-    return poolSize_;
-}
-
-template <typename T>
 void InputPort<T>::reset() {
-    if (isThreadSafe_ && memoryPool_) {
-        // Reset MemoryPool data
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-    } else if (isThreadSafe_) {
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data_ = T{};
     } else {
@@ -665,22 +536,7 @@ void OutputPort<T>::write(const T& data) {
     }
 
     // Store current data for thread-safe access
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for high-performance thread-safe storage
-        T* pooled = memoryPool_->allocateObject(data);
-        if (pooled) {
-            // Atomically update the pointer and deallocate old data
-            T* old = pooledData_.exchange(pooled, std::memory_order_acq_rel);
-            if (old) {
-                memoryPool_->deallocateObject(old);
-            }
-        } else {
-            // Pool exhausted, fallback to mutex-based storage
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            currentData_ = data;
-        }
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         currentData_ = data;
     } else {
@@ -753,49 +609,12 @@ void OutputPort<T>::setOutputCallback(OutputCallback callback) {
 
 template <typename T>
 void OutputPort<T>::setThreadSafe(bool threadSafe) {
-    if (threadSafe && !isThreadSafe_) {
-        // Initialize MemoryPool when enabling thread safety
-        if (!memoryPool_) {
-            memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-        }
-    } else if (!threadSafe && isThreadSafe_) {
-        // Clean up when disabling thread safety
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old && memoryPool_) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_.reset();
-    }
     isThreadSafe_ = threadSafe;
 }
 
 template <typename T>
-void OutputPort<T>::setMemoryPoolSize(size_t poolSize) {
-    poolSize_ = std::max(static_cast<size_t>(16), poolSize);
-    if (isThreadSafe_ && memoryPool_) {
-        // Recreate memory pool with new size
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-    }
-}
-
-template <typename T>
-size_t OutputPort<T>::getMemoryPoolSize() const noexcept {
-    return poolSize_;
-}
-
-template <typename T>
 void OutputPort<T>::reset() {
-    if (isThreadSafe_ && memoryPool_) {
-        // Reset MemoryPool data
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-    } else if (isThreadSafe_) {
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         currentData_ = T{};
     } else {
@@ -830,22 +649,7 @@ void AsyncInputPort<T>::update(const T& data) {
     incrementValidMessages();
 
     // Store data
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for high-performance thread-safe storage
-        T* pooled = memoryPool_->allocateObject(data);
-        if (pooled) {
-            // Atomically update the pointer and deallocate old data
-            T* old = pooledData_.exchange(pooled, std::memory_order_acq_rel);
-            if (old) {
-                memoryPool_->deallocateObject(old);
-            }
-        } else {
-            // Pool exhausted, fallback to mutex-based storage
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            data_ = data;
-        }
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data_ = data;
     } else {
@@ -885,16 +689,7 @@ void AsyncInputPort<T>::read(T& data) {
 
     wasUpdated_.store(false);
 
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for thread-safe access
-        T* pooled = pooledData_.load(std::memory_order_acquire);
-        if (pooled) {
-            data = *pooled;
-        } else {
-            data = T{}; // Default value if no data in pool
-        }
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data = data_;
     } else {
@@ -944,49 +739,12 @@ void AsyncInputPort<T>::removeBridgedPort(AsyncInputPort<T>* bridgedPort) {
 
 template <typename T>
 void AsyncInputPort<T>::setThreadSafe(bool threadSafe) {
-    if (threadSafe && !isThreadSafe_) {
-        // Initialize MemoryPool when enabling thread safety
-        if (!memoryPool_) {
-            memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-        }
-    } else if (!threadSafe && isThreadSafe_) {
-        // Clean up when disabling thread safety
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old && memoryPool_) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_.reset();
-    }
     isThreadSafe_ = threadSafe;
 }
 
 template <typename T>
-void AsyncInputPort<T>::setMemoryPoolSize(size_t poolSize) {
-    poolSize_ = std::max(static_cast<size_t>(16), poolSize);
-    if (isThreadSafe_ && memoryPool_) {
-        // Recreate memory pool with new size
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-    }
-}
-
-template <typename T>
-size_t AsyncInputPort<T>::getMemoryPoolSize() const noexcept {
-    return poolSize_;
-}
-
-template <typename T>
 void AsyncInputPort<T>::reset() {
-    if (isThreadSafe_ && memoryPool_) {
-        // Reset MemoryPool data
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-    } else if (isThreadSafe_) {
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data_ = T{};
     } else {
@@ -1076,18 +834,8 @@ void AsyncOutputPort<T>::setOutputCallback(OutputCallback callback) {
 template <typename T>
 void AsyncOutputPort<T>::setThreadSafe(bool threadSafe) {
     isThreadSafe_ = threadSafe;
-    // AsyncOutputPort doesn't store data, so no MemoryPool needed
-}
-
-template <typename T>
-void AsyncOutputPort<T>::setMemoryPoolSize(size_t poolSize) {
-    poolSize_ = std::max(static_cast<size_t>(16), poolSize);
-    // AsyncOutputPort doesn't store data, just maintain size for interface consistency
-}
-
-template <typename T>
-size_t AsyncOutputPort<T>::getMemoryPoolSize() const noexcept {
-    return poolSize_;
+    // AsyncOutputPort holds no data of its own; connectionMutex_ already guards
+    // the only shared state.
 }
 
 template <typename T>

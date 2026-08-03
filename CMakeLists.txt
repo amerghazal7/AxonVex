@@ -123,7 +123,7 @@ if(BUILD_TESTING)
             tests/core/callbackTest.cpp
             tests/core/portsTest.cpp
             tests/core/processingUnitTest.cpp
-            tests/core/memoryPoolPortsTest.cpp
+            tests/core/portThreadSafetyTest.cpp
             tests/types/uuidTest.cpp
             tests/types/geometryTest.cpp
             tests/utils/lruCacheTest.cpp
