@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <axonvex_core/utils/alignedNew.hpp>
 #include <axonvex_core/utils/optional.hpp>
 #include <chrono>
 #include <memory>
 #include <new>
 #include <thread>
+#include <type_traits>
 
 namespace axonvex::utils::containers {
 
@@ -45,6 +47,10 @@ struct QueueStatistics {
 template <typename T>
 class ThreadSafeQueue {
   public:
+    // Cache-line-aligned members make this type over-aligned; C++14's plain
+    // new does not honour that (see alignedNew.hpp).
+    AXONVEX_ALIGNED_NEW(ThreadSafeQueue)
+
     static constexpr size_t DEFAULT_CAPACITY = 1024;
     static constexpr size_t MIN_CAPACITY = 16;
     static constexpr size_t MAX_CAPACITY = 1024 * 1024;
@@ -71,6 +77,11 @@ class ThreadSafeQueue {
 
   private:
     struct alignas(64) Slot {
+        // Allocated as Slot[]; the array form of new ignores over-alignment in
+        // C++14 the same way the scalar form does. Trivially destructible, so
+        // no array cookie shifts the elements off the cache line.
+        AXONVEX_ALIGNED_NEW(Slot)
+
         std::atomic<uint64_t> sequence{0};
         alignas(T) char storage[sizeof(T)];
         Slot() = default;
@@ -82,6 +93,11 @@ class ThreadSafeQueue {
             return reinterpret_cast<const T*>(storage);
         }
     };
+
+    static_assert(std::is_trivially_destructible<Slot>::value,
+                  "Slot must stay trivially destructible: a non-trivial destructor makes array "
+                  "new emit a cookie, which shifts every element off its cache line");
+    static_assert(alignof(Slot) >= 64, "Slot must stay cache-line aligned");
 
     const size_t capacity_;
     const size_t capacity_mask_;

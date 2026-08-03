@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <axonvex_core/utils/alignedNew.hpp>
 #include <cstddef>
 #include <cstring>
 #include <memory>
 #include <new>
+#include <type_traits>
 
 namespace axonvex::utils::containers {
 
@@ -54,6 +56,10 @@ struct MemoryPoolStatistics {
 template <typename T>
 class MemoryPool {
   public:
+    // Cache-line-aligned members make this type over-aligned; C++14's plain
+    // new does not honour that (see alignedNew.hpp).
+    AXONVEX_ALIGNED_NEW(MemoryPool)
+
     static constexpr size_t DEFAULT_POOL_SIZE = 1024;
     static constexpr size_t MIN_POOL_SIZE = 16;
     static constexpr size_t MAX_POOL_SIZE = 1024 * 1024;
@@ -85,6 +91,11 @@ class MemoryPool {
 
   private:
     struct alignas(64) Block {
+        // Allocated as Block[]; the array form of new ignores over-alignment
+        // in C++14 the same way the scalar form does. Trivially destructible,
+        // so no array cookie shifts the elements off the cache line.
+        AXONVEX_ALIGNED_NEW(Block)
+
         std::atomic<uint32_t> next{0}; // index of next free block, NULL_INDEX terminates
         std::atomic<bool> is_allocated{false};
         alignas(T) char storage[sizeof(T)];
@@ -97,6 +108,11 @@ class MemoryPool {
             return reinterpret_cast<const T*>(storage);
         }
     };
+
+    static_assert(std::is_trivially_destructible<Block>::value,
+                  "Block must stay trivially destructible: a non-trivial destructor makes array "
+                  "new emit a cookie, which shifts every element off its cache line");
+    static_assert(alignof(Block) >= 64, "Block must stay cache-line aligned");
 
     // C3 ABA fix: the free-list head packs {tag:32, index:32} into one 64-bit
     // atomic. Every successful pop/push increments the tag, so a CAS with a

@@ -35,6 +35,9 @@ Correctness bugs, each with location, verified by direct code reading:
 | C10 | HIGH | TCP/UDP `::send` without `MSG_NOSIGNAL` → SIGPIPE process kill on peer teardown | `tcpClient.hpp:74,82`, `udpSocket.hpp:77` |
 | C11 | HIGH | TCP newline framing corrupts binary payloads (0x0A); single `::send` never loops on short writes (silent truncation counted as success) | `tcpClient.hpp:81-88,212-222` |
 | C12 | HIGH | SafetyManager invokes user callbacks + `triggerEmergencyStop` under `policiesMutex_` (reentrant deadlock); `evaluationPeriod_` read/write race | `safetyManager.hpp:148-177,199-201,224` |
+| C27 | HIGH | Over-aligned types (`alignas(64)` in `MemoryPool`, `ThreadSafeQueue`, `RingBuffer`, and the `Block[]`/`Slot[]` arrays) heap-allocated with plain `new`/`make_unique` — C++14's `operator new` only guarantees 16-byte alignment, so every instance was misaligned UB and the false-sharing padding did nothing. UBSan flagged 118 tests. **Fixed**: `AXONVEX_ALIGNED_NEW` + `utils/alignedNew.hpp`. | `memoryPool.hpp`, `threadSafeQueue.hpp`, `ringBuffer.hpp` |
+| C28 | MEDIUM | `InputPort`/`OutputPort`/`AsyncInputPort` destructors were `= default`, leaking the object still held in `pooledData_` (the pool frees blocks without running `~T`). `reset`/`setThreadSafe`/`setMemoryPoolSize` already released it; only the destructor did not. **Fixed**: shared `releasePooledData()`. | `ports.hpp:145,220,287` |
+| C29 | HIGH | `MemoryPool::allocateObject` data race under concurrent port writes (TSan, `MemoryPoolPortsTest.ConcurrentAccessPatterns` via `InputPort::writeData`) — distinct from C3's ABA fix. Quarantined from the TSan CI gate until fixed. | `memoryPool.hpp:219`, `ports.hpp:505` |
 | C26 | MEDIUM | `SafetyManager::evaluationLoop` has no try/catch around `evaluateAll()` — a user policy whose `evaluate()` throws propagates out of the worker thread and calls `std::terminate` (a safety policy kills the process). Same shape as the unguarded user code in `Watchdog::loop`. | `safetyManager.hpp` (`evaluationLoop`), `watchdog.hpp:60-75` |
 | C13 | HIGH | Plugin factory declared `extern "C" inline` (not dlsym-able); ROS2 plugin built as INTERFACE lib (no .so ever produced); no ABI/version handshake; dup-name `emplace` leaks instance + dlopen handle; no `RTLD_LOCAL` | `ros2Plugin.hpp:18-24`, `plugins/axonvex_ros2/CMakeLists.txt:11`, `pluginManager.hpp:33-76` |
 | C14 | HIGH | Logger: `formatString` returns format unchanged (all `logf`/`LOGF_*` args silently dropped); `LOGF_CRITICAL` macro duplicated/broken; heap allocation per log call despite "<500ns, no allocation" claim | `logger.hpp:632-637,1085-1086,462-495` |
@@ -122,7 +125,7 @@ Foundation first (Phases 0–3), then the vision workstreams in dependency order
 
 ### Phase 1 — Correctness (2–3 weeks)
 - Fix C1–C24 in priority order; each fix lands with a regression test (TDD where feasible).
-- Add ASan/UBSan/TSan CMake presets + CI jobs (TSan is the gate for C3/C5/C12/C18/C22-class bugs).
+- ~~Add ASan/UBSan/TSan CMake presets + CI jobs (TSan is the gate for C3/C5/C12/C18/C22-class bugs).~~ **Done**: `-DAXONVEX_SANITIZER=address|thread|undefined` (root `CMakeLists.txt`) plus a 3-way `sanitizers` matrix job in CI. All three are green at 373/373; the 12 quarantined tests are listed with reasons in `.github/workflows/ci.yml` — throughput asserts that cannot survive sanitizer slowdown, plus two known races (C29, C24). Presets were skipped deliberately: Conan 2 generates `CMakeUserPresets.json`, and a cache option composes with the existing CI flow instead of fighting it.
 - Replace sleep-based test assertions with condition-based waits (flake elimination).
 - Exit: TSan/ASan/UBSan clean across the full suite; no declared-unimplemented API.
 
