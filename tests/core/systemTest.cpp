@@ -386,8 +386,8 @@ TEST_F(AxonVexSystemTest, SystemConfigurationAccess) {
 }
 
 TEST_F(AxonVexSystemTest, SystemConfigurationUpdate) {
-    EXPECT_TRUE(system_->initialize());
-
+    // C25: config is immutable once initialization begins — worker threads
+    // read systemConfig_ unlocked, so live updates were a data race.
     SystemConfiguration newConfig = config_;
     newConfig.systemName = "UpdatedSystem";
     newConfig.logLevel = LogLevel::Warning;
@@ -397,6 +397,12 @@ TEST_F(AxonVexSystemTest, SystemConfigurationUpdate) {
     const auto& updatedConfig = system_->getSystemConfiguration();
     EXPECT_EQ(updatedConfig.systemName, "UpdatedSystem");
     EXPECT_EQ(updatedConfig.logLevel, LogLevel::Warning);
+
+    // After initialize() the update must be rejected
+    EXPECT_TRUE(system_->initialize());
+    newConfig.systemName = "TooLate";
+    EXPECT_FALSE(system_->updateSystemConfiguration(newConfig));
+    EXPECT_EQ(system_->getSystemConfiguration().systemName, "UpdatedSystem");
 }
 
 TEST_F(AxonVexSystemTest, FrameworkConfigurationAccess) {
