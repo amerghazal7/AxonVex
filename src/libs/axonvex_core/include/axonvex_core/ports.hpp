@@ -129,6 +129,15 @@ class BasePort {
     /// nobody reads, a late registration fails loudly here instead of silently
     /// racing a concurrent dispatch. Costs nothing on the hot path: setters are
     /// not hot.
+    ///
+    /// Two limits this deliberately does not close, so it is not mistaken for
+    /// more than it is. The load is relaxed against a seq_cst increment, so a
+    /// setter racing the *very first* dispatch can still read 0 and slip
+    /// through — that is already a violation of the setup-only contract, which
+    /// no runtime check can repair. And the trigger is "the port carried a
+    /// message", not "this particular callback was read", so a message rejected
+    /// by NaN validation before the callback is ever consulted still latches
+    /// the port. Erring toward rejection is the safe direction.
     void requireNoTrafficYet(const char* what) const {
         if (totalMessages_.load(std::memory_order_relaxed) != 0) {
             throw std::logic_error(std::string(what) +

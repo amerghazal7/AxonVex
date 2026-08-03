@@ -29,6 +29,19 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
     TcpClient(std::string host = "127.0.0.1", uint16_t port = 9000)
         : host_(std::move(host)), port_(port) {}
 
+    /// Without this, destroying a still-running client runs ~std::thread on a
+    /// joinable thread, which calls std::terminate.
+    ~TcpClient() override {
+        TcpClient::stop(); // qualified: no virtual dispatch during destruction
+        if (worker_.joinable()) {
+            // Only reachable when the destructor itself runs on the worker
+            // thread, i.e. the object is being destroyed from its own callback.
+            // That is not a supported lifecycle; detaching at least avoids
+            // std::terminate here.
+            worker_.detach();
+        }
+    }
+
     bool start() override {
         // Serialises the whole lifecycle. `running_` alone was check-then-act:
         // two concurrent stop() calls could both pass the guard and both reach
@@ -55,8 +68,9 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
 
     void stop() override {
         std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
-        if (!running_.load())
-            return;
+        // No early return on running_: after a deferred self-stop (below) the
+        // flag is already false while the thread and fd still need reclaiming.
+        // Every step below is individually idempotent instead.
         running_.store(false);
 #if defined(AXONVEX_PLATFORM_LINUX)
         // shutdown() wakes a blocked recv() immediately without invalidating the
@@ -77,8 +91,22 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         if (sock_ >= 0)
             ::shutdown(sock_, SHUT_RDWR);
 #endif
-        if (worker_.joinable())
+        if (worker_.joinable()) {
+            if (worker_.get_id() == std::this_thread::get_id()) {
+                // stop() was called from a message or error callback, and those
+                // run on the worker thread itself. Joining here is a self-join:
+                // it throws system_error("Resource deadlock avoided"), and from
+                // inside a callback that escapes recvLoop and the thread entry
+                // lambda, so std::terminate takes the whole process down.
+                //
+                // running_ is already false, so the loop exits as soon as this
+                // callback returns. The join and the close are deferred to the
+                // destructor or to a later stop() from another thread, both of
+                // which will find the worker already finished.
+                return;
+            }
             worker_.join();
+        }
 #if defined(AXONVEX_PLATFORM_LINUX)
         std::lock_guard<std::mutex> lock(sockMutex_);
         if (sock_ >= 0) {
