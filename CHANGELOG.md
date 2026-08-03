@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Concurrent stress regression test for C3 (8-thread allocate/deallocate ownership stamping; TSan-clean).
 - Regression tests for C12 (a handler may mutate the policy registry during dispatch, call `evaluateAll()` or `triggerEmergencyStop()` re-entrantly; a policy may query the manager from `evaluate()`; the evaluation period may change while the loop runs).
 
+- Sanitizer builds: `-DAXONVEX_SANITIZER=address|thread|undefined` on the root `CMakeLists.txt`, wired to a 3-way `sanitizers` matrix job in CI. Quarantined tests (throughput asserts, two known races) are listed with reasons in the workflow.
+
 ### Changed
 
 - `AxonVexSystem::setSafetyManager`/`getSafetyManager` (never functional — the pointer was stored and never read) replaced by `setSafetyHook`/`getSafetyHook` on the new core-owned `core::SafetyHook` interface; `safety::SafetyManager` implements it. Core no longer names any safety-layer type.
@@ -29,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - C25: `SystemEvent` string leaks eliminated (LSan-clean) — events are dropped once shutdown begins, the queue is drained back to the pool after the event thread joins, and `initialize()` drains before its component rebuild replaces the event pool (the pool destructor does not destruct live blocks).
 - C3: `MemoryPool`'s lock-free free list is no longer ABA-vulnerable — the head is a tagged `{tag:32, index:32}` 64-bit atomic and every pop/push increments the tag, so a stale CAS can never install a stale `next` (the double-handout mechanism).
 - C12: `SafetyManager` no longer holds `policiesMutex_` across user code — `evaluateAll()` snapshots the policy set (as `shared_ptr`, so a policy removed mid-cycle stays alive), then runs `evaluate()`, event dispatch, and `triggerEmergencyStop` unlocked; a policy or handler can now call back into the manager without deadlocking, including a re-entrant `evaluateAll()` (which returns the in-progress cycle's worst level instead of blocking or recursing). Handlers moved off the unsynchronized `core::Caller` to a mutex-guarded list with snapshot-then-dispatch, and `evaluationPeriod_` is atomic (the evaluation loop read it unlocked).
+- C27: `MemoryPool`, `ThreadSafeQueue` and `RingBuffer` are cache-line aligned but were heap-allocated with plain `new`/`make_unique`, which in C++14 only guarantees 16-byte alignment — every instance was misaligned (undefined behaviour, and the false-sharing padding was not actually separating anything). They now allocate through `AXONVEX_ALIGNED_NEW`. UBSan went from 118 failing tests to zero.
+- C28: `InputPort`, `OutputPort` and `AsyncInputPort` leaked the object still held in their memory pool at destruction — the pool frees its blocks without running `~T`, so any non-trivial payload leaked (LSan-confirmed).
 - C4: `MemoryPool::isEmpty()`/`isFull()` bodies were swapped.
 - C10: SIGPIPE protection (`MSG_NOSIGNAL`) on TCP/UDP sends — peer teardown no longer kills the process.
 - C16: `optional<>` move semantics now match `std::optional` (moved-from source stays engaged).

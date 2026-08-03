@@ -16,6 +16,11 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DBUILD_EXAMPLES=ON
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure                       # all tests, single test_core binary
+
+# Sanitizers — one at a time, in their own build dir (flags apply to every target)
+cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug -DAXONVEX_SANITIZER=address   # or thread, undefined
+ctest --test-dir build-asan --output-on-failure
+setarch $(uname -m) -R ctest --test-dir build-tsan               # TSan needs ASLR off on kernel 6.6+
 ```
 
 Rules:

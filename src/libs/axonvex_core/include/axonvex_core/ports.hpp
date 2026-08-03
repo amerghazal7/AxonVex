@@ -142,7 +142,9 @@ class InputPort : public BasePort {
     using DataCallback = std::function<void(const T&)>;
 
     explicit InputPort(int id, const std::string& name, ProcessingUnit* owner);
-    ~InputPort() override = default;
+    ~InputPort() override {
+        releasePooledData();
+    }
 
     // Data access
     T read() const;
@@ -185,6 +187,15 @@ class InputPort : public BasePort {
     void reset() override;
 
   private:
+    /// The pool frees its blocks without running ~T, so the object still held
+    /// in pooledData_ must be released explicitly or every non-trivial T leaks.
+    void releasePooledData() noexcept {
+        T* pooled = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
+        if (pooled && memoryPool_) {
+            memoryPool_->deallocateObject(pooled);
+        }
+    }
+
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> hasNewData_{false};
@@ -217,7 +228,9 @@ class OutputPort : public BasePort {
     using OutputCallback = std::function<void(const T&)>;
 
     explicit OutputPort(int id, const std::string& name, ProcessingUnit* owner);
-    ~OutputPort() override = default;
+    ~OutputPort() override {
+        releasePooledData();
+    }
 
     // Data output
     void write(const T& data);
@@ -257,6 +270,15 @@ class OutputPort : public BasePort {
     void reset() override;
 
   private:
+    /// The pool frees its blocks without running ~T, so the object still held
+    /// in pooledData_ must be released explicitly or every non-trivial T leaks.
+    void releasePooledData() noexcept {
+        T* pooled = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
+        if (pooled && memoryPool_) {
+            memoryPool_->deallocateObject(pooled);
+        }
+    }
+
     mutable std::mutex connectionMutex_;
     std::vector<InputPort<T>*> connectedPorts_;
     std::atomic<bool> isThreadSafe_{false};
@@ -284,7 +306,9 @@ class AsyncInputPort : public BasePort {
     using DataCallback = std::function<void(const T&)>;
 
     explicit AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner);
-    ~AsyncInputPort() override = default;
+    ~AsyncInputPort() override {
+        releasePooledData();
+    }
 
     // Async data operations
     void update(const T& data);
@@ -325,6 +349,15 @@ class AsyncInputPort : public BasePort {
     void reset() override;
 
   private:
+    /// The pool frees its blocks without running ~T, so the object still held
+    /// in pooledData_ must be released explicitly or every non-trivial T leaks.
+    void releasePooledData() noexcept {
+        T* pooled = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
+        if (pooled && memoryPool_) {
+            memoryPool_->deallocateObject(pooled);
+        }
+    }
+
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> wasUpdated_{false};

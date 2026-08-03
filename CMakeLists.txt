@@ -37,6 +37,39 @@ option(BUILD_TESTING "Build unit tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_PLUGINS "Build middleware plugins (axonvex_ros2, etc.)" ON)
 
+##################### Sanitizers ##########################
+# -DAXONVEX_SANITIZER=address|thread|undefined. One at a time: ASan and TSan
+# cannot be combined. Build in a dedicated directory (build-asan/, build-tsan/,
+# build-ubsan/) — the flags apply to every target, so reusing a normal build
+# directory leaves uninstrumented objects behind in the cache.
+set(AXONVEX_SANITIZER "" CACHE STRING "Sanitizer to build with: address, thread, or undefined")
+set_property(CACHE AXONVEX_SANITIZER PROPERTY STRINGS "" address thread undefined)
+
+if(AXONVEX_SANITIZER)
+    if(NOT AXONVEX_SANITIZER MATCHES "^(address|thread|undefined)$")
+        message(FATAL_ERROR
+            "AXONVEX_SANITIZER must be address, thread, or undefined (got '${AXONVEX_SANITIZER}')")
+    endif()
+    if(MSVC)
+        message(FATAL_ERROR "AXONVEX_SANITIZER is not supported with MSVC")
+    endif()
+
+    add_compile_options(-fsanitize=${AXONVEX_SANITIZER} -fno-omit-frame-pointer -g -O1)
+    add_link_options(-fsanitize=${AXONVEX_SANITIZER})
+    if(AXONVEX_SANITIZER STREQUAL "undefined")
+        # Without this UBSan only prints and keeps going, so a CI job would stay
+        # green on real undefined behaviour.
+        add_compile_options(-fno-sanitize-recover=all)
+    endif()
+
+    # gtest_discover_tests runs the test binary at build time; under TSan that
+    # aborts on kernels with high mmap_rnd_bits (6.6+). Defer discovery to test
+    # time, where the binary runs under `setarch -R`.
+    set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+
+    message(STATUS "AxonVex: building with -fsanitize=${AXONVEX_SANITIZER}")
+endif()
+
 ##################### Build AxonVex Libs ##########################
 add_subdirectory(src/libs)
 

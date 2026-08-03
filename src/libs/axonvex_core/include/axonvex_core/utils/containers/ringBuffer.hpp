@@ -4,6 +4,7 @@
 #include <atomic>
 #include <axonvex_core/coreUtilities.hpp>
 #include <axonvex_core/performanceStatistics.hpp>
+#include <axonvex_core/utils/alignedNew.hpp>
 #include <axonvex_core/utils/optional.hpp>
 #include <chrono>
 #include <cstring>
@@ -25,12 +26,24 @@ class RingBufferStatistics : public axonvex::core::PerformanceStatisticsBase<Rin
     std::atomic<uint64_t> total_write_time_ns{0};
     std::atomic<uint64_t> total_read_time_ns{0};
 
-    uint64_t getWriteCount() const noexcept { return safeLoad(write_count); }
-    uint64_t getReadCount() const noexcept { return safeLoad(read_count); }
-    uint64_t getWriteFailures() const noexcept { return safeLoad(write_failures); }
-    uint64_t getReadFailures() const noexcept { return safeLoad(read_failures); }
-    uint64_t getOverruns() const noexcept { return safeLoad(overruns); }
-    uint64_t getUnderruns() const noexcept { return safeLoad(underruns); }
+    uint64_t getWriteCount() const noexcept {
+        return safeLoad(write_count);
+    }
+    uint64_t getReadCount() const noexcept {
+        return safeLoad(read_count);
+    }
+    uint64_t getWriteFailures() const noexcept {
+        return safeLoad(write_failures);
+    }
+    uint64_t getReadFailures() const noexcept {
+        return safeLoad(read_failures);
+    }
+    uint64_t getOverruns() const noexcept {
+        return safeLoad(overruns);
+    }
+    uint64_t getUnderruns() const noexcept {
+        return safeLoad(underruns);
+    }
 
     void recordWrite(std::chrono::nanoseconds duration = std::chrono::nanoseconds{0}) noexcept {
         safeIncrement(write_count);
@@ -105,7 +118,9 @@ class RingBufferStatistics : public axonvex::core::PerformanceStatisticsBase<Rin
         return report;
     }
 
-    std::string getComponentName() const override { return "RingBuffer"; }
+    std::string getComponentName() const override {
+        return "RingBuffer";
+    }
 };
 
 /**
@@ -114,7 +129,12 @@ class RingBufferStatistics : public axonvex::core::PerformanceStatisticsBase<Rin
 template <typename T>
 class RingBuffer {
   public:
-    static constexpr size_t DEFAULT_CAPACITY = axonvex::core::CapacityUtils::Defaults::DEFAULT_CAPACITY;
+    // Cache-line-aligned members make this type over-aligned; C++14's plain
+    // new does not honour that (see alignedNew.hpp).
+    AXONVEX_ALIGNED_NEW(RingBuffer)
+
+    static constexpr size_t DEFAULT_CAPACITY =
+        axonvex::core::CapacityUtils::Defaults::DEFAULT_CAPACITY;
     static constexpr size_t MIN_CAPACITY = axonvex::core::CapacityUtils::Defaults::MIN_CAPACITY;
     static constexpr size_t MAX_CAPACITY = axonvex::core::CapacityUtils::Defaults::MAX_CAPACITY;
 
@@ -156,9 +176,12 @@ class RingBuffer {
 
 template <typename T>
 RingBuffer<T>::RingBuffer(size_t capacity)
-    : capacity_(axonvex::core::CapacityUtils::validateCapacity(capacity, MIN_CAPACITY, MAX_CAPACITY, true)),
+    : capacity_(axonvex::core::CapacityUtils::validateCapacity(capacity, MIN_CAPACITY, MAX_CAPACITY,
+                                                               true)),
       capacity_mask_(capacity_ - 1), buffer_(std::make_unique<T[]>(capacity_)) {
-    for (size_t i = 0; i < capacity_; ++i) { new (&buffer_[i]) T{}; }
+    for (size_t i = 0; i < capacity_; ++i) {
+        new (&buffer_[i]) T{};
+    }
 }
 
 template <typename T>
@@ -214,10 +237,12 @@ axonvex::optional<T> RingBuffer<T>::peek() const noexcept {
 
 template <typename T>
 size_t RingBuffer<T>::writeMany(const T* items, size_t count) noexcept {
-    if (!items || count == 0) return 0;
+    if (!items || count == 0)
+        return 0;
     size_t written = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (!write(items[i])) break;
+        if (!write(items[i]))
+            break;
         ++written;
     }
     return written;
@@ -225,11 +250,13 @@ size_t RingBuffer<T>::writeMany(const T* items, size_t count) noexcept {
 
 template <typename T>
 size_t RingBuffer<T>::readMany(T* items, size_t count) noexcept {
-    if (!items || count == 0) return 0;
+    if (!items || count == 0)
+        return 0;
     size_t read_count = 0;
     for (size_t i = 0; i < count; ++i) {
         auto item = read();
-        if (!item.has_value()) break;
+        if (!item.has_value())
+            break;
         items[i] = std::move(item.value());
         ++read_count;
     }
@@ -238,7 +265,8 @@ size_t RingBuffer<T>::readMany(T* items, size_t count) noexcept {
 
 template <typename T>
 bool RingBuffer<T>::isEmpty() const noexcept {
-    return read_index_.load(axonvex::core::MemoryOrdering::acquire) == write_index_.load(axonvex::core::MemoryOrdering::acquire);
+    return read_index_.load(axonvex::core::MemoryOrdering::acquire) ==
+           write_index_.load(axonvex::core::MemoryOrdering::acquire);
 }
 
 template <typename T>
@@ -256,16 +284,24 @@ size_t RingBuffer<T>::size() const noexcept {
 }
 
 template <typename T>
-size_t RingBuffer<T>::capacity() const noexcept { return capacity_; }
+size_t RingBuffer<T>::capacity() const noexcept {
+    return capacity_;
+}
 
 template <typename T>
-size_t RingBuffer<T>::available() const noexcept { return capacity_ - size() - 1; }
+size_t RingBuffer<T>::available() const noexcept {
+    return capacity_ - size() - 1;
+}
 
 template <typename T>
-const RingBufferStatistics& RingBuffer<T>::getStatistics() const noexcept { return stats_; }
+const RingBufferStatistics& RingBuffer<T>::getStatistics() const noexcept {
+    return stats_;
+}
 
 template <typename T>
-void RingBuffer<T>::resetStatistics() noexcept { stats_.reset(); }
+void RingBuffer<T>::resetStatistics() noexcept {
+    stats_.reset();
+}
 
 template <typename T>
 void RingBuffer<T>::clear() noexcept {
