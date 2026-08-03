@@ -139,22 +139,6 @@ void ProcessingUnit::resetPorts() {
     }
 }
 
-void ProcessingUnit::setPortsThreadSafe(bool threadSafe) {
-    std::lock_guard<std::mutex> lock(portsMutex_);
-    for (auto& kv : inputPorts_) {
-        kv.second->setThreadSafe(threadSafe);
-    }
-    for (auto& kv : outputPorts_) {
-        kv.second->setThreadSafe(threadSafe);
-    }
-    for (auto& kv : asyncInputPorts_) {
-        kv.second->setThreadSafe(threadSafe);
-    }
-    for (auto& kv : asyncOutputPorts_) {
-        kv.second->setThreadSafe(threadSafe);
-    }
-}
-
 std::string ProcessingUnit::getInputPortName(int idx) const {
     std::lock_guard<std::mutex> lock(portsMutex_);
     auto it = inputPortNames_.find(idx);

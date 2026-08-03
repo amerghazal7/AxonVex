@@ -45,8 +45,8 @@ class WebSocketServer : public axonvex::interfaces::ProtocolInterface {
 
     bool send(const std::vector<uint8_t>& data) override {
         // Placeholder send: echo back through callback(s)
-        stats_.messagesSent++;
-        stats_.bytesSent += data.size();
+        stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
+        stats_.bytesSent.fetch_add(data.size(), std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(cbMutex_);
         this->callCallbacksByKey(defaultKey(), data);
         return true;

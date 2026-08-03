@@ -62,11 +62,17 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         // blocked call would then read a stranger's fd. So shutdown here, close
         // only after the join (C24). SO_RCVTIMEO is the backstop if the peer
         // state makes shutdown a no-op.
-        {
-            std::lock_guard<std::mutex> lock(sockMutex_);
-            if (sock_ >= 0)
-                ::shutdown(sock_, SHUT_RDWR);
-        }
+        //
+        // Deliberately NOT under sockMutex_. send() holds that mutex across a
+        // blocking ::send(), so taking it here would let a stalled peer (TCP
+        // zero window, no SO_SNDTIMEO) gate the wakeup: stop() would block on
+        // the mutex, never reach the shutdown, and never start the join — with
+        // no bound at all, let alone RECV_TIMEOUT_MS. It is safe unlocked
+        // because sock_ has no concurrent writer at this point: it is assigned
+        // in connectSocket() before the reader thread starts, and cleared below
+        // only after the join.
+        if (sock_ >= 0)
+            ::shutdown(sock_, SHUT_RDWR);
 #endif
         if (worker_.joinable())
             worker_.join();
@@ -108,12 +114,12 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
             return false;
         }
         total += 1;
-        stats_.messagesSent++;
-        stats_.bytesSent += static_cast<uint64_t>(total);
+        stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
+        stats_.bytesSent.fetch_add(static_cast<uint64_t>(total), std::memory_order_relaxed);
         return true;
 #else
-        stats_.messagesSent++;
-        stats_.bytesSent += data.size();
+        stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
+        stats_.bytesSent.fetch_add(data.size(), std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(cbMutex_);
         this->callCallbacksByKey(defaultKey(), data);
         return true;
@@ -183,6 +189,8 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         return errorKeyed_.unregisterAllCallbacksForKey(key);
     }
 
+    /// Setup only: host_/port_ are read unguarded by connectSocket(), so this
+    /// must complete before start() and must not run concurrently with itself.
     bool configure(const std::string& key, const std::string& value) override {
         if (key == "host") {
             host_ = value;
@@ -268,13 +276,13 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
             }
             // Append and scan for newline-delimited frames
             buffer.insert(buffer.end(), tmp.begin(), tmp.begin() + n);
-            stats_.bytesReceived += static_cast<uint64_t>(n);
+            stats_.bytesReceived.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
             // Extract frames
             size_t start = 0;
             for (size_t i = 0; i < buffer.size(); ++i) {
                 if (buffer[i] == '\n') {
                     std::vector<uint8_t> frame(buffer.begin() + start, buffer.begin() + i);
-                    stats_.messagesReceived++;
+                    stats_.messagesReceived.fetch_add(1, std::memory_order_relaxed);
                     {
                         std::lock_guard<std::mutex> lock(cbMutex_);
                         this->callCallbacksByKey(defaultKey(), frame);
