@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Regression test for C18 (re-entrant health-check callback registration must not deadlock).
 - Regression tests for C1 (all ready tasks execute each scheduler cycle; removing a task mid-execution is safe).
 - Regression tests for C2 (`SafetyManager` e-stop halts the system; hook registration/clearing).
+- Concurrent stress regression test for C3 (8-thread allocate/deallocate ownership stamping; TSan-clean).
 
 ### Changed
 
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - C2: a `SafetyManager` emergency stop now actually halts the system — `setSafetyHook` registers an emergency callback that performs an emergency shutdown. Teardown is safe from any thread: hook dispatch synchronizes with clearing (so destroying the system with a live hook cannot dangle), `emergencyShutdown`/`stop` serialize thread-handle teardown via a shutdown mutex, and self-join guards let the e-stop fire from a system thread.
+- C3: `MemoryPool`'s lock-free free list is no longer ABA-vulnerable — the head is a tagged `{tag:32, index:32}` 64-bit atomic and every pop/push increments the tag, so a stale CAS can never install a stale `next` (the double-handout mechanism).
 - C4: `MemoryPool::isEmpty()`/`isFull()` bodies were swapped.
 - C10: SIGPIPE protection (`MSG_NOSIGNAL`) on TCP/UDP sends — peer teardown no longer kills the process.
 - C16: `optional<>` move semantics now match `std::optional` (moved-from source stays engaged).

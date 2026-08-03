@@ -85,7 +85,7 @@ class MemoryPool {
 
   private:
     struct alignas(64) Block {
-        std::atomic<Block*> next{nullptr};
+        std::atomic<uint32_t> next{0}; // index of next free block, NULL_INDEX terminates
         std::atomic<bool> is_allocated{false};
         alignas(T) char storage[sizeof(T)];
         Block() = default;
@@ -98,10 +98,28 @@ class MemoryPool {
         }
     };
 
+    // C3 ABA fix: the free-list head packs {tag:32, index:32} into one 64-bit
+    // atomic. Every successful pop/push increments the tag, so a CAS with a
+    // stale head (same index recycled through pop→push) cannot succeed and a
+    // stale `next` is never installed. Index-based because blocks_ is a
+    // contiguous array (MAX_POOL_SIZE ≤ 2^20 << 2^32). The 32-bit tag would
+    // need 4 billion pops between one thread's load and CAS to false-match —
+    // not reachable in practice.
+    static constexpr uint32_t NULL_INDEX = 0xFFFFFFFFu;
+    static uint64_t packHead(uint32_t tag, uint32_t index) noexcept {
+        return (static_cast<uint64_t>(tag) << 32) | index;
+    }
+    static uint32_t headIndex(uint64_t head) noexcept {
+        return static_cast<uint32_t>(head & 0xFFFFFFFFu);
+    }
+    static uint32_t headTag(uint64_t head) noexcept {
+        return static_cast<uint32_t>(head >> 32);
+    }
+
     const size_t pool_size_;
     const size_t pool_mask_;
     std::unique_ptr<Block[]> blocks_;
-    alignas(64) std::atomic<Block*> free_head_{nullptr};
+    alignas(64) std::atomic<uint64_t> free_head_{0};
     alignas(64) std::atomic<size_t> allocated_count_{0};
     mutable MemoryPoolStatistics stats_;
 
@@ -122,12 +140,12 @@ MemoryPool<T>::MemoryPool(size_t pool_size)
     : pool_size_(std::max(MIN_POOL_SIZE, std::min(MAX_POOL_SIZE, nextPowerOf2(pool_size)))),
       pool_mask_(pool_size_ - 1), blocks_(std::make_unique<Block[]>(pool_size_)) {
     for (size_t i = 0; i < pool_size_ - 1; ++i) {
-        blocks_[i].next.store(&blocks_[i + 1], relaxed);
+        blocks_[i].next.store(static_cast<uint32_t>(i + 1), relaxed);
         blocks_[i].is_allocated.store(false, relaxed);
     }
-    blocks_[pool_size_ - 1].next.store(nullptr, relaxed);
+    blocks_[pool_size_ - 1].next.store(NULL_INDEX, relaxed);
     blocks_[pool_size_ - 1].is_allocated.store(false, relaxed);
-    free_head_.store(&blocks_[0], relaxed);
+    free_head_.store(packHead(0, 0), relaxed);
 }
 
 template <typename T>
@@ -138,20 +156,26 @@ MemoryPool<T>::~MemoryPool() {
 template <typename T>
 T* MemoryPool<T>::allocate() noexcept {
     try {
-        Block* head = free_head_.load(acquire);
-        while (head != nullptr) {
-            Block* next = head->next.load(relaxed);
-            if (free_head_.compare_exchange_weak(head, next, acq_rel, relaxed)) {
-                head->is_allocated.store(true, relaxed);
+        // Tagged Treiber-stack pop (C3). acquire on the load pairs with the
+        // release CAS in deallocate() so the popped block's `next` (written by
+        // the pusher) is visible. The tag increment makes a stale head value
+        // fail the CAS even if the same index is back on top (ABA).
+        uint64_t head = free_head_.load(acquire);
+        while (headIndex(head) != NULL_INDEX) {
+            Block& block = blocks_[headIndex(head)];
+            uint32_t next = block.next.load(relaxed);
+            uint64_t new_head = packHead(headTag(head) + 1, next);
+            if (free_head_.compare_exchange_weak(head, new_head, acq_rel, acquire)) {
+                block.is_allocated.store(true, relaxed);
                 size_t current_count = allocated_count_.fetch_add(1, relaxed) + 1;
                 size_t peak = stats_.peak_usage.load(relaxed);
                 while (current_count > peak &&
                        !stats_.peak_usage.compare_exchange_weak(peak, current_count, relaxed)) {}
                 stats_.current_usage.store(current_count, relaxed);
                 stats_.allocations.fetch_add(1, relaxed);
-                return head->data();
+                return block.data();
             }
-            head = free_head_.load(acquire);
+            // CAS failure reloaded `head` with the current value
         }
         stats_.allocation_failures.fetch_add(1, relaxed);
         stats_.pool_exhausted.fetch_add(1, relaxed);
@@ -221,10 +245,15 @@ bool MemoryPool<T>::deallocate(T* ptr) noexcept {
             stats_.deallocation_failures.fetch_add(1, relaxed);
             return false;
         }
-        Block* head = free_head_.load(relaxed);
+        // Tagged push (C3): release CAS publishes block->next to the acquiring
+        // pop in allocate(); tag increment prevents ABA on the head.
+        uint32_t block_index = static_cast<uint32_t>(block - blocks_.get());
+        uint64_t head = free_head_.load(relaxed);
+        uint64_t new_head;
         do {
-            block->next.store(head, relaxed);
-        } while (!free_head_.compare_exchange_weak(head, block, acq_rel, relaxed));
+            block->next.store(headIndex(head), relaxed);
+            new_head = packHead(headTag(head) + 1, block_index);
+        } while (!free_head_.compare_exchange_weak(head, new_head, release, relaxed));
         size_t current_count = allocated_count_.fetch_sub(1, relaxed) - 1;
         stats_.current_usage.store(current_count, relaxed);
         stats_.deallocations.fetch_add(1, relaxed);
@@ -294,10 +323,10 @@ bool MemoryPool<T>::validate() const noexcept {
             return false;
         }
         size_t free_count = 0;
-        Block* current = free_head_.load(acquire);
-        while (current != nullptr && free_count <= pool_size_) {
+        uint32_t current = headIndex(free_head_.load(acquire));
+        while (current != NULL_INDEX && free_count <= pool_size_) {
             free_count++;
-            current = current->next.load(relaxed);
+            current = blocks_[current].next.load(relaxed);
         }
         return (free_count + allocated == pool_size_);
     } catch (...) { return false; }
@@ -306,12 +335,12 @@ bool MemoryPool<T>::validate() const noexcept {
 template <typename T>
 void MemoryPool<T>::clear() noexcept {
     for (size_t i = 0; i < pool_size_ - 1; ++i) {
-        blocks_[i].next.store(&blocks_[i + 1], relaxed);
+        blocks_[i].next.store(static_cast<uint32_t>(i + 1), relaxed);
         blocks_[i].is_allocated.store(false, relaxed);
     }
-    blocks_[pool_size_ - 1].next.store(nullptr, relaxed);
+    blocks_[pool_size_ - 1].next.store(NULL_INDEX, relaxed);
     blocks_[pool_size_ - 1].is_allocated.store(false, relaxed);
-    free_head_.store(&blocks_[0], relaxed);
+    free_head_.store(packHead(0, 0), relaxed);
     allocated_count_.store(0, relaxed);
     stats_.current_usage.store(0, relaxed);
 }
@@ -350,6 +379,8 @@ typename MemoryPool<T>::Block* MemoryPool<T>::getBlockFromPointer(const T* ptr) 
     return &blocks_[block_index];
 }
 
+template <typename T>
+constexpr uint32_t MemoryPool<T>::NULL_INDEX;
 template <typename T>
 constexpr size_t MemoryPool<T>::DEFAULT_POOL_SIZE;
 template <typename T>

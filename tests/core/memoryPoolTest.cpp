@@ -573,3 +573,50 @@ TEST_F(MemoryPoolTest, EmptyFullPredicates) {
     EXPECT_TRUE(pool.isEmpty());
     EXPECT_FALSE(pool.isFull());
 }
+
+// Regression test for C3 (ABA): concurrent allocate/deallocate on a small pool
+// must never hand the same block to two owners. Each owner stamps its slot and
+// re-checks the stamp; a double-handout overwrites another owner's stamp.
+TEST_F(MemoryPoolTest, ConcurrentAllocateDeallocateNoDoubleHandout) {
+    MemoryPool<uint64_t> pool(16); // MIN_POOL_SIZE: small pool maximizes head churn
+    constexpr int kThreads = 8;
+    constexpr int kItersPerThread = 200000;
+
+    std::atomic<uint64_t> corruptions{0};
+    std::atomic<bool> start{false};
+    std::vector<std::thread> workers;
+
+    for (int t = 0; t < kThreads; ++t) {
+        workers.emplace_back([&pool, &corruptions, &start, t]() {
+            while (!start.load()) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < kItersPerThread; ++i) {
+                uint64_t* slot = pool.allocate();
+                if (slot == nullptr) {
+                    continue; // pool exhausted this instant — fine
+                }
+                const uint64_t stamp =
+                    (static_cast<uint64_t>(t + 1) << 32) | static_cast<uint32_t>(i);
+                *slot = stamp;
+                // Small window for a racing double-owner to overwrite the stamp
+                for (int spin = 0; spin < 8; ++spin) {
+                    std::this_thread::yield();
+                }
+                if (*slot != stamp) {
+                    corruptions.fetch_add(1);
+                }
+                pool.deallocate(slot);
+            }
+        });
+    }
+
+    start.store(true);
+    for (auto& w : workers) {
+        w.join();
+    }
+
+    EXPECT_EQ(corruptions.load(), 0u) << "MemoryPool handed the same block to two owners (C3 ABA)";
+    EXPECT_TRUE(pool.validate());
+    EXPECT_TRUE(pool.isEmpty());
+}
