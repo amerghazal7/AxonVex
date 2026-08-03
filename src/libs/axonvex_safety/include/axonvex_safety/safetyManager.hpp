@@ -1,8 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <axonvex_core/callback.hpp>
-#include <axonvex_core/caller.hpp>
 #include <axonvex_core/safetyHook.hpp>
 #include <axonvex_safety/safetyPolicy.hpp>
 #include <chrono>
@@ -11,6 +11,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace axonvex::safety {
@@ -91,7 +92,7 @@ class SafetyManager : public axonvex::core::SafetyHook {
         event.source = "SafetyManager";
         event.description = "E-STOP: " + reason;
         event.timestamp = std::chrono::steady_clock::now();
-        caller_.callCallbacksSafe(event);
+        dispatch(event);
 
         // Fire the core SafetyHook emergency callback (C2). Deliberately invoked
         // UNDER emergencyCallbackMutex_ (unlike user handlers): the mutex makes
@@ -117,7 +118,7 @@ class SafetyManager : public axonvex::core::SafetyHook {
         event.source = "SafetyManager";
         event.description = "E-STOP reset";
         event.timestamp = std::chrono::steady_clock::now();
-        caller_.callCallbacksSafe(event);
+        dispatch(event);
         return true;
     }
 
@@ -139,7 +140,7 @@ class SafetyManager : public axonvex::core::SafetyHook {
             return;
         std::lock_guard<std::mutex> lock(policiesMutex_);
         const std::string& name = policy->getName();
-        policies_[name] = std::move(policy);
+        policies_[name] = std::shared_ptr<SafetyPolicy>(std::move(policy));
     }
 
     bool removePolicy(const std::string& name) {
@@ -172,18 +173,56 @@ class SafetyManager : public axonvex::core::SafetyHook {
     // On-demand evaluation (also called by the periodic loop)
     // -----------------------------------------------------------------
 
+    /**
+     * @brief Evaluate every enabled policy, publishing events for violations.
+     *
+     * No manager lock is held while user code runs (C12): a policy's
+     * evaluate() or an event handler may call addPolicy/removePolicy/
+     * triggerEmergencyStop without deadlocking. The snapshot holds a
+     * shared_ptr per policy, so a policy removed mid-cycle stays alive until
+     * the cycle finishes.
+     *
+     * A re-entrant call (from a policy or handler on the thread running the
+     * cycle) evaluates nothing and returns a partial result: the worst level
+     * of the policies evaluated so far, in unordered iteration order. A
+     * not-yet-evaluated policy reporting worse is not reflected.
+     */
     SafetyLevel evaluateAll() {
-        SafetyLevel worst = SafetyLevel::NOMINAL;
+        // Re-entry from this thread's own cycle (a policy or handler calling
+        // back into evaluateAll) neither recurses — it would re-run every
+        // policy and re-dispatch every event until the stack is gone — nor
+        // blocks on evaluationMutex_, which this thread already holds. It
+        // reports the worst level the in-progress cycle has seen so far.
+        if (evaluatingThread_.load() == std::this_thread::get_id()) {
+            return cycleWorst_.load();
+        }
 
-        std::lock_guard<std::mutex> lock(policiesMutex_);
-        for (auto& kv : policies_) {
-            SafetyPolicy* policy = kv.second.get();
+        // Serializes evaluation cycles (periodic loop vs. on-demand callers) so
+        // a policy's evaluate() is never re-entered concurrently. Never taken
+        // together with policiesMutex_, and never held by a thread that is not
+        // running a cycle.
+        std::lock_guard<std::mutex> cycleLock(evaluationMutex_);
+        CycleOwner owner(*this);
+
+        std::vector<std::pair<std::string, std::shared_ptr<SafetyPolicy>>> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(policiesMutex_);
+            snapshot.reserve(policies_.size());
+            for (const auto& kv : policies_) {
+                snapshot.emplace_back(kv.first, kv.second);
+            }
+        }
+
+        SafetyLevel worst = SafetyLevel::NOMINAL;
+        for (const auto& entry : snapshot) {
+            SafetyPolicy* policy = entry.second.get();
             if (!policy || !policy->isEnabled())
                 continue;
 
             PolicyResult result = policy->evaluate();
             if (result.level > worst) {
                 worst = result.level;
+                cycleWorst_.store(worst);
             }
 
             if (result.level > SafetyLevel::NOMINAL) {
@@ -197,14 +236,14 @@ class SafetyManager : public axonvex::core::SafetyHook {
 
                 SafetyEvent event;
                 event.level = result.level;
-                event.source = kv.first;
+                event.source = entry.first;
                 event.description = result.description;
                 event.timestamp = std::chrono::steady_clock::now();
-                caller_.callCallbacksSafe(event);
+                dispatch(event);
             }
 
             if (result.level == SafetyLevel::EMERGENCY) {
-                triggerEmergencyStop(kv.first + ": " + result.description);
+                triggerEmergencyStop(entry.first + ": " + result.description);
             }
         }
 
@@ -221,10 +260,19 @@ class SafetyManager : public axonvex::core::SafetyHook {
     // -----------------------------------------------------------------
 
     void registerHandler(Handler* handler) {
-        caller_.registerCallback(handler);
+        if (!handler)
+            return;
+        std::lock_guard<std::mutex> lock(handlersMutex_);
+        handlers_.push_back(handler);
     }
+
     bool unregisterHandler(Handler* handler) {
-        return caller_.unregisterCallback(handler);
+        std::lock_guard<std::mutex> lock(handlersMutex_);
+        auto it = std::find(handlers_.begin(), handlers_.end(), handler);
+        if (it == handlers_.end())
+            return false;
+        handlers_.erase(it);
+        return true;
     }
 
     // -----------------------------------------------------------------
@@ -232,13 +280,11 @@ class SafetyManager : public axonvex::core::SafetyHook {
     // -----------------------------------------------------------------
 
     void setEvaluationPeriod(Duration d) {
-        std::lock_guard<std::mutex> lock(policiesMutex_);
-        evaluationPeriod_ = d;
+        evaluationPeriod_.store(d);
     }
 
     Duration getEvaluationPeriod() const {
-        std::lock_guard<std::mutex> lock(policiesMutex_);
-        return evaluationPeriod_;
+        return evaluationPeriod_.load();
     }
 
     // -----------------------------------------------------------------
@@ -251,24 +297,68 @@ class SafetyManager : public axonvex::core::SafetyHook {
     }
 
   private:
+    /// Publishes the thread running the current evaluation cycle (and resets
+    /// the cycle's worst level) so a re-entrant evaluateAll() can return
+    /// instead of deadlocking. Scoped, because a policy's evaluate() may throw.
+    class CycleOwner {
+      public:
+        explicit CycleOwner(SafetyManager& mgr) : mgr_(mgr) {
+            mgr_.cycleWorst_.store(SafetyLevel::NOMINAL);
+            mgr_.evaluatingThread_.store(std::this_thread::get_id());
+        }
+        ~CycleOwner() {
+            mgr_.evaluatingThread_.store(std::thread::id());
+        }
+        CycleOwner(const CycleOwner&) = delete;
+        CycleOwner& operator=(const CycleOwner&) = delete;
+
+      private:
+        SafetyManager& mgr_;
+    };
+
+    /// Snapshot-then-dispatch (C12/C18): handlers run with no lock held, so a
+    /// handler may register/unregister handlers or touch the policy registry.
+    /// A handler unregistered during dispatch still receives the current event.
+    void dispatch(const SafetyEvent& event) noexcept {
+        std::vector<Handler*> handlers;
+        {
+            std::lock_guard<std::mutex> lock(handlersMutex_);
+            handlers = handlers_;
+        }
+        for (Handler* handler : handlers) {
+            if (!handler)
+                continue;
+            try {
+                handler->callbackPerform(event);
+            } catch (...) {
+                // A misbehaving handler must not stop the others.
+            }
+        }
+    }
+
     void evaluationLoop() {
         while (running_.load()) {
             if (!emergencyStopped_.load()) {
                 evaluateAll();
             }
-            std::this_thread::sleep_for(evaluationPeriod_);
+            std::this_thread::sleep_for(evaluationPeriod_.load());
         }
     }
 
-    Duration evaluationPeriod_;
+    std::atomic<Duration> evaluationPeriod_;
     std::atomic<bool> running_{false};
     std::atomic<bool> emergencyStopped_{false};
     std::thread worker_;
 
-    mutable std::mutex policiesMutex_;
-    std::unordered_map<std::string, std::unique_ptr<SafetyPolicy>> policies_;
+    mutable std::mutex evaluationMutex_;
+    std::atomic<std::thread::id> evaluatingThread_{std::thread::id()};
+    std::atomic<SafetyLevel> cycleWorst_{SafetyLevel::NOMINAL};
 
-    axonvex::core::Caller<SafetyEvent> caller_;
+    mutable std::mutex policiesMutex_;
+    std::unordered_map<std::string, std::shared_ptr<SafetyPolicy>> policies_;
+
+    mutable std::mutex handlersMutex_;
+    std::vector<Handler*> handlers_;
 
     mutable std::mutex statsMutex_;
 

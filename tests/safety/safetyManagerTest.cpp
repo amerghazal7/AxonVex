@@ -1,10 +1,11 @@
+#include <atomic>
 #include <axonvex_core/callback.hpp>
 #include <axonvex_safety/safetyManager.hpp>
 #include <axonvex_safety/safetyPolicy.hpp>
-#include <gtest/gtest.h>
-
-#include <atomic>
 #include <chrono>
+#include <functional>
+#include <gtest/gtest.h>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -53,14 +54,94 @@ class EmergencyPolicy : public SafetyPolicy {
 
 class ConfigurablePolicy : public SafetyPolicy {
   public:
-    explicit ConfigurablePolicy(const std::string& name)
-        : SafetyPolicy(name) {}
+    explicit ConfigurablePolicy(const std::string& name) : SafetyPolicy(name) {}
     PolicyResult evaluate() override {
         return {level.load(), description};
     }
     std::atomic<SafetyLevel> level{SafetyLevel::NOMINAL};
     std::string description{"ok"};
 };
+
+/// C12 regression: a handler that re-enters the manager's policy API while it
+/// is being dispatched, and removes the policy that produced the event.
+class ReentrantPolicyHandler : public axonvex::core::Callback<SafetyEvent> {
+  public:
+    explicit ReentrantPolicyHandler(SafetyManager& mgr) : mgr_(mgr) {}
+    void callbackPerform(const SafetyEvent event) override {
+        policyCountSeen = mgr_.getPolicyCount();
+        periodSeen = mgr_.getEvaluationPeriod();
+        removed = mgr_.removePolicy(event.source);
+    }
+    size_t policyCountSeen{0};
+    SafetyManager::Duration periodSeen{0};
+    bool removed{false};
+
+  private:
+    SafetyManager& mgr_;
+};
+
+/// C12 regression: a handler that calls back into evaluateAll() and
+/// triggerEmergencyStop() from inside dispatch.
+class ReentrantEvaluateHandler : public axonvex::core::Callback<SafetyEvent> {
+  public:
+    explicit ReentrantEvaluateHandler(SafetyManager& mgr) : mgr_(mgr) {}
+    void callbackPerform(const SafetyEvent event) override {
+        calls++;
+        reentrantLevel = mgr_.evaluateAll();
+        if (estopFromHandler) {
+            mgr_.triggerEmergencyStop("from handler: " + event.source);
+        }
+    }
+    std::atomic<int> calls{0};
+    std::atomic<SafetyLevel> reentrantLevel{SafetyLevel::NOMINAL};
+    bool estopFromHandler{false};
+
+  private:
+    SafetyManager& mgr_;
+};
+
+/// C12 regression: a policy that re-enters the manager's policy API from
+/// inside evaluate().
+class SelfInspectingPolicy : public SafetyPolicy {
+  public:
+    explicit SelfInspectingPolicy(SafetyManager& mgr)
+        : SafetyPolicy("self_inspecting"), mgr_(mgr) {}
+    PolicyResult evaluate() override {
+        namesSeen = mgr_.getPolicyNames().size();
+        return {SafetyLevel::NOMINAL, "ok"};
+    }
+    std::atomic<size_t> namesSeen{0};
+
+  private:
+    SafetyManager& mgr_;
+};
+
+/// Runs @p fn on a worker thread; returns false if it has not finished within
+/// @p limit. On timeout the worker is detached — it is deadlocked and joining
+/// would hang the suite — so @p fn must only touch state kept alive by a
+/// shared_ptr it captures by value.
+bool finishesWithin(std::function<void()> fn, std::chrono::milliseconds limit) {
+    // Polled rather than condition-variable based: GCC 11's libtsan does not
+    // intercept pthread_cond_clockwait, so wait_for() here produces bogus
+    // "double lock"/race reports that mask real findings.
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([fn, done]() {
+        fn();
+        done->store(true);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    if (!done->load()) {
+        worker.detach();
+        return false;
+    }
+    worker.join();
+    return true;
+}
 
 class SafetyHandler : public axonvex::core::Callback<SafetyEvent> {
   public:
@@ -417,4 +498,99 @@ TEST(SafetyManagerTest, ConfigureEvaluationPeriod) {
     EXPECT_EQ(mgr.getEvaluationPeriod(), std::chrono::milliseconds(100));
     mgr.setEvaluationPeriod(std::chrono::milliseconds(50));
     EXPECT_EQ(mgr.getEvaluationPeriod(), std::chrono::milliseconds(50));
+}
+
+// =====================================================================
+// C12: no locks held across policy evaluation or handler dispatch
+// =====================================================================
+
+TEST(SafetyManagerTest, HandlerMayMutatePolicyRegistryDuringDispatch) {
+    struct Fixture {
+        SafetyManager mgr;
+        ReentrantPolicyHandler handler{mgr};
+    };
+    auto fx = std::make_shared<Fixture>();
+    fx->mgr.setEvaluationPeriod(std::chrono::milliseconds(25));
+    fx->mgr.registerHandler(&fx->handler);
+    fx->mgr.addPolicy(std::unique_ptr<SafetyPolicy>(new CriticalPolicy()));
+
+    ASSERT_TRUE(finishesWithin([fx]() { fx->mgr.evaluateAll(); }, std::chrono::seconds(2)))
+        << "evaluateAll() deadlocked: policy registry locked across handler dispatch (C12)";
+
+    EXPECT_EQ(fx->handler.policyCountSeen, 1u);
+    EXPECT_EQ(fx->handler.periodSeen, std::chrono::milliseconds(25));
+    EXPECT_TRUE(fx->handler.removed);
+    EXPECT_EQ(fx->mgr.getPolicyCount(), 0u);
+}
+
+TEST(SafetyManagerTest, PolicyMayQueryManagerDuringEvaluate) {
+    struct Fixture {
+        SafetyManager mgr;
+    };
+    auto fx = std::make_shared<Fixture>();
+    auto policy = std::unique_ptr<SelfInspectingPolicy>(new SelfInspectingPolicy(fx->mgr));
+    auto* ptr = policy.get();
+    fx->mgr.addPolicy(std::move(policy));
+
+    ASSERT_TRUE(finishesWithin([fx]() { fx->mgr.evaluateAll(); }, std::chrono::seconds(2)))
+        << "evaluateAll() deadlocked: policy registry locked across evaluate() (C12)";
+
+    EXPECT_EQ(ptr->namesSeen.load(), 1u);
+}
+
+TEST(SafetyManagerTest, ReentrantEvaluateAllFromHandlerReturnsInsteadOfHanging) {
+    struct Fixture {
+        SafetyManager mgr;
+        ReentrantEvaluateHandler handler{mgr};
+    };
+    auto fx = std::make_shared<Fixture>();
+    fx->mgr.registerHandler(&fx->handler);
+    auto policy = std::unique_ptr<CriticalPolicy>(new CriticalPolicy());
+    fx->mgr.addPolicy(std::move(policy));
+
+    ASSERT_TRUE(finishesWithin([fx]() { fx->mgr.evaluateAll(); }, std::chrono::seconds(2)))
+        << "evaluateAll() deadlocked on a re-entrant call from a handler (C12)";
+
+    // Exactly one dispatch: the re-entrant call must not re-run the policies
+    // (that would recurse until the stack is exhausted).
+    EXPECT_EQ(fx->handler.calls.load(), 1);
+    EXPECT_EQ(fx->handler.reentrantLevel.load(), SafetyLevel::CRITICAL);
+    EXPECT_EQ(fx->mgr.getStatistics().evaluationCycles, 1u);
+}
+
+TEST(SafetyManagerTest, EmergencyStopFromHandlerDoesNotHang) {
+    struct Fixture {
+        SafetyManager mgr;
+        ReentrantEvaluateHandler handler{mgr};
+    };
+    auto fx = std::make_shared<Fixture>();
+    fx->handler.estopFromHandler = true;
+    fx->mgr.registerHandler(&fx->handler);
+    fx->mgr.addPolicy(std::unique_ptr<SafetyPolicy>(new CriticalPolicy()));
+
+    ASSERT_TRUE(finishesWithin([fx]() { fx->mgr.evaluateAll(); }, std::chrono::seconds(2)))
+        << "triggerEmergencyStop() from a handler deadlocked (C12)";
+
+    EXPECT_TRUE(fx->mgr.isEmergencyStopped());
+    EXPECT_EQ(fx->mgr.getStatistics().emergencyStopCount, 1u);
+}
+
+TEST(SafetyManagerTest, EvaluationPeriodMayChangeWhileRunning) {
+    SafetyManager mgr(std::chrono::milliseconds(1));
+    auto policy = std::unique_ptr<NominalPolicy>(new NominalPolicy());
+    auto* ptr = policy.get();
+    mgr.addPolicy(std::move(policy));
+
+    ASSERT_TRUE(mgr.start());
+    // Hammer the period while the loop reads it (TSan is the real assertion
+    // here) until the loop has actually run a cycle.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    for (int i = 0; ptr->evaluations.load() == 0 && std::chrono::steady_clock::now() < deadline;
+         ++i) {
+        mgr.setEvaluationPeriod(std::chrono::milliseconds(1 + (i % 3)));
+    }
+    mgr.stop();
+
+    EXPECT_GT(ptr->evaluations.load(), 0);
+    EXPECT_GT(mgr.getEvaluationPeriod().count(), 0);
 }
