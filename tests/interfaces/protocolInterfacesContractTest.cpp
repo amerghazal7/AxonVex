@@ -84,6 +84,42 @@ TEST(ProtocolInterfacesContractTest, UdpLifecycleAndStatsContract) {
 }
 
 #if defined(AXONVEX_PLATFORM_LINUX)
+// C24 regression: both transports resolved addresses with inet_pton(AF_INET,...),
+// which parses a numeric IPv4 literal and nothing else — every hostname failed
+// and IPv6 was unreachable. Pre-fix all three of these binds returned false.
+TEST(ProtocolInterfacesContractTest, UdpResolvesHostnamesAndIpv6) {
+    {
+        axonvex::interfaces::udp::UdpSocket byName("localhost", 39413);
+        EXPECT_TRUE(byName.start()) << "hostname resolution should work";
+        byName.stop();
+    }
+    {
+        axonvex::interfaces::udp::UdpSocket byIpv4("127.0.0.1", 39414);
+        EXPECT_TRUE(byIpv4.start()) << "IPv4 literals must keep working";
+        byIpv4.stop();
+    }
+    {
+        // Skipped rather than failed where the host has no IPv6 loopback.
+        axonvex::interfaces::udp::UdpSocket byIpv6("::1", 39415);
+        if (!byIpv6.start()) {
+            GTEST_SKIP() << "no IPv6 loopback on this host";
+        }
+        byIpv6.stop();
+    }
+}
+
+// C24: an unresolvable name must fail, and say so through the error channel —
+// not fail silently or hang on the resolver.
+TEST(ProtocolInterfacesContractTest, UdpUnresolvableHostFailsWithError) {
+    axonvex::interfaces::udp::UdpSocket udp("invalid.invalid.", 39416);
+    StringCallback errCb;
+    udp.registerErrorHandler("default", &errCb);
+
+    EXPECT_FALSE(udp.start());
+    EXPECT_FALSE(udp.isRunning());
+    EXPECT_GT(errCb.count.load(), 0) << "failure must be reported, not swallowed";
+}
+
 // C24 regression: stop() used to close the socket while the receive thread was
 // blocked in recvfrom() on it, and send() read the fd with no guard at all.
 // TSan reported a race on the descriptor itself; the real hazard is worse than a
@@ -143,6 +179,34 @@ TEST(ProtocolInterfacesContractTest, UdpConcurrentSendAndStopIsRaceFree) {
     // counters are self-consistent, never that a specific count arrived.
     const auto rxStats = rx.getStatistics();
     EXPECT_EQ(rxStats.messagesReceived > 0, rxStats.bytesReceived > 0);
+}
+#endif
+
+#if defined(AXONVEX_PLATFORM_LINUX)
+// C33 regression: stop() was check-then-act on running_, so two concurrent
+// callers could both pass the guard and both call join() on the same thread —
+// joining an already-joined thread is UB. Exactly one must do the teardown.
+TEST(ProtocolInterfacesContractTest, ConcurrentStopIsSafe) {
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        axonvex::interfaces::udp::UdpSocket udp("127.0.0.1", 0);
+        ASSERT_TRUE(udp.start());
+
+        std::atomic<int> ready{0};
+        std::vector<std::thread> stoppers;
+        for (int t = 0; t < 4; ++t) {
+            stoppers.emplace_back([&udp, &ready]() {
+                ready.fetch_add(1);
+                while (ready.load() < 4) {
+                    std::this_thread::yield(); // widen the overlap
+                }
+                udp.stop();
+            });
+        }
+        for (auto& s : stoppers) {
+            s.join();
+        }
+        EXPECT_FALSE(udp.isRunning());
+    }
 }
 #endif
 

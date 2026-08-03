@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <axonvex_interfaces/detail/addressResolver.hpp>
 #include <axonvex_interfaces/protocolInterface.hpp>
 #include <condition_variable>
 #include <mutex>
@@ -29,6 +30,10 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         : host_(std::move(host)), port_(port) {}
 
     bool start() override {
+        // Serialises the whole lifecycle. `running_` alone was check-then-act:
+        // two concurrent stop() calls could both pass the guard and both reach
+        // worker_.join(), and joining an already-joined thread is UB (C33).
+        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
         if (running_.load())
             return true;
 #if defined(AXONVEX_PLATFORM_LINUX)
@@ -40,18 +45,16 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         worker_ = std::thread([this]() { recvLoop(); });
         return true;
 #else
-        running_.store(true);
-        // Fallback simulation loop (no real networking)
-        worker_ = std::thread([this]() {
-            while (running_.load()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-        });
-        return true;
+        // No sockets on this platform. Reporting success and spinning a thread
+        // that does nothing made every caller believe it had a live transport
+        // (C24); fail honestly instead.
+        reportError("tcp: not implemented on this platform");
+        return false;
 #endif
     }
 
     void stop() override {
+        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
         if (!running_.load())
             return;
         running_.store(false);
@@ -98,31 +101,38 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         std::lock_guard<std::mutex> lock(sockMutex_);
         if (sock_ < 0)
             return false;
-        // Send data plus a newline as frame delimiter
+        // Send data plus a newline as frame delimiter.
+        //
+        // The newline framing itself is still wrong for binary payloads: a 0x0A
+        // byte inside `data` is indistinguishable from a frame boundary, so the
+        // receiver splits the message. That is the open half of C11 and needs a
+        // wire-format change (length prefix), not a local fix.
         ssize_t total = 0;
+        ssize_t sent = 0;
         if (!data.empty()) {
-            ssize_t n = ::send(sock_, data.data(), data.size(), MSG_NOSIGNAL);
-            if (n < 0) {
-                reportError("tcp: send failed: " + std::string(strerror(errno)));
+            if (!sendAll(data.data(), data.size(), sent)) {
+                reportError("tcp: send failed after " + std::to_string(sent) + " of " +
+                            std::to_string(data.size()) +
+                            " bytes: " + std::string(strerror(errno)));
                 return false;
             }
-            total += n;
+            total += sent;
         }
-        const char nl = '\n';
-        if (::send(sock_, &nl, 1, MSG_NOSIGNAL) < 0) {
+        const uint8_t nl = static_cast<uint8_t>('\n');
+        if (!sendAll(&nl, 1, sent)) {
             reportError("tcp: send delimiter failed: " + std::string(strerror(errno)));
             return false;
         }
-        total += 1;
+        total += sent;
         stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
         stats_.bytesSent.fetch_add(static_cast<uint64_t>(total), std::memory_order_relaxed);
         return true;
 #else
-        stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
-        stats_.bytesSent.fetch_add(data.size(), std::memory_order_relaxed);
-        std::lock_guard<std::mutex> lock(cbMutex_);
-        this->callCallbacksByKey(defaultKey(), data);
-        return true;
+        // Looping the payload straight back to the local callbacks is not a
+        // send; it counted bytes that never left the process (C24).
+        (void)data;
+        reportError("tcp: not implemented on this platform");
+        return false;
 #endif
     }
 
@@ -219,34 +229,60 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
 
 #if defined(AXONVEX_PLATFORM_LINUX)
     bool connectSocket() {
-        // Create socket
-        sock_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (sock_ < 0)
-            return false;
-
-        // Bounded blocking so recvLoop can observe running_ == false and exit on
-        // its own, which is what lets stop() join before closing the fd. Ceiling:
-        // stop() may take up to RECV_TIMEOUT_MS if shutdown() does not wake it.
-        timeval tv{};
-        tv.tv_sec = RECV_TIMEOUT_MS / 1000;
-        tv.tv_usec = (RECV_TIMEOUT_MS % 1000) * 1000;
-        ::setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-        // Resolve host
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port_);
-        if (::inet_pton(AF_INET, host_.c_str(), &addr.sin_addr) <= 0) {
-            ::close(sock_);
-            sock_ = -1;
+        std::vector<detail::ResolvedAddress> candidates;
+        std::string resolveError;
+        if (!detail::resolveAddresses(host_, port_, SOCK_STREAM, /*passive=*/false, candidates,
+                                      resolveError)) {
+            reportError("tcp: " + resolveError);
             return false;
         }
-        if (::connect(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            ::close(sock_);
-            sock_ = -1;
-            return false;
+
+        // A host with both an A and an AAAA record yields both, and only one may
+        // be reachable; keep the first that connects.
+        for (const auto& candidate : candidates) {
+            int fd = ::socket(candidate.family, SOCK_STREAM, candidate.protocol);
+            if (fd < 0) {
+                continue;
+            }
+
+            // Bounded blocking so recvLoop can observe running_ == false and exit on
+            // its own, which is what lets stop() join before closing the fd. Ceiling:
+            // stop() may take up to RECV_TIMEOUT_MS if shutdown() does not wake it.
+            timeval tv{};
+            tv.tv_sec = RECV_TIMEOUT_MS / 1000;
+            tv.tv_usec = (RECV_TIMEOUT_MS % 1000) * 1000;
+            ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+            if (::connect(fd, candidate.addr(), candidate.length) == 0) {
+                sock_ = fd;
+                return true;
+            }
+            ::close(fd);
         }
-        return true;
+        return false;
+    }
+
+    /// ::send may accept fewer bytes than asked; the caller must resume from the
+    /// offset. Not looping here silently truncated the payload and still counted
+    /// the message as sent (C11).
+    bool sendAll(const uint8_t* bytes, size_t length, ssize_t& sentOut) {
+        size_t offset = 0;
+        while (offset < length) {
+            ssize_t n = ::send(sock_, bytes + offset, length - offset, MSG_NOSIGNAL);
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                sentOut = static_cast<ssize_t>(offset);
+                return false;
+            }
+            if (n == 0) {
+                break; // peer will not take more
+            }
+            offset += static_cast<size_t>(n);
+        }
+        sentOut = static_cast<ssize_t>(offset);
+        return offset == length;
     }
 
     void recvLoop() {
@@ -296,16 +332,21 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         }
     }
 
+#endif
+
+    /// Outside the platform guard: the non-Linux build needs it to report that
+    /// it cannot do the operation at all.
     void reportError(const std::string& msg) {
         std::lock_guard<std::mutex> lock(cbMutex_);
         errorKeyed_.callCallbacksByKey(defaultKey(), msg);
     }
-#endif
 
     std::string host_;
     uint16_t port_;
     std::atomic<bool> running_{false};
     std::thread worker_;
+    /// Serialises start()/stop() so only one caller ever tears the thread down.
+    mutable std::mutex lifecycleMutex_;
 
     MessageCallback* defaultMsgCb_{nullptr};
 

@@ -119,6 +119,26 @@ class BasePort {
     template <typename T>
     bool validateData(const T& data);
 
+    /// Reject a callback registration once the port has carried traffic (C32).
+    ///
+    /// The dispatch path reads these `std::function` members with no lock, and
+    /// it must stay that way: a lock there would run user code under a port
+    /// lock (the C12/C18 bug class), and copying the function out to call it
+    /// unlocked would allocate on the port hot path. Both are banned. So
+    /// registration is setup-only — and rather than leave that as a comment
+    /// nobody reads, a late registration fails loudly here instead of silently
+    /// racing a concurrent dispatch. Costs nothing on the hot path: setters are
+    /// not hot.
+    void requireNoTrafficYet(const char* what) const {
+        if (totalMessages_.load(std::memory_order_relaxed) != 0) {
+            throw std::logic_error(std::string(what) +
+                                   " must be called before the port carries traffic: the dispatch "
+                                   "path reads callbacks unlocked, so late registration would race "
+                                   "it (port '" +
+                                   name_ + "')");
+        }
+    }
+
     void incrementTotalMessages() {
         totalMessages_++;
     }
@@ -450,11 +470,13 @@ void InputPort<T>::writeData(const T& data) {
 
 template <typename T>
 void InputPort<T>::setValidationCallback(ValidationCallback callback) {
+    requireNoTrafficYet("setValidationCallback");
     validationCallback_ = std::move(callback);
 }
 
 template <typename T>
 void InputPort<T>::setDataCallback(DataCallback callback) {
+    requireNoTrafficYet("setDataCallback");
     dataCallback_ = std::move(callback);
 }
 
@@ -599,6 +621,7 @@ std::vector<InputPort<T>*> OutputPort<T>::getConnectedPorts() const {
 
 template <typename T>
 void OutputPort<T>::setOutputCallback(OutputCallback callback) {
+    requireNoTrafficYet("setOutputCallback");
     outputCallback_ = std::move(callback);
 }
 
@@ -697,11 +720,13 @@ T AsyncInputPort<T>::read() {
 
 template <typename T>
 void AsyncInputPort<T>::setValidationCallback(ValidationCallback callback) {
+    requireNoTrafficYet("setValidationCallback");
     validationCallback_ = std::move(callback);
 }
 
 template <typename T>
 void AsyncInputPort<T>::setDataCallback(DataCallback callback) {
+    requireNoTrafficYet("setDataCallback");
     dataCallback_ = std::move(callback);
 }
 
@@ -823,6 +848,7 @@ std::vector<AsyncInputPort<T>*> AsyncOutputPort<T>::getConnectedPorts() const {
 
 template <typename T>
 void AsyncOutputPort<T>::setOutputCallback(OutputCallback callback) {
+    requireNoTrafficYet("setOutputCallback");
     outputCallback_ = std::move(callback);
 }
 
