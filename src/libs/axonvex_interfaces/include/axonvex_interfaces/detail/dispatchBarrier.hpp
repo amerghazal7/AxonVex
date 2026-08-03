@@ -17,17 +17,26 @@
  * drained, so a handler cannot be torn down while it is being called.
  *
  * An unregister issued *from inside a callback* must not wait — it would be
- * waiting on itself. The dispatching thread is recorded so that case returns
- * immediately. The consequence, which callers must know: a handler that
- * unregisters itself may still be invoked for the remainder of the dispatch
- * already under way. This mirrors `SafetyManager`'s `evaluatingThread_` guard
- * from C12.
+ * waiting on itself, and the dispatch it is waiting to drain is its own. Each
+ * thread's dispatch depth is tracked so that case returns immediately. The
+ * consequence, which callers must know: a handler that unregisters itself may
+ * still be invoked for the remainder of the dispatch already under way.
+ *
+ * The tracking is per thread, not a single "current dispatcher" id. One
+ * transport shares this barrier between the message path (receive thread) and
+ * the error path (reachable from send() on any caller thread), so two threads
+ * can be dispatching simultaneously and a single field would only remember the
+ * later one — leaving the earlier thread unable to recognise itself and
+ * deadlocked waiting on its own dispatch. `SafetyManager`'s `evaluatingThread_`
+ * from C12 can be a single id only because it serialises evaluation cycles
+ * first; this barrier deliberately does not serialise dispatch.
  */
 
 #pragma once
 
 #include <condition_variable>
 #include <cstddef>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -38,32 +47,57 @@ namespace detail {
 class DispatchBarrier {
   public:
     /// Mark a dispatch as starting. Must be called with the registry mutex held.
-    void begin() noexcept {
+    ///
+    /// The map insert is what makes this able to throw, so it happens before
+    /// inFlight_ moves: a bad_alloc then leaves the barrier exactly as it was
+    /// rather than stranding a count that no end() will ever balance.
+    void begin() {
+        ++depthByThread_[std::this_thread::get_id()];
         ++inFlight_;
-        dispatcher_ = std::this_thread::get_id();
     }
 
     /// Mark a dispatch as finished. Must be called with the registry mutex held.
     void end() noexcept {
+        auto it = depthByThread_.find(std::this_thread::get_id());
+        if (it != depthByThread_.end() && --it->second == 0) {
+            depthByThread_.erase(it);
+        }
         if (inFlight_ > 0 && --inFlight_ == 0) {
-            dispatcher_ = std::thread::id();
             quiescent_.notify_all();
         }
     }
 
     /// Block until no dispatch is in flight. Must be called with @p lock held on
-    /// the registry mutex; returns immediately when called from the dispatching
-    /// thread, because that thread cannot wait for itself.
+    /// the registry mutex; returns immediately when the calling thread is itself
+    /// inside a dispatch, because it cannot wait for itself.
+    ///
+    /// Ceiling: this waits for *global* quiescence, not for the one handler
+    /// being removed. On a transport saturated enough that a dispatch is always
+    /// in flight, an unregister from an outside thread can be delayed. Bounded
+    /// in practice because a dispatch is one user callback and inFlight_ hits
+    /// zero between messages; if that stops being true, track liveness per
+    /// handler instead of per barrier.
     void waitQuiescent(std::unique_lock<std::mutex>& lock) {
-        if (dispatcher_ == std::this_thread::get_id()) {
+        if (depthByThread_.find(std::this_thread::get_id()) != depthByThread_.end()) {
             return;
         }
         quiescent_.wait(lock, [this]() { return inFlight_ == 0; });
     }
 
   private:
+    /// Per-thread dispatch depth, NOT a single "current dispatcher".
+    ///
+    /// A lone thread::id was unsound: both transports share one barrier between
+    /// the message path (receive thread) and the error path (reachable from
+    /// send() on any caller thread), so two threads can be dispatching at once
+    /// and a single field only remembers whichever called begin() last. A thread
+    /// that entered dispatch first would then fail its own self-check, wait for
+    /// inFlight_ to reach zero, and block forever — its own in-flight dispatch
+    /// is the one it is stuck inside, so the count can never drain. The map
+    /// answers "am I dispatching" per thread, and doubles as a recursion depth
+    /// so nested same-thread dispatch still balances.
     std::size_t inFlight_{0};
-    std::thread::id dispatcher_{};
+    std::map<std::thread::id, std::size_t> depthByThread_;
     std::condition_variable quiescent_;
 };
 

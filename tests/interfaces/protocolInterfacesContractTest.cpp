@@ -365,6 +365,108 @@ TEST(ProtocolInterfacesContractTest, CallbackMayReenterRegistrationApi) {
 }
 #endif
 
+#if defined(AXONVEX_PLATFORM_LINUX)
+// C34, second shape: one transport shares its dispatch barrier between the
+// message path (receive thread) and the error path (reachable from send() on
+// any caller thread), so two threads can be dispatching at once. A barrier that
+// remembers only a single "current dispatcher" id then loses track of the
+// thread that entered first — that thread fails its own self-check, waits for
+// the in-flight count to drain, and the count can never reach zero because its
+// own dispatch is the one it is stuck inside.
+//
+// This test forces exactly that interleaving: the caller thread enters an error
+// dispatch FIRST, then waits inside its handler until the receive thread is
+// also dispatching, and only then self-unregisters.
+namespace {
+class OrchestratingErrorHandler final : public axonvex::core::Callback<std::string> {
+  public:
+    axonvex::interfaces::udp::UdpSocket* target{nullptr};
+    std::atomic<bool>* entered{nullptr};
+    std::atomic<bool>* workerDispatching{nullptr};
+    std::atomic<int> count{0};
+
+    void callbackPerform(const std::string) override {
+        if (count.fetch_add(1) != 0) {
+            return; // only orchestrate on the first error
+        }
+        entered->store(true, std::memory_order_release);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (!workerDispatching->load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        // Two threads are now inside a dispatch. Pre-fix this blocked forever.
+        target->unregisterErrorHandler("default", this);
+    }
+};
+
+class SlowMessageCallback final : public axonvex::core::Callback<std::vector<uint8_t>> {
+  public:
+    std::atomic<bool>* workerDispatching{nullptr};
+    std::atomic<int> count{0};
+
+    void callbackPerform(const std::vector<uint8_t>) override {
+        ++count;
+        workerDispatching->store(true, std::memory_order_release);
+        // Stay in dispatch long enough to overlap the caller thread's.
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+};
+} // namespace
+
+TEST(ProtocolInterfacesContractTest, ConcurrentDispatchFromTwoThreadsDoesNotDeadlock) {
+    const uint16_t kPort = 39419;
+
+    const bool finished = finishesWithin(
+        [kPort]() {
+            std::atomic<bool> entered{false};
+            std::atomic<bool> workerDispatching{false};
+
+            axonvex::interfaces::udp::UdpSocket rx("127.0.0.1", kPort);
+            OrchestratingErrorHandler errCb;
+            SlowMessageCallback msgCb;
+            errCb.target = &rx;
+            errCb.entered = &entered;
+            errCb.workerDispatching = &workerDispatching;
+            msgCb.workerDispatching = &workerDispatching;
+
+            rx.registerErrorHandler("default", &errCb);
+            rx.setMessageCallback(&msgCb);
+            if (!rx.start()) {
+                return;
+            }
+
+            // Feeds rx only once the caller thread is already inside its error
+            // dispatch, so the two overlap in the order that used to deadlock.
+            std::thread feeder([kPort, &entered]() {
+                axonvex::interfaces::udp::UdpSocket tx("127.0.0.1", 0);
+                tx.configure("remote_host", "127.0.0.1");
+                tx.configure("remote_port", std::to_string(kPort));
+                if (!tx.start()) {
+                    return;
+                }
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+                while (!entered.load(std::memory_order_acquire) &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::yield();
+                }
+                tx.send(std::vector<uint8_t>{4, 2});
+                tx.stop();
+            });
+
+            // rx has no destination configured and has not received yet, so this
+            // fails and drives reportError on THIS thread.
+            rx.send(std::vector<uint8_t>{1});
+
+            feeder.join();
+            rx.stop();
+        },
+        std::chrono::milliseconds(15000));
+
+    EXPECT_TRUE(finished) << "concurrent dispatch on two threads deadlocked the barrier";
+}
+#endif
+
 TEST(ProtocolInterfacesContractTest, TcpStartFailurePathAndConfigurationContract) {
     axonvex::interfaces::tcp::TcpClient tcp("127.0.0.1", 65534);
     StringCallback errCb;
