@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <axonvex_interfaces/detail/addressResolver.hpp>
 #include <axonvex_interfaces/protocolInterface.hpp>
 #include <mutex>
 #include <string>
@@ -12,6 +13,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -27,6 +29,10 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         : bindAddress_(std::move(bindAddress)), port_(port) {}
 
     bool start() override {
+        // Serialises the whole lifecycle. `running_` alone was check-then-act:
+        // two concurrent stop() calls could both pass the guard and both reach
+        // worker_.join(), and joining an already-joined thread is UB (C33).
+        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
         if (running_.load())
             return true;
 #if defined(AXONVEX_PLATFORM_LINUX)
@@ -38,17 +44,16 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         worker_ = std::thread([this]() { recvLoop(); });
         return true;
 #else
-        running_.store(true);
-        worker_ = std::thread([this]() {
-            while (running_.load()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-        });
-        return true;
+        // No sockets on this platform. Reporting success and spinning a thread
+        // that does nothing made every caller believe it had a live transport
+        // (C24); fail honestly instead.
+        reportError("udp: not implemented on this platform");
+        return false;
 #endif
     }
 
     void stop() override {
+        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
         if (!running_.load())
             return;
         running_.store(false);
@@ -74,19 +79,16 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
 
     bool send(const std::vector<uint8_t>& data) override {
 #if defined(AXONVEX_PLATFORM_LINUX)
-        sockaddr_in dest{};
-        socklen_t dlen = sizeof(dest);
+        detail::ResolvedAddress dest;
         {
             std::lock_guard<std::mutex> lock(peerMutex_);
             if (remoteSet_) {
                 dest = remoteAddr_;
             } else if (lastPeerSet_) {
                 dest = lastPeer_;
-            } else {
-                dlen = 0;
             }
         }
-        if (dlen == 0) {
+        if (dest.length == 0) {
             reportError("udp: no destination (configure remote_host/remote_port or receive a "
                         "packet first)");
             return false;
@@ -99,8 +101,7 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
             std::lock_guard<std::mutex> lock(sockMutex_);
             if (sock_ < 0)
                 return false;
-            n = ::sendto(sock_, data.data(), data.size(), MSG_NOSIGNAL,
-                         reinterpret_cast<sockaddr*>(&dest), dlen);
+            n = ::sendto(sock_, data.data(), data.size(), MSG_NOSIGNAL, dest.addr(), dest.length);
         }
         if (n < 0) {
             reportError(std::string("udp: sendto failed: ") + strerror(errno));
@@ -110,11 +111,11 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         stats_.bytesSent.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
         return true;
 #else
-        stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
-        stats_.bytesSent.fetch_add(data.size(), std::memory_order_relaxed);
-        std::lock_guard<std::mutex> lock(cbMutex_);
-        this->callCallbacksByKey(defaultKey(), data);
-        return true;
+        // Looping the payload straight back to the local callbacks is not a
+        // send; it counted bytes that never left the process (C24).
+        (void)data;
+        reportError("udp: not implemented on this platform");
+        return false;
 #endif
     }
 
@@ -229,52 +230,78 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
 
 #if defined(AXONVEX_PLATFORM_LINUX)
     bool openAndBind() {
-        sock_ = ::socket(AF_INET, SOCK_DGRAM, 0);
-        if (sock_ < 0)
-            return false;
-        int on = 1;
-        ::setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-
-        // Bounded blocking so recvLoop can observe running_ == false and exit
-        // on its own. This is what lets stop() join before closing the fd; the
-        // ceiling is that stop() may take up to RECV_TIMEOUT_MS to return.
-        timeval tv{};
-        tv.tv_sec = RECV_TIMEOUT_MS / 1000;
-        tv.tv_usec = (RECV_TIMEOUT_MS % 1000) * 1000;
-        ::setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port_);
-        if (::inet_pton(AF_INET, bindAddress_.c_str(), &addr.sin_addr) <= 0) {
-            ::close(sock_);
-            sock_ = -1;
+        std::vector<detail::ResolvedAddress> candidates;
+        std::string resolveError;
+        if (!detail::resolveAddresses(bindAddress_, port_, SOCK_DGRAM, /*passive=*/true, candidates,
+                                      resolveError)) {
+            reportError("udp: " + resolveError);
             return false;
         }
-        if (::bind(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            ::close(sock_);
-            sock_ = -1;
-            return false;
+
+        // A host with both an A and an AAAA record yields both; keep the first
+        // that actually binds rather than assuming the family.
+        for (const auto& candidate : candidates) {
+            int fd = ::socket(candidate.family, SOCK_DGRAM, candidate.protocol);
+            if (fd < 0) {
+                continue;
+            }
+            int on = 1;
+            ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+            // Bounded blocking so recvLoop can observe running_ == false and exit
+            // on its own. This is what lets stop() join before closing the fd; the
+            // ceiling is that stop() may take up to RECV_TIMEOUT_MS to return.
+            timeval tv{};
+            tv.tv_sec = RECV_TIMEOUT_MS / 1000;
+            tv.tv_usec = (RECV_TIMEOUT_MS % 1000) * 1000;
+            ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+            if (::bind(fd, candidate.addr(), candidate.length) == 0) {
+                sock_ = fd;
+                sockFamily_ = candidate.family;
+                updateRemote();
+                return true;
+            }
+            ::close(fd);
         }
-        updateRemote();
-        return true;
+        reportError("udp: no resolved address for " + bindAddress_ + ":" + std::to_string(port_) +
+                    " could be bound");
+        return false;
     }
 
     void updateRemote() {
+        std::vector<detail::ResolvedAddress> candidates;
+        std::string resolveError;
+        bool resolved = false;
+        detail::ResolvedAddress chosen;
+
+        if (!remoteHost_.empty() && remotePort_ != 0 &&
+            detail::resolveAddresses(remoteHost_, remotePort_, SOCK_DGRAM, /*passive=*/false,
+                                     candidates, resolveError)) {
+            // The destination must match the bound socket's family — an IPv6
+            // address cannot be sent from an IPv4 socket. Before the bind
+            // (sockFamily_ == AF_UNSPEC) any candidate will do.
+            for (const auto& candidate : candidates) {
+                if (sockFamily_ == AF_UNSPEC || candidate.family == sockFamily_) {
+                    chosen = candidate;
+                    resolved = true;
+                    break;
+                }
+            }
+            if (!resolved) {
+                reportError("udp: " + remoteHost_ +
+                            " resolved, but to no address in the bound "
+                            "socket's family");
+            }
+        } else if (!remoteHost_.empty() && remotePort_ != 0) {
+            reportError("udp: " + resolveError);
+        }
+
         std::lock_guard<std::mutex> lock(peerMutex_);
-        if (remoteHost_.empty() || remotePort_ == 0) {
-            remoteSet_ = false;
-            return;
+        remoteSet_ = resolved;
+        if (resolved) {
+            remoteAddr_ = chosen;
         }
-        sockaddr_in dest{};
-        dest.sin_family = AF_INET;
-        dest.sin_port = htons(remotePort_);
-        if (::inet_pton(AF_INET, remoteHost_.c_str(), &dest.sin_addr) <= 0) {
-            remoteSet_ = false;
-            return;
-        }
-        remoteAddr_ = dest;
-        remoteSet_ = true;
     }
 
     void recvLoop() {
@@ -284,7 +311,7 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         const int fd = sock_;
         std::array<uint8_t, 2048> buf{};
         while (running_.load()) {
-            sockaddr_in peer{};
+            sockaddr_storage peer{};
             socklen_t plen = sizeof(peer);
             ssize_t n = ::recvfrom(fd, buf.data(), buf.size(), 0,
                                    reinterpret_cast<sockaddr*>(&peer), &plen);
@@ -299,7 +326,9 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
                 continue;
             {
                 std::lock_guard<std::mutex> lock(peerMutex_);
-                lastPeer_ = peer;
+                lastPeer_.storage = peer;
+                lastPeer_.length = plen;
+                lastPeer_.family = peer.ss_family;
                 lastPeerSet_ = true;
             }
             stats_.bytesReceived.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
@@ -312,16 +341,21 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         }
     }
 
+#endif
+
+    /// Outside the platform guard: the non-Linux build needs it to report that
+    /// it cannot do the operation at all.
     void reportError(const std::string& msg) {
         std::lock_guard<std::mutex> lock(cbMutex_);
         errorKeyed_.callCallbacksByKey(defaultKey(), msg);
     }
-#endif
 
     std::string bindAddress_;
     uint16_t port_;
     std::atomic<bool> running_{false};
     std::thread worker_;
+    /// Serialises start()/stop() so only one caller ever tears the thread down.
+    mutable std::mutex lifecycleMutex_;
 
     MessageCallback* defaultMsgCb_{nullptr};
 
@@ -343,9 +377,11 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
 
 #if defined(AXONVEX_PLATFORM_LINUX)
     int sock_{-1};
-    sockaddr_in remoteAddr_{};
+    /// Family the socket was actually bound with; destinations must match it.
+    int sockFamily_{AF_UNSPEC};
+    detail::ResolvedAddress remoteAddr_{};
     bool remoteSet_{false};
-    sockaddr_in lastPeer_{};
+    detail::ResolvedAddress lastPeer_{};
     bool lastPeerSet_{false};
 #endif
 };

@@ -230,6 +230,29 @@ TEST_F(PortThreadSafetyTest, ConcurrentAccessKeepsNonTrivialPayloadIntact) {
     EXPECT_GT(reads.load(), 0);
 }
 
+// C32: the dispatch path reads the callback members with no lock, and must keep
+// doing so — locking there would run user code under a port lock and copying the
+// std::function out would allocate on the port path. Registration is therefore
+// setup-only, and a late registration must fail loudly rather than silently race
+// a concurrent dispatch.
+TEST_F(PortThreadSafetyTest, CallbackRegistrationIsRejectedAfterTraffic) {
+    auto inputPort = std::make_unique<InputPort<int>>(20, "late_cb", processingUnit.get());
+    auto outputPort = std::make_unique<OutputPort<int>>(21, "late_out", processingUnit.get());
+
+    // Before any traffic, registration is fine.
+    EXPECT_NO_THROW(inputPort->setDataCallback([](const int&) {}));
+    EXPECT_NO_THROW(inputPort->setValidationCallback([](const int&) { return true; }));
+    EXPECT_NO_THROW(outputPort->setOutputCallback([](const int&) {}));
+
+    inputPort->writeData(1);
+    outputPort->write(1);
+
+    EXPECT_THROW(inputPort->setDataCallback([](const int&) {}), std::logic_error);
+    EXPECT_THROW(inputPort->setValidationCallback([](const int&) { return true; }),
+                 std::logic_error);
+    EXPECT_THROW(outputPort->setOutputCallback([](const int&) {}), std::logic_error);
+}
+
 TEST_F(PortThreadSafetyTest, ResetClearsData) {
     auto inputPort = std::make_unique<InputPort<int>>(9, "reset_test", processingUnit.get(),
                                                       /*threadSafe=*/true);
