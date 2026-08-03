@@ -89,14 +89,14 @@ class BasePort {
         return description_;
     }
 
-    // Thread safety control.
+    // Thread safety is fixed at construction and cannot be changed afterwards.
     //
-    // Configuration only: call this before any producer or consumer touches the
-    // port, never while one is in flight. The flag itself is atomic, but the
-    // discipline it selects is not — a writer that read `true` runs the locked
-    // path while a reader that read `false` runs the unlocked one, racing on the
-    // same payload. Nothing enforces this at compile time (C31).
-    virtual void setThreadSafe(bool threadSafe) = 0;
+    // It used to be settable, which was unsound: the flag selects between a
+    // locked and an unlocked access discipline, so flipping it while producers
+    // and consumers were live let a writer that read `true` take the mutex path
+    // concurrently with a reader that read `false` taking the unlocked one, both
+    // on the same payload. An atomic flag makes the read safe, not the switch.
+    // Pass the mode to the port's constructor instead (C31).
     virtual bool isThreadSafe() const noexcept = 0;
 
     // Reset functionality
@@ -139,7 +139,8 @@ class InputPort : public BasePort {
     using ValidationCallback = std::function<bool(const T&)>;
     using DataCallback = std::function<void(const T&)>;
 
-    explicit InputPort(int id, const std::string& name, ProcessingUnit* owner);
+    explicit InputPort(int id, const std::string& name, ProcessingUnit* owner,
+                       bool threadSafe = false);
     ~InputPort() override = default;
 
     // Data access
@@ -170,7 +171,6 @@ class InputPort : public BasePort {
     }
 
     // Thread safety
-    void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override {
         return isThreadSafe_;
     }
@@ -182,7 +182,7 @@ class InputPort : public BasePort {
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> hasNewData_{false};
-    std::atomic<bool> isThreadSafe_{false};
+    const bool isThreadSafe_;
 
     // Callbacks
     ValidationCallback validationCallback_;
@@ -205,7 +205,8 @@ class OutputPort : public BasePort {
   public:
     using OutputCallback = std::function<void(const T&)>;
 
-    explicit OutputPort(int id, const std::string& name, ProcessingUnit* owner);
+    explicit OutputPort(int id, const std::string& name, ProcessingUnit* owner,
+                        bool threadSafe = false);
     ~OutputPort() override = default;
 
     // Data output
@@ -233,7 +234,6 @@ class OutputPort : public BasePort {
     }
 
     // Thread safety
-    void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override {
         return isThreadSafe_;
     }
@@ -244,7 +244,7 @@ class OutputPort : public BasePort {
   private:
     mutable std::mutex connectionMutex_;
     std::vector<InputPort<T>*> connectedPorts_;
-    std::atomic<bool> isThreadSafe_{false};
+    const bool isThreadSafe_;
 
     // Current data for thread-safe access
     mutable std::mutex dataMutex_;
@@ -263,7 +263,8 @@ class AsyncInputPort : public BasePort {
     using ValidationCallback = std::function<bool(const T&)>;
     using DataCallback = std::function<void(const T&)>;
 
-    explicit AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner);
+    explicit AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner,
+                            bool threadSafe = false);
     ~AsyncInputPort() override = default;
 
     // Async data operations
@@ -292,7 +293,6 @@ class AsyncInputPort : public BasePort {
     }
 
     // Thread safety
-    void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override {
         return isThreadSafe_;
     }
@@ -304,7 +304,7 @@ class AsyncInputPort : public BasePort {
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> wasUpdated_{false};
-    std::atomic<bool> isThreadSafe_{false};
+    const bool isThreadSafe_;
 
     // Callbacks
     ValidationCallback validationCallback_;
@@ -324,7 +324,8 @@ class AsyncOutputPort : public BasePort {
   public:
     using OutputCallback = std::function<void(const T&)>;
 
-    explicit AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner);
+    explicit AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner,
+                             bool threadSafe = false);
     ~AsyncOutputPort() override = default;
 
     // Async data operations
@@ -352,7 +353,6 @@ class AsyncOutputPort : public BasePort {
     }
 
     // Thread safety
-    void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override {
         return isThreadSafe_;
     }
@@ -371,7 +371,7 @@ class AsyncOutputPort : public BasePort {
   private:
     mutable std::mutex connectionMutex_;
     std::vector<AsyncInputPort<T>*> connectedPorts_;
-    std::atomic<bool> isThreadSafe_{false};
+    const bool isThreadSafe_;
     std::atomic<bool> logAsyncWriteEvent_{false};
 
     OutputCallback outputCallback_;
@@ -380,8 +380,8 @@ class AsyncOutputPort : public BasePort {
 // Template implementations
 
 template <typename T>
-InputPort<T>::InputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, PortType::SYNC_INPUT, owner) {
+InputPort<T>::InputPort(int id, const std::string& name, ProcessingUnit* owner, bool threadSafe)
+    : BasePort(id, name, PortType::SYNC_INPUT, owner), isThreadSafe_(threadSafe) {
     data_ = T{};
 }
 
@@ -482,11 +482,6 @@ void InputPort<T>::removeBridgedPort(InputPort<T>* bridgedPort) {
 }
 
 template <typename T>
-void InputPort<T>::setThreadSafe(bool threadSafe) {
-    isThreadSafe_ = threadSafe;
-}
-
-template <typename T>
 void InputPort<T>::reset() {
     if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
@@ -517,8 +512,8 @@ bool BasePort::validateData(const T& data) {
 
 // OutputPort template implementations
 template <typename T>
-OutputPort<T>::OutputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, PortType::SYNC_OUTPUT, owner) {
+OutputPort<T>::OutputPort(int id, const std::string& name, ProcessingUnit* owner, bool threadSafe)
+    : BasePort(id, name, PortType::SYNC_OUTPUT, owner), isThreadSafe_(threadSafe) {
     currentData_ = T{};
 }
 
@@ -608,11 +603,6 @@ void OutputPort<T>::setOutputCallback(OutputCallback callback) {
 }
 
 template <typename T>
-void OutputPort<T>::setThreadSafe(bool threadSafe) {
-    isThreadSafe_ = threadSafe;
-}
-
-template <typename T>
 void OutputPort<T>::reset() {
     if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
@@ -625,8 +615,9 @@ void OutputPort<T>::reset() {
 
 // AsyncInputPort template implementations
 template <typename T>
-AsyncInputPort<T>::AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, PortType::ASYNC_INPUT, owner) {
+AsyncInputPort<T>::AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner,
+                                  bool threadSafe)
+    : BasePort(id, name, PortType::ASYNC_INPUT, owner), isThreadSafe_(threadSafe) {
     data_ = T{};
 }
 
@@ -738,11 +729,6 @@ void AsyncInputPort<T>::removeBridgedPort(AsyncInputPort<T>* bridgedPort) {
 }
 
 template <typename T>
-void AsyncInputPort<T>::setThreadSafe(bool threadSafe) {
-    isThreadSafe_ = threadSafe;
-}
-
-template <typename T>
 void AsyncInputPort<T>::reset() {
     if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
@@ -755,16 +741,24 @@ void AsyncInputPort<T>::reset() {
 
 // AsyncOutputPort template implementations
 template <typename T>
-AsyncOutputPort<T>::AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, PortType::ASYNC_OUTPUT, owner) {}
+AsyncOutputPort<T>::AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner,
+                                    bool threadSafe)
+    : BasePort(id, name, PortType::ASYNC_OUTPUT, owner), isThreadSafe_(threadSafe) {}
 
 template <typename T>
 void AsyncOutputPort<T>::write(const T& data) {
     incrementTotalMessages();
 
-    if (connectedPorts_.empty()) {
-        // Log warning about unconnected port
-        return;
+    // Checked under the lock: connect/disconnect run on other threads and
+    // reallocate this vector, so an unlocked empty() read raced them (C30). The
+    // lock is released again before the callback rather than held through it —
+    // outputCallback_ is user code and must never run under a port lock.
+    {
+        std::lock_guard<std::mutex> lock(connectionMutex_);
+        if (connectedPorts_.empty()) {
+            // Log warning about unconnected port
+            return;
+        }
     }
 
     // Call output callback if set
@@ -772,7 +766,8 @@ void AsyncOutputPort<T>::write(const T& data) {
         outputCallback_(data);
     }
 
-    // Send to all connected async input ports
+    // Send to all connected async input ports. Re-checked under the lock, so a
+    // disconnect between the two critical sections is harmless.
     std::lock_guard<std::mutex> lock(connectionMutex_);
     for (auto* inputPort : connectedPorts_) {
         if (inputPort) {
@@ -829,13 +824,6 @@ std::vector<AsyncInputPort<T>*> AsyncOutputPort<T>::getConnectedPorts() const {
 template <typename T>
 void AsyncOutputPort<T>::setOutputCallback(OutputCallback callback) {
     outputCallback_ = std::move(callback);
-}
-
-template <typename T>
-void AsyncOutputPort<T>::setThreadSafe(bool threadSafe) {
-    isThreadSafe_ = threadSafe;
-    // AsyncOutputPort holds no data of its own; connectionMutex_ already guards
-    // the only shared state.
 }
 
 template <typename T>

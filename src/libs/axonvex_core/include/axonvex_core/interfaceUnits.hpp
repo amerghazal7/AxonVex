@@ -20,8 +20,7 @@ class SubscriberUnit : public ProcessingUnit {
     enum OP { OUTPUT = 0, TRIGGER = 1 };
 
     explicit SubscriberUnit(const std::string& name) : ProcessingUnit(name) {
-        output_ = createOutputPort<T>(OUTPUT, "output");
-        output_->setThreadSafe(true);
+        output_ = createOutputPort<T>(OUTPUT, "output", /*threadSafe=*/true);
         trigger_ = createAsyncOutputPort<bool>(TRIGGER, "trigger");
     }
 
@@ -30,14 +29,24 @@ class SubscriberUnit : public ProcessingUnit {
         trigger_->write(true);
     }
 
-    OutputPort<T>* getOutput() { return output_; }
-    AsyncOutputPort<bool>* getTrigger() { return trigger_; }
+    OutputPort<T>* getOutput() {
+        return output_;
+    }
+    AsyncOutputPort<bool>* getTrigger() {
+        return trigger_;
+    }
 
     void processSync() override {}
     void processAsync() override {}
-    void reset() override { setState(ExecutionState::INITIALIZED); }
-    void initialize() override { setState(ExecutionState::INITIALIZED); }
-    std::string getTypeDescription() override { return "SubscriberUnit"; }
+    void reset() override {
+        setState(ExecutionState::INITIALIZED);
+    }
+    void initialize() override {
+        setState(ExecutionState::INITIALIZED);
+    }
+    std::string getTypeDescription() override {
+        return "SubscriberUnit";
+    }
 
   private:
     OutputPort<T>* output_;
@@ -65,27 +74,43 @@ class PublisherUnit : public ProcessingUnit {
         asyncInput_ = createAsyncInputPort<T>(INPUT_ASYNC, "input_async");
     }
 
-    void setPublishCallback(PublishFn cb) { publishCb_ = std::move(cb); }
+    void setPublishCallback(PublishFn cb) {
+        publishCb_ = std::move(cb);
+    }
 
-    InputPort<T>* getInput() { return input_; }
-    AsyncInputPort<T>* getAsyncInput() { return asyncInput_; }
+    InputPort<T>* getInput() {
+        return input_;
+    }
+    AsyncInputPort<T>* getAsyncInput() {
+        return asyncInput_;
+    }
 
     void processSync() override {
-        if (!input_->hasNewData()) return;
+        if (!input_->hasNewData())
+            return;
         auto data = input_->read();
         input_->clearNewDataFlag();
-        if (publishCb_) publishCb_(data);
+        if (publishCb_)
+            publishCb_(data);
     }
 
     void processAsync() override {
-        if (!asyncInput_->wasUpdated()) return;
+        if (!asyncInput_->wasUpdated())
+            return;
         auto data = asyncInput_->read();
-        if (publishCb_) publishCb_(data);
+        if (publishCb_)
+            publishCb_(data);
     }
 
-    void reset() override { setState(ExecutionState::INITIALIZED); }
-    void initialize() override { setState(ExecutionState::INITIALIZED); }
-    std::string getTypeDescription() override { return "PublisherUnit"; }
+    void reset() override {
+        setState(ExecutionState::INITIALIZED);
+    }
+    void initialize() override {
+        setState(ExecutionState::INITIALIZED);
+    }
+    std::string getTypeDescription() override {
+        return "PublisherUnit";
+    }
 
   private:
     InputPort<T>* input_;
@@ -108,8 +133,7 @@ class ServerUnit : public ProcessingUnit {
 
     explicit ServerUnit(const std::string& name) : ProcessingUnit(name) {
         asyncOutput_ = createAsyncOutputPort<T>(OUTPUT_ASYNC, "output_async");
-        output_ = createOutputPort<T>(OUTPUT, "output");
-        output_->setThreadSafe(true);
+        output_ = createOutputPort<T>(OUTPUT, "output", /*threadSafe=*/true);
     }
 
     void pushRequest(const T& data) {
@@ -117,14 +141,24 @@ class ServerUnit : public ProcessingUnit {
         output_->write(data);
     }
 
-    AsyncOutputPort<T>* getAsyncOutput() { return asyncOutput_; }
-    OutputPort<T>* getOutput() { return output_; }
+    AsyncOutputPort<T>* getAsyncOutput() {
+        return asyncOutput_;
+    }
+    OutputPort<T>* getOutput() {
+        return output_;
+    }
 
     void processSync() override {}
     void processAsync() override {}
-    void reset() override { setState(ExecutionState::INITIALIZED); }
-    void initialize() override { setState(ExecutionState::INITIALIZED); }
-    std::string getTypeDescription() override { return "ServerUnit"; }
+    void reset() override {
+        setState(ExecutionState::INITIALIZED);
+    }
+    void initialize() override {
+        setState(ExecutionState::INITIALIZED);
+    }
+    std::string getTypeDescription() override {
+        return "ServerUnit";
+    }
 
   private:
     AsyncOutputPort<T>* asyncOutput_;
@@ -153,15 +187,22 @@ class ClientUnit : public ProcessingUnit {
         finishedOutput_ = createAsyncOutputPort<bool>(FINISHED_ASYNC, "finished");
     }
 
-    void setRequestCallback(RequestFn cb) { requestCb_ = std::move(cb); }
+    void setRequestCallback(RequestFn cb) {
+        requestCb_ = std::move(cb);
+    }
 
-    AsyncInputPort<T>* getAsyncInput() { return asyncInput_; }
-    AsyncOutputPort<bool>* getFinishedOutput() { return finishedOutput_; }
+    AsyncInputPort<T>* getAsyncInput() {
+        return asyncInput_;
+    }
+    AsyncOutputPort<bool>* getFinishedOutput() {
+        return finishedOutput_;
+    }
 
     void processSync() override {}
 
     void processAsync() override {
-        if (!asyncInput_->wasUpdated()) return;
+        if (!asyncInput_->wasUpdated())
+            return;
         auto data = asyncInput_->read();
         if (requestCb_) {
             requestCb_(data);
@@ -169,9 +210,15 @@ class ClientUnit : public ProcessingUnit {
         }
     }
 
-    void reset() override { setState(ExecutionState::INITIALIZED); }
-    void initialize() override { setState(ExecutionState::INITIALIZED); }
-    std::string getTypeDescription() override { return "ClientUnit"; }
+    void reset() override {
+        setState(ExecutionState::INITIALIZED);
+    }
+    void initialize() override {
+        setState(ExecutionState::INITIALIZED);
+    }
+    std::string getTypeDescription() override {
+        return "ClientUnit";
+    }
 
   private:
     AsyncInputPort<T>* asyncInput_;

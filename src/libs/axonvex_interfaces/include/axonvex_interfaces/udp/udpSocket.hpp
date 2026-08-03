@@ -106,12 +106,12 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
             reportError(std::string("udp: sendto failed: ") + strerror(errno));
             return false;
         }
-        stats_.messagesSent++;
-        stats_.bytesSent += static_cast<uint64_t>(n);
+        stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
+        stats_.bytesSent.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
         return true;
 #else
-        stats_.messagesSent++;
-        stats_.bytesSent += data.size();
+        stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
+        stats_.bytesSent.fetch_add(data.size(), std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(cbMutex_);
         this->callCallbacksByKey(defaultKey(), data);
         return true;
@@ -181,6 +181,10 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         return errorKeyed_.unregisterAllCallbacksForKey(key);
     }
 
+    /// Setup only: bindAddress_/port_/remoteHost_/remotePort_ are read unguarded
+    /// by openAndBind()/updateRemote(), so this must complete before start() and
+    /// must not run concurrently with itself. (The resolved address it produces
+    /// *is* guarded — peerMutex_ covers remoteAddr_/remoteSet_.)
     bool configure(const std::string& key, const std::string& value) override {
         if (key == "bind") {
             bindAddress_ = value;
@@ -298,8 +302,8 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
                 lastPeer_ = peer;
                 lastPeerSet_ = true;
             }
-            stats_.bytesReceived += static_cast<uint64_t>(n);
-            stats_.messagesReceived++;
+            stats_.bytesReceived.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
+            stats_.messagesReceived.fetch_add(1, std::memory_order_relaxed);
             std::vector<uint8_t> data(buf.begin(), buf.begin() + n);
             {
                 std::lock_guard<std::mutex> lock(cbMutex_);

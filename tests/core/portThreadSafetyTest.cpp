@@ -54,31 +54,33 @@ class PortThreadSafetyTest : public ::testing::Test {
     std::unique_ptr<MockProcessingUnit> processingUnit;
 };
 
-TEST_F(PortThreadSafetyTest, InputPortThreadSafeToggle) {
-    auto inputPort = std::make_unique<InputPort<int>>(1, "test_input", processingUnit.get());
+// C31: thread safety is chosen at construction and cannot be changed. It used to
+// be settable, which meant a writer that had read `true` could take the mutex
+// path while a reader that had read `false` took the unlocked one, both on the
+// same payload — an atomic flag makes the read safe, not the discipline switch.
+TEST_F(PortThreadSafetyTest, ThreadSafetyIsFixedAtConstruction) {
+    auto plainPort = std::make_unique<InputPort<int>>(1, "plain", processingUnit.get());
+    EXPECT_FALSE(plainPort->isThreadSafe());
 
-    EXPECT_FALSE(inputPort->isThreadSafe());
+    auto safePort =
+        std::make_unique<InputPort<int>>(2, "safe", processingUnit.get(), /*threadSafe=*/true);
+    EXPECT_TRUE(safePort->isThreadSafe());
 
-    inputPort->setThreadSafe(true);
-    EXPECT_TRUE(inputPort->isThreadSafe());
-
-    inputPort->writeData(42);
-    EXPECT_TRUE(inputPort->hasNewData());
-    EXPECT_EQ(inputPort->read(), 42);
-
-    // Toggling back off must not lose the value already stored.
-    inputPort->setThreadSafe(false);
-    EXPECT_FALSE(inputPort->isThreadSafe());
-    EXPECT_EQ(inputPort->read(), 42);
+    // Both disciplines round-trip a value; only the guarantee differs.
+    plainPort->writeData(41);
+    safePort->writeData(42);
+    EXPECT_EQ(plainPort->read(), 41);
+    EXPECT_EQ(safePort->read(), 42);
+    EXPECT_TRUE(safePort->hasNewData());
 }
 
 TEST_F(PortThreadSafetyTest, OutputPortDeliversToThreadSafeInput) {
-    auto outputPort = std::make_unique<OutputPort<double>>(2, "test_output", processingUnit.get());
-    auto inputPort = std::make_unique<InputPort<double>>(3, "test_input", processingUnit.get());
+    auto outputPort = std::make_unique<OutputPort<double>>(2, "test_output", processingUnit.get(),
+                                                           /*threadSafe=*/true);
+    auto inputPort = std::make_unique<InputPort<double>>(3, "test_input", processingUnit.get(),
+                                                         /*threadSafe=*/true);
 
     outputPort->connect(inputPort.get());
-    outputPort->setThreadSafe(true);
-    inputPort->setThreadSafe(true);
 
     outputPort->write(3.14159);
     EXPECT_TRUE(inputPort->hasNewData());
@@ -86,10 +88,9 @@ TEST_F(PortThreadSafetyTest, OutputPortDeliversToThreadSafeInput) {
 }
 
 TEST_F(PortThreadSafetyTest, AsyncInputPortThreadSafeUpdateAndRead) {
-    auto asyncInput =
-        std::make_unique<AsyncInputPort<std::string>>(4, "async_input", processingUnit.get());
+    auto asyncInput = std::make_unique<AsyncInputPort<std::string>>(
+        4, "async_input", processingUnit.get(), /*threadSafe=*/true);
 
-    asyncInput->setThreadSafe(true);
     EXPECT_TRUE(asyncInput->isThreadSafe());
 
     asyncInput->update("Hello ports!");
@@ -102,13 +103,12 @@ TEST_F(PortThreadSafetyTest, AsyncInputPortThreadSafeUpdateAndRead) {
 }
 
 TEST_F(PortThreadSafetyTest, AsyncOutputPortDeliversToThreadSafeInput) {
-    auto asyncOutput =
-        std::make_unique<AsyncOutputPort<int>>(5, "async_output", processingUnit.get());
-    auto asyncInput = std::make_unique<AsyncInputPort<int>>(6, "async_input", processingUnit.get());
+    auto asyncOutput = std::make_unique<AsyncOutputPort<int>>(
+        5, "async_output", processingUnit.get(), /*threadSafe=*/true);
+    auto asyncInput = std::make_unique<AsyncInputPort<int>>(6, "async_input", processingUnit.get(),
+                                                            /*threadSafe=*/true);
 
     asyncOutput->connect(asyncInput.get());
-    asyncOutput->setThreadSafe(true);
-    asyncInput->setThreadSafe(true);
 
     asyncOutput->write(999);
     EXPECT_TRUE(asyncInput->wasUpdated());
@@ -119,8 +119,8 @@ TEST_F(PortThreadSafetyTest, ConcurrentReadersAndWritersOnInputPort) {
     const int NUM_THREADS = 4;
     const int OPERATIONS_PER_THREAD = 1000;
 
-    auto inputPort = std::make_unique<InputPort<int>>(7, "concurrent", processingUnit.get());
-    inputPort->setThreadSafe(true);
+    auto inputPort = std::make_unique<InputPort<int>>(7, "concurrent", processingUnit.get(),
+                                                      /*threadSafe=*/true);
 
     std::atomic<int> writeCounter{0};
     std::atomic<int> readCounter{0};
@@ -174,8 +174,8 @@ TEST_F(PortThreadSafetyTest, ConcurrentAccessKeepsNonTrivialPayloadIntact) {
     const int NUM_READERS = 2;
     const int WRITES_PER_WRITER = 500;
 
-    auto inputPort = std::make_unique<InputPort<Payload>>(8, "payload", processingUnit.get());
-    inputPort->setThreadSafe(true);
+    auto inputPort = std::make_unique<InputPort<Payload>>(8, "payload", processingUnit.get(),
+                                                          /*threadSafe=*/true);
     inputPort->writeData(Payload(0));
 
     std::atomic<bool> stop{false};
@@ -231,8 +231,8 @@ TEST_F(PortThreadSafetyTest, ConcurrentAccessKeepsNonTrivialPayloadIntact) {
 }
 
 TEST_F(PortThreadSafetyTest, ResetClearsData) {
-    auto inputPort = std::make_unique<InputPort<int>>(9, "reset_test", processingUnit.get());
-    inputPort->setThreadSafe(true);
+    auto inputPort = std::make_unique<InputPort<int>>(9, "reset_test", processingUnit.get(),
+                                                      /*threadSafe=*/true);
 
     inputPort->writeData(123);
     EXPECT_TRUE(inputPort->hasNewData());
@@ -262,9 +262,8 @@ TEST_F(PortThreadSafetyTest, ComplexDataTypesRoundTrip) {
         }
     };
 
-    auto inputPort =
-        std::make_unique<InputPort<ComplexData>>(10, "complex_test", processingUnit.get());
-    inputPort->setThreadSafe(true);
+    auto inputPort = std::make_unique<InputPort<ComplexData>>(
+        10, "complex_test", processingUnit.get(), /*threadSafe=*/true);
 
     ComplexData testData{42, "TestObject", {1.0, 2.5, 3.14159}};
 
@@ -276,8 +275,8 @@ TEST_F(PortThreadSafetyTest, ComplexDataTypesRoundTrip) {
 }
 
 TEST_F(PortThreadSafetyTest, MessageStatistics) {
-    auto inputPort = std::make_unique<InputPort<int>>(11, "stats_test", processingUnit.get());
-    inputPort->setThreadSafe(true);
+    auto inputPort = std::make_unique<InputPort<int>>(11, "stats_test", processingUnit.get(),
+                                                      /*threadSafe=*/true);
 
     for (int i = 0; i < 10; ++i) {
         inputPort->writeData(i);
@@ -293,12 +292,12 @@ TEST_F(PortThreadSafetyTest, ConcurrentProducersAndConsumers) {
     const int NUM_CONSUMERS = 2;
     const int MESSAGES_PER_PRODUCER = 100;
 
-    auto outputPort = std::make_unique<OutputPort<int>>(12, "producer", processingUnit.get());
-    auto inputPort = std::make_unique<InputPort<int>>(13, "consumer", processingUnit.get());
+    auto outputPort = std::make_unique<OutputPort<int>>(12, "producer", processingUnit.get(),
+                                                        /*threadSafe=*/true);
+    auto inputPort =
+        std::make_unique<InputPort<int>>(13, "consumer", processingUnit.get(), /*threadSafe=*/true);
 
     outputPort->connect(inputPort.get());
-    outputPort->setThreadSafe(true);
-    inputPort->setThreadSafe(true);
 
     std::atomic<int> totalProduced{0};
     std::atomic<int> totalConsumed{0};
