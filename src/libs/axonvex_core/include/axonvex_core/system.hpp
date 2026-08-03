@@ -745,6 +745,10 @@ class AxonVexSystem {
     // which can now fire from any thread via the SafetyHook (C2)
     std::mutex shutdownMutex_;
 
+    // Returns undispatched queued events to the pool after the event thread
+    // has been joined (C25 leak fix)
+    void drainEventQueue() noexcept;
+
     // =================================================================
     // INTERNAL METHODS
     // =================================================================

@@ -218,7 +218,11 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             }
         }
 
-        // Initialize core components
+        // Rebuild components with the (possibly file-loaded) configuration.
+        // Return queued events to the pool first: replacing a pool that still
+        // holds live objects leaks their contents (C25) — MemoryPool's
+        // destructor does not destruct allocated blocks.
+        drainEventQueue();
         if (!initializeComponents()) {
             logStateTransition(SystemState::INITIALIZING, SystemState::ERROR);
             return false;
@@ -418,6 +422,7 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
         if (eventProcessingThread_ && eventProcessingThread_->joinable()) {
             eventProcessingThread_->join();
             eventProcessingThread_.reset();
+            drainEventQueue();
         }
         // Stop monitoring thread next
         if (monitoringThread_ && monitoringThread_->joinable()) {
@@ -480,6 +485,10 @@ void AxonVexSystem::emergencyShutdown() {
         eventProcessingThread_->join();
         eventProcessingThread_.reset();
     }
+    // Unconditional: events can be queued before the event thread ever starts
+    // (e.g. registerProcessingUnit during a failed initializeBlocksLayout) and
+    // would otherwise leak when the pool is torn down (C25)
+    drainEventQueue();
     // Stop monitoring thread next
     if (monitoringThread_ && monitoringThread_->joinable() &&
         monitoringThread_->get_id() != std::this_thread::get_id()) {
@@ -1359,7 +1368,27 @@ void AxonVexSystem::handleProcessingUnitError(ProcessingUnit* unit, const std::s
     }
 }
 
+void AxonVexSystem::drainEventQueue() noexcept {
+    // C25: events still queued when the event thread exits would leak their
+    // strings; return them to the pool without dispatching.
+    if (!eventQueue_ || !eventPool_) {
+        return;
+    }
+    while (true) {
+        auto eventOpt = eventQueue_->tryDequeue(std::chrono::milliseconds(0));
+        if (!eventOpt.has_value()) {
+            break;
+        }
+        eventPool_->deallocateObject(eventOpt.value());
+    }
+}
+
 void AxonVexSystem::publishEvent(const SystemEvent& event) {
+    // C25: once shutdown begins the event thread stops draining the queue —
+    // allocating here would leak the event's strings. Drop shutdown-time events.
+    if (isShuttingDown_.load()) {
+        return;
+    }
     // Allocate an event from the pool
     SystemEvent* eventPtr = eventPool_->allocateObject(event);
 
@@ -1625,6 +1654,17 @@ const SystemConfiguration& AxonVexSystem::getSystemConfiguration() const noexcep
 }
 
 bool AxonVexSystem::updateSystemConfiguration(const SystemConfiguration& config) {
+    // C25: systemConfig_ is read by the monitoring/event/scheduler threads with
+    // no lock, and most fields are consumed during initialize() anyway — a live
+    // "update" was a data race that never re-applied to running components.
+    // The config is immutable once initialization begins.
+    if (currentState_.load() != SystemState::UNINITIALIZED) {
+        if (logger_) {
+            logger_->error("System",
+                           "updateSystemConfiguration rejected: only allowed before initialize()");
+        }
+        return false;
+    }
     try {
         config.validate();
         systemConfig_ = config;
