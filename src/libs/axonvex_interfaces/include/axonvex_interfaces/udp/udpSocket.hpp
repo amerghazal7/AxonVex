@@ -14,6 +14,7 @@
 #include <cstring>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -51,15 +52,20 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         if (!running_.load())
             return;
         running_.store(false);
+        // Join BEFORE closing: closing an fd that another thread is blocked in
+        // recvfrom() on is a use-after-close — the number can be handed straight
+        // back out by the next socket()/open() and the blocked call then reads a
+        // stranger's fd. recvLoop notices running_ within RECV_TIMEOUT_MS via
+        // SO_RCVTIMEO, so it exits on its own without the close (C24).
+        if (worker_.joinable())
+            worker_.join();
 #if defined(AXONVEX_PLATFORM_LINUX)
+        std::lock_guard<std::mutex> lock(sockMutex_);
         if (sock_ >= 0) {
-            ::shutdown(sock_, SHUT_RDWR);
             ::close(sock_);
             sock_ = -1;
         }
 #endif
-        if (worker_.joinable())
-            worker_.join();
     }
 
     bool isRunning() const override {
@@ -68,21 +74,34 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
 
     bool send(const std::vector<uint8_t>& data) override {
 #if defined(AXONVEX_PLATFORM_LINUX)
-        if (sock_ < 0)
-            return false;
         sockaddr_in dest{};
         socklen_t dlen = sizeof(dest);
-        if (remoteSet_) {
-            dest = remoteAddr_;
-        } else if (lastPeerSet_) {
-            dest = lastPeer_;
-        } else {
+        {
+            std::lock_guard<std::mutex> lock(peerMutex_);
+            if (remoteSet_) {
+                dest = remoteAddr_;
+            } else if (lastPeerSet_) {
+                dest = lastPeer_;
+            } else {
+                dlen = 0;
+            }
+        }
+        if (dlen == 0) {
             reportError("udp: no destination (configure remote_host/remote_port or receive a "
                         "packet first)");
             return false;
         }
-        ssize_t n = ::sendto(sock_, data.data(), data.size(), MSG_NOSIGNAL,
-                             reinterpret_cast<sockaddr*>(&dest), dlen);
+        // sendto runs under sockMutex_ so the fd cannot be closed out from under
+        // it. A UDP sendto does not block short of a full socket buffer, so the
+        // hold is bounded; if that ever changes, hand out a dup()'d fd instead.
+        ssize_t n = -1;
+        {
+            std::lock_guard<std::mutex> lock(sockMutex_);
+            if (sock_ < 0)
+                return false;
+            n = ::sendto(sock_, data.data(), data.size(), MSG_NOSIGNAL,
+                         reinterpret_cast<sockaddr*>(&dest), dlen);
+        }
         if (n < 0) {
             reportError(std::string("udp: sendto failed: ") + strerror(errno));
             return false;
@@ -193,13 +212,16 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     }
 
     ProtocolStatistics getStatistics() const override {
-        return stats_;
+        return stats_.snapshot();
     }
 
   private:
     static constexpr const char* defaultKey() {
         return "default";
     }
+
+    /// Upper bound on how long stop() waits for the receive thread to notice it.
+    static constexpr int RECV_TIMEOUT_MS = 100;
 
 #if defined(AXONVEX_PLATFORM_LINUX)
     bool openAndBind() {
@@ -208,6 +230,14 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
             return false;
         int on = 1;
         ::setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+        // Bounded blocking so recvLoop can observe running_ == false and exit
+        // on its own. This is what lets stop() join before closing the fd; the
+        // ceiling is that stop() may take up to RECV_TIMEOUT_MS to return.
+        timeval tv{};
+        tv.tv_sec = RECV_TIMEOUT_MS / 1000;
+        tv.tv_usec = (RECV_TIMEOUT_MS % 1000) * 1000;
+        ::setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
@@ -227,6 +257,7 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     }
 
     void updateRemote() {
+        std::lock_guard<std::mutex> lock(peerMutex_);
         if (remoteHost_.empty() || remotePort_ == 0) {
             remoteSet_ = false;
             return;
@@ -243,22 +274,30 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     }
 
     void recvLoop() {
+        // sock_ is stable for the whole loop: it is assigned in openAndBind()
+        // before this thread is created and only cleared in stop() after the
+        // join, so both edges are ordered by the thread handoff itself.
+        const int fd = sock_;
         std::array<uint8_t, 2048> buf{};
         while (running_.load()) {
             sockaddr_in peer{};
             socklen_t plen = sizeof(peer);
-            ssize_t n = ::recvfrom(sock_, buf.data(), buf.size(), 0,
+            ssize_t n = ::recvfrom(fd, buf.data(), buf.size(), 0,
                                    reinterpret_cast<sockaddr*>(&peer), &plen);
             if (n < 0) {
-                if (errno == EINTR)
+                // SO_RCVTIMEO expiry: no packet, just re-check running_.
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
                     continue;
                 reportError(std::string("udp: recvfrom error: ") + strerror(errno));
                 break;
             }
             if (n == 0)
                 continue;
-            lastPeer_ = peer;
-            lastPeerSet_ = true;
+            {
+                std::lock_guard<std::mutex> lock(peerMutex_);
+                lastPeer_ = peer;
+                lastPeerSet_ = true;
+            }
             stats_.bytesReceived += static_cast<uint64_t>(n);
             stats_.messagesReceived++;
             std::vector<uint8_t> data(buf.begin(), buf.begin() + n);
@@ -286,11 +325,17 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     std::unique_ptr<ErrorHandler> errorAdapter_;
 
     mutable std::mutex cbMutex_;
-    ProtocolStatistics stats_{};
+    AtomicProtocolStatistics stats_{};
 
     // Remote destination configuration
     std::string remoteHost_;
     uint16_t remotePort_{0};
+
+    /// Guards sock_ against being closed while send() is inside sendto().
+    mutable std::mutex sockMutex_;
+    /// Guards the peer/remote address state shared by send(), recvLoop() and
+    /// configure()->updateRemote().
+    mutable std::mutex peerMutex_;
 
 #if defined(AXONVEX_PLATFORM_LINUX)
     int sock_{-1};
