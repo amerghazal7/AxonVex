@@ -1,9 +1,14 @@
 /**
- * @file memoryPoolPortsTest.cpp
- * @brief Tests for MemoryPool integration with the port system
- * @author AxonVex Development Team
- * @version 1.0.0
- * @date 2025
+ * @file portThreadSafetyTest.cpp
+ * @brief Thread-safety tests for the port system.
+ *
+ * Ports used to carry a lock-free "pooled" fast path: writers published a
+ * MemoryPool block through an atomic pointer and freed the previous block
+ * immediately, while readers dereferenced that same pointer unguarded. With no
+ * reclamation scheme a reader could still be inside a block the pool had
+ * already recycled (defect C29). The path was deleted rather than fixed; these
+ * tests pin the behaviour of the mutex path that replaced it and keep the
+ * concurrent coverage the old MemoryPool tests provided.
  */
 
 #include <atomic>
@@ -11,15 +16,15 @@
 #include <axonvex_core/processingUnit.hpp>
 #include <chrono>
 #include <gtest/gtest.h>
+#include <string>
 #include <thread>
 #include <vector>
 
 using namespace axonvex::core;
 
-class MemoryPoolPortsTest : public ::testing::Test {
+class PortThreadSafetyTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        // Create a mock processing unit for port ownership
         processingUnit = std::make_unique<MockProcessingUnit>();
     }
 
@@ -49,105 +54,78 @@ class MemoryPoolPortsTest : public ::testing::Test {
     std::unique_ptr<MockProcessingUnit> processingUnit;
 };
 
-// Test basic MemoryPool functionality with InputPort
-TEST_F(MemoryPoolPortsTest, InputPortMemoryPoolBasics) {
+TEST_F(PortThreadSafetyTest, InputPortThreadSafeToggle) {
     auto inputPort = std::make_unique<InputPort<int>>(1, "test_input", processingUnit.get());
 
-    // Initially not thread-safe
     EXPECT_FALSE(inputPort->isThreadSafe());
-    EXPECT_EQ(inputPort->getMemoryPoolSize(), MemoryPool<int>::DEFAULT_POOL_SIZE);
 
-    // Enable thread safety - should create MemoryPool
     inputPort->setThreadSafe(true);
     EXPECT_TRUE(inputPort->isThreadSafe());
 
-    // Test data storage with MemoryPool
     inputPort->writeData(42);
     EXPECT_TRUE(inputPort->hasNewData());
     EXPECT_EQ(inputPort->read(), 42);
 
-    // Test custom pool size
-    inputPort->setMemoryPoolSize(256);
-    EXPECT_EQ(inputPort->getMemoryPoolSize(), 256);
-
-    // Disable thread safety - should cleanup MemoryPool
+    // Toggling back off must not lose the value already stored.
     inputPort->setThreadSafe(false);
     EXPECT_FALSE(inputPort->isThreadSafe());
+    EXPECT_EQ(inputPort->read(), 42);
 }
 
-// Test MemoryPool with OutputPort
-TEST_F(MemoryPoolPortsTest, OutputPortMemoryPoolBasics) {
+TEST_F(PortThreadSafetyTest, OutputPortDeliversToThreadSafeInput) {
     auto outputPort = std::make_unique<OutputPort<double>>(2, "test_output", processingUnit.get());
     auto inputPort = std::make_unique<InputPort<double>>(3, "test_input", processingUnit.get());
 
-    // Connect ports
     outputPort->connect(inputPort.get());
-
-    // Enable thread safety for both ports
     outputPort->setThreadSafe(true);
     inputPort->setThreadSafe(true);
 
-    // Test data flow
     outputPort->write(3.14159);
     EXPECT_TRUE(inputPort->hasNewData());
     EXPECT_DOUBLE_EQ(inputPort->read(), 3.14159);
 }
 
-// Test MemoryPool with AsyncInputPort
-TEST_F(MemoryPoolPortsTest, AsyncInputPortMemoryPoolBasics) {
+TEST_F(PortThreadSafetyTest, AsyncInputPortThreadSafeUpdateAndRead) {
     auto asyncInput =
         std::make_unique<AsyncInputPort<std::string>>(4, "async_input", processingUnit.get());
 
-    // Enable thread safety
     asyncInput->setThreadSafe(true);
     EXPECT_TRUE(asyncInput->isThreadSafe());
 
-    // Test async data operations
-    asyncInput->update("Hello MemoryPool!");
+    asyncInput->update("Hello ports!");
     EXPECT_TRUE(asyncInput->wasUpdated());
 
     std::string result;
     asyncInput->read(result);
-    EXPECT_EQ(result, "Hello MemoryPool!");
+    EXPECT_EQ(result, "Hello ports!");
     EXPECT_FALSE(asyncInput->wasUpdated());
 }
 
-// Test MemoryPool with AsyncOutputPort
-TEST_F(MemoryPoolPortsTest, AsyncOutputPortMemoryPoolBasics) {
+TEST_F(PortThreadSafetyTest, AsyncOutputPortDeliversToThreadSafeInput) {
     auto asyncOutput =
         std::make_unique<AsyncOutputPort<int>>(5, "async_output", processingUnit.get());
     auto asyncInput = std::make_unique<AsyncInputPort<int>>(6, "async_input", processingUnit.get());
 
-    // Connect async ports
     asyncOutput->connect(asyncInput.get());
-
-    // Enable thread safety
     asyncOutput->setThreadSafe(true);
     asyncInput->setThreadSafe(true);
 
-    // Test async data flow
     asyncOutput->write(999);
     EXPECT_TRUE(asyncInput->wasUpdated());
     EXPECT_EQ(asyncInput->read(), 999);
 }
 
-// Test thread safety performance with MemoryPool vs mutex
-TEST_F(MemoryPoolPortsTest, ThreadSafetyPerformanceComparison) {
+TEST_F(PortThreadSafetyTest, ConcurrentReadersAndWritersOnInputPort) {
     const int NUM_THREADS = 4;
     const int OPERATIONS_PER_THREAD = 1000;
 
-    auto inputPort = std::make_unique<InputPort<int>>(7, "perf_test", processingUnit.get());
+    auto inputPort = std::make_unique<InputPort<int>>(7, "concurrent", processingUnit.get());
     inputPort->setThreadSafe(true);
-    inputPort->setMemoryPoolSize(512); // Larger pool for performance test
 
     std::atomic<int> writeCounter{0};
     std::atomic<int> readCounter{0};
-
-    auto start = std::chrono::high_resolution_clock::now();
-
     std::vector<std::thread> threads;
 
-    // Create writer threads
     for (int t = 0; t < NUM_THREADS / 2; ++t) {
         threads.emplace_back([&inputPort, &writeCounter, OPERATIONS_PER_THREAD]() {
             for (int i = 0; i < OPERATIONS_PER_THREAD; ++i) {
@@ -157,7 +135,6 @@ TEST_F(MemoryPoolPortsTest, ThreadSafetyPerformanceComparison) {
         });
     }
 
-    // Create reader threads
     for (int t = 0; t < NUM_THREADS / 2; ++t) {
         threads.emplace_back([&inputPort, &readCounter, OPERATIONS_PER_THREAD]() {
             for (int i = 0; i < OPERATIONS_PER_THREAD; ++i) {
@@ -170,65 +147,106 @@ TEST_F(MemoryPoolPortsTest, ThreadSafetyPerformanceComparison) {
         });
     }
 
-    // Wait for all threads
     for (auto& thread : threads) {
         thread.join();
     }
 
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-
-    // Verify operations completed
     EXPECT_EQ(writeCounter.load(), NUM_THREADS * OPERATIONS_PER_THREAD / 2);
-    EXPECT_GT(readCounter.load(), 0); // Some reads should have happened
-
-    std::cout << "MemoryPool thread safety test completed in " << duration.count()
-              << " microseconds\n";
-    std::cout << "Total writes: " << writeCounter.load() << ", Total reads: " << readCounter.load()
-              << "\n";
+    EXPECT_GT(readCounter.load(), 0);
 }
 
-// Test MemoryPool exhaustion handling
-TEST_F(MemoryPoolPortsTest, MemoryPoolExhaustionHandling) {
-    auto inputPort = std::make_unique<InputPort<int>>(8, "exhaustion_test", processingUnit.get());
+// C29 regression: readers must never observe a torn or recycled value while
+// writers churn. A non-trivial T makes any use-after-free visible — the old
+// pooled path recycled the block a reader was still copying from, which ASan
+// caught as a heap-use-after-free and TSan as a race on the payload.
+TEST_F(PortThreadSafetyTest, ConcurrentAccessKeepsNonTrivialPayloadIntact) {
+    struct Payload {
+        std::string name;
+        std::vector<double> values;
 
-    // Set small pool size to test exhaustion
-    inputPort->setMemoryPoolSize(16);
+        Payload() : name("payload-0"), values(static_cast<size_t>(8), 0.0) {}
+        explicit Payload(int seed)
+            : name("payload-" + std::to_string(seed)),
+              values(static_cast<size_t>(8), static_cast<double>(seed)) {}
+    };
+
+    const int NUM_WRITERS = 2;
+    const int NUM_READERS = 2;
+    const int WRITES_PER_WRITER = 500;
+
+    auto inputPort = std::make_unique<InputPort<Payload>>(8, "payload", processingUnit.get());
     inputPort->setThreadSafe(true);
+    inputPort->writeData(Payload(0));
 
-    // Fill the pool beyond capacity
-    for (int i = 0; i < 100; ++i) {
-        inputPort->writeData(i);
-        // Should fallback to mutex-based storage when pool is exhausted
+    std::atomic<bool> stop{false};
+    std::atomic<int> reads{0};
+    std::atomic<bool> corrupted{false};
+    std::vector<std::thread> threads;
+
+    for (int w = 0; w < NUM_WRITERS; ++w) {
+        threads.emplace_back([&inputPort, w, WRITES_PER_WRITER]() {
+            for (int i = 0; i < WRITES_PER_WRITER; ++i) {
+                inputPort->writeData(Payload(w * WRITES_PER_WRITER + i + 1));
+            }
+        });
     }
 
-    // Verify data is still accessible (fallback mechanism)
-    EXPECT_TRUE(inputPort->hasNewData());
-    int lastValue = inputPort->read();
-    EXPECT_EQ(lastValue, 99);
+    for (int r = 0; r < NUM_READERS; ++r) {
+        threads.emplace_back([&inputPort, &stop, &reads, &corrupted]() {
+            while (!stop.load(std::memory_order_acquire)) {
+                Payload seen = inputPort->read();
+                // Every published Payload has 8 values all equal to its seed and
+                // a name derived from that same seed. Anything else means the
+                // reader copied out of a block that was being reused.
+                bool ok = seen.values.size() == 8;
+                if (ok) {
+                    ok = seen.name == "payload-" + std::to_string(static_cast<int>(seen.values[0]));
+                }
+                if (ok) {
+                    for (double v : seen.values) {
+                        if (v != seen.values[0]) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if (!ok) {
+                    corrupted.store(true, std::memory_order_release);
+                }
+                reads.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    for (int i = 0; i < NUM_WRITERS; ++i) {
+        threads[static_cast<size_t>(i)].join();
+    }
+    stop.store(true, std::memory_order_release);
+    for (size_t i = static_cast<size_t>(NUM_WRITERS); i < threads.size(); ++i) {
+        threads[i].join();
+    }
+
+    EXPECT_FALSE(corrupted.load(std::memory_order_acquire));
+    EXPECT_GT(reads.load(), 0);
 }
 
-// Test reset functionality with MemoryPool
-TEST_F(MemoryPoolPortsTest, ResetWithMemoryPool) {
+TEST_F(PortThreadSafetyTest, ResetClearsData) {
     auto inputPort = std::make_unique<InputPort<int>>(9, "reset_test", processingUnit.get());
     inputPort->setThreadSafe(true);
 
-    // Add some data
     inputPort->writeData(123);
     EXPECT_TRUE(inputPort->hasNewData());
 
-    // Reset should clear MemoryPool data
     inputPort->reset();
     EXPECT_FALSE(inputPort->hasNewData());
+    EXPECT_EQ(inputPort->read(), 0);
 
-    // Verify port is still functional after reset
     inputPort->writeData(456);
     EXPECT_TRUE(inputPort->hasNewData());
     EXPECT_EQ(inputPort->read(), 456);
 }
 
-// Test MemoryPool with complex data types
-TEST_F(MemoryPoolPortsTest, ComplexDataTypes) {
+TEST_F(PortThreadSafetyTest, ComplexDataTypesRoundTrip) {
     struct ComplexData {
         int id;
         std::string name;
@@ -257,24 +275,20 @@ TEST_F(MemoryPoolPortsTest, ComplexDataTypes) {
     EXPECT_EQ(result, testData);
 }
 
-// Test MemoryPool statistics integration
-TEST_F(MemoryPoolPortsTest, MemoryPoolStatistics) {
+TEST_F(PortThreadSafetyTest, MessageStatistics) {
     auto inputPort = std::make_unique<InputPort<int>>(11, "stats_test", processingUnit.get());
     inputPort->setThreadSafe(true);
 
-    // Perform several operations
     for (int i = 0; i < 10; ++i) {
         inputPort->writeData(i);
     }
 
-    // Verify port statistics are working
     EXPECT_EQ(inputPort->getTotalMessages(), 10);
     EXPECT_EQ(inputPort->getValidMessages(), 10);
     EXPECT_EQ(inputPort->getInvalidMessages(), 0);
 }
 
-// Test concurrent access patterns
-TEST_F(MemoryPoolPortsTest, ConcurrentAccessPatterns) {
+TEST_F(PortThreadSafetyTest, ConcurrentProducersAndConsumers) {
     const int NUM_PRODUCERS = 2;
     const int NUM_CONSUMERS = 2;
     const int MESSAGES_PER_PRODUCER = 100;
@@ -285,44 +299,38 @@ TEST_F(MemoryPoolPortsTest, ConcurrentAccessPatterns) {
     outputPort->connect(inputPort.get());
     outputPort->setThreadSafe(true);
     inputPort->setThreadSafe(true);
-    inputPort->setMemoryPoolSize(256);
 
     std::atomic<int> totalProduced{0};
     std::atomic<int> totalConsumed{0};
     std::vector<std::thread> threads;
 
-    // Producer threads
     for (int p = 0; p < NUM_PRODUCERS; ++p) {
         threads.emplace_back([&outputPort, &totalProduced, MESSAGES_PER_PRODUCER, p]() {
             for (int i = 0; i < MESSAGES_PER_PRODUCER; ++i) {
-                int value = p * MESSAGES_PER_PRODUCER + i;
-                outputPort->write(value);
+                outputPort->write(p * MESSAGES_PER_PRODUCER + i);
                 totalProduced.fetch_add(1);
-                std::this_thread::sleep_for(std::chrono::microseconds(1));
+                std::this_thread::yield();
             }
         });
     }
 
-    // Consumer threads
     for (int c = 0; c < NUM_CONSUMERS; ++c) {
-        threads.emplace_back([&inputPort, &totalConsumed]() {
+        threads.emplace_back([&inputPort, &totalConsumed, NUM_PRODUCERS, MESSAGES_PER_PRODUCER]() {
             while (totalConsumed.load() < NUM_PRODUCERS * MESSAGES_PER_PRODUCER) {
                 if (inputPort->hasNewData()) {
                     inputPort->read();
                     totalConsumed.fetch_add(1);
                 }
-                std::this_thread::sleep_for(std::chrono::microseconds(1));
+                std::this_thread::yield();
             }
         });
     }
 
-    // Wait for all threads
     for (auto& thread : threads) {
         thread.join();
     }
 
     EXPECT_EQ(totalProduced.load(), NUM_PRODUCERS * MESSAGES_PER_PRODUCER);
-    // With multiple consumers, the read count may slightly exceed produced count
-    // due to inherent race between hasNewData() check and read() across threads
+    // Consumers race between hasNewData() and read(), so the count can overshoot.
     EXPECT_GE(totalConsumed.load(), NUM_PRODUCERS * MESSAGES_PER_PRODUCER);
 }

@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AxonVexSystem::setSafetyManager`/`getSafetyManager` (never functional — the pointer was stored and never read) replaced by `setSafetyHook`/`getSafetyHook` on the new core-owned `core::SafetyHook` interface; `safety::SafetyManager` implements it. Core no longer names any safety-layer type.
 - `updateSystemConfiguration` is now rejected once initialization begins (returns `false`) — worker threads read the configuration unlocked, and a live update was a data race that never re-applied to running components anyway (C25).
 
+### Removed
+
+- **Breaking:** `BasePort::setMemoryPoolSize` / `getMemoryPoolSize` and the per-port memory pool behind them. The pool only ever backed the lock-free read path removed in C29; the methods are deleted rather than kept as no-ops so callers fail to compile instead of silently configuring nothing. `MemoryPool` itself is unaffected and still used for system event allocation.
+- `examples/memory_pool_ports_simple_example.cpp`, which demonstrated the removed path.
+
 ### Fixed
 
 - C2: a `SafetyManager` emergency stop now actually halts the system — `setSafetyHook` registers an emergency callback that performs an emergency shutdown. Teardown is safe from any thread: hook dispatch synchronizes with clearing (so destroying the system with a live hook cannot dangle), `emergencyShutdown`/`stop` serialize thread-handle teardown via a shutdown mutex, and self-join guards let the e-stop fire from a system thread.
@@ -33,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - C12: `SafetyManager` no longer holds `policiesMutex_` across user code — `evaluateAll()` snapshots the policy set (as `shared_ptr`, so a policy removed mid-cycle stays alive), then runs `evaluate()`, event dispatch, and `triggerEmergencyStop` unlocked; a policy or handler can now call back into the manager without deadlocking, including a re-entrant `evaluateAll()` (which returns the in-progress cycle's worst level instead of blocking or recursing). Handlers moved off the unsynchronized `core::Caller` to a mutex-guarded list with snapshot-then-dispatch, and `evaluationPeriod_` is atomic (the evaluation loop read it unlocked).
 - C27: `MemoryPool`, `ThreadSafeQueue` and `RingBuffer` are cache-line aligned but were heap-allocated with plain `new`/`make_unique`, which in C++14 only guarantees 16-byte alignment — every instance was misaligned (undefined behaviour, and the false-sharing padding was not actually separating anything). They now allocate through `AXONVEX_ALIGNED_NEW`. UBSan went from 118 failing tests to zero.
 - C28: `InputPort`, `OutputPort` and `AsyncInputPort` leaked the object still held in their memory pool at destruction — the pool frees its blocks without running `~T`, so any non-trivial payload leaked (LSan-confirmed).
+- C29: reading a thread-safe port could return a value out of memory another thread had already recycled. The ports' lock-free "pooled" path published a pool block through an atomic pointer and freed the previous block immediately, with no scheme to know whether a reader was still inside it — a use-after-free, ASan-confirmed. The pooled path is removed; thread-safe ports now use only the mutex path that was already present alongside it.
 - C4: `MemoryPool::isEmpty()`/`isFull()` bodies were swapped.
 - C10: SIGPIPE protection (`MSG_NOSIGNAL`) on TCP/UDP sends — peer teardown no longer kills the process.
 - C16: `optional<>` move semantics now match `std::optional` (moved-from source stays engaged).
