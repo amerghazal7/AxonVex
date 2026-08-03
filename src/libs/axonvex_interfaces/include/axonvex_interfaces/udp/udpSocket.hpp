@@ -28,6 +28,19 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     UdpSocket(std::string bindAddress = "0.0.0.0", uint16_t port = 9001)
         : bindAddress_(std::move(bindAddress)), port_(port) {}
 
+    /// Without this, destroying a still-running socket runs ~std::thread on a
+    /// joinable thread, which calls std::terminate.
+    ~UdpSocket() override {
+        UdpSocket::stop(); // qualified: no virtual dispatch during destruction
+        if (worker_.joinable()) {
+            // Only reachable when the destructor itself runs on the worker
+            // thread, i.e. the object is being destroyed from its own callback.
+            // That is not a supported lifecycle; detaching at least avoids
+            // std::terminate here.
+            worker_.detach();
+        }
+    }
+
     bool start() override {
         // Serialises the whole lifecycle. `running_` alone was check-then-act:
         // two concurrent stop() calls could both pass the guard and both reach
@@ -54,16 +67,31 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
 
     void stop() override {
         std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
-        if (!running_.load())
-            return;
+        // No early return on running_: after a deferred self-stop (below) the
+        // flag is already false while the thread and fd still need reclaiming.
+        // Every step below is individually idempotent instead.
         running_.store(false);
         // Join BEFORE closing: closing an fd that another thread is blocked in
         // recvfrom() on is a use-after-close — the number can be handed straight
         // back out by the next socket()/open() and the blocked call then reads a
         // stranger's fd. recvLoop notices running_ within RECV_TIMEOUT_MS via
         // SO_RCVTIMEO, so it exits on its own without the close (C24).
-        if (worker_.joinable())
+        if (worker_.joinable()) {
+            if (worker_.get_id() == std::this_thread::get_id()) {
+                // stop() was called from a message or error callback, and those
+                // run on the worker thread itself. Joining here is a self-join:
+                // it throws system_error("Resource deadlock avoided"), and from
+                // inside a callback that escapes recvLoop and the thread entry
+                // lambda, so std::terminate takes the whole process down.
+                //
+                // running_ is already false, so the loop exits as soon as this
+                // callback returns. The join and the close are deferred to the
+                // destructor or to a later stop() from another thread, both of
+                // which will find the worker already finished.
+                return;
+            }
             worker_.join();
+        }
 #if defined(AXONVEX_PLATFORM_LINUX)
         std::lock_guard<std::mutex> lock(sockMutex_);
         if (sock_ >= 0) {
@@ -269,6 +297,10 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
         return false;
     }
 
+    /// Called twice on purpose when remote_host is configured before start():
+    /// once from configure(), when sockFamily_ is still AF_UNSPEC and the family
+    /// preference cannot be applied, and again from openAndBind() once the
+    /// socket's real family is known, which overwrites that first guess.
     void updateRemote() {
         std::vector<detail::ResolvedAddress> candidates;
         std::string resolveError;
@@ -371,8 +403,11 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
 
     /// Guards sock_ against being closed while send() is inside sendto().
     mutable std::mutex sockMutex_;
-    /// Guards the peer/remote address state shared by send(), recvLoop() and
-    /// configure()->updateRemote().
+    /// Guards the resolved peer/remote addresses. It exists for the steady-state
+    /// race — recvLoop() writes lastPeer_ on every datagram while send() reads
+    /// it — NOT to make configure() a runtime-reconfiguration API. configure()
+    /// is setup-only (see its comment); it resolves through getaddrinfo, which
+    /// blocks on DNS for as long as the system resolver takes.
     mutable std::mutex peerMutex_;
 
 #if defined(AXONVEX_PLATFORM_LINUX)

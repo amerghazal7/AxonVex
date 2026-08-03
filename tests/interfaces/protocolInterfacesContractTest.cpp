@@ -108,6 +108,23 @@ TEST(ProtocolInterfacesContractTest, UdpResolvesHostnamesAndIpv6) {
     }
 }
 
+// C24: TcpClient has its own per-candidate socket/connect loop, so the resolver
+// rewrite needs coverage there too and not just on the UDP side. A refused
+// connection proves resolution succeeded and the loop ran — pre-fix "localhost"
+// never got as far as connect(), because inet_pton rejected the name outright.
+TEST(ProtocolInterfacesContractTest, TcpResolvesHostnameBeforeConnecting) {
+    axonvex::interfaces::tcp::TcpClient byName("localhost", 65533);
+    StringCallback errCb;
+    byName.registerErrorHandler("default", &errCb);
+
+    EXPECT_FALSE(byName.start()) << "nothing is listening on this port";
+    EXPECT_FALSE(byName.isRunning());
+    ASSERT_GT(errCb.count.load(), 0);
+    // The failure must be the connect, not the name lookup.
+    EXPECT_EQ(errCb.last.find("cannot resolve"), std::string::npos)
+        << "hostname should resolve; got: " << errCb.last;
+}
+
 // C24: an unresolvable name must fail, and say so through the error channel —
 // not fail silently or hang on the resolver.
 TEST(ProtocolInterfacesContractTest, UdpUnresolvableHostFailsWithError) {
@@ -207,6 +224,59 @@ TEST(ProtocolInterfacesContractTest, ConcurrentStopIsSafe) {
         }
         EXPECT_FALSE(udp.isRunning());
     }
+}
+#endif
+
+#if defined(AXONVEX_PLATFORM_LINUX)
+// C33 regression, second shape: message and error callbacks run ON the worker
+// thread, so a callback that calls stop() used to make the worker join itself.
+// std::thread::join() on the calling thread throws
+// system_error("Resource deadlock avoided"), and from inside a callback that
+// throw escapes recvLoop and the thread entry lambda — std::terminate, process
+// gone. Pre-fix this test aborted the whole binary rather than failing.
+class StopOnMessageCallback final : public axonvex::core::Callback<std::vector<uint8_t>> {
+  public:
+    axonvex::interfaces::udp::UdpSocket* target{nullptr};
+    std::atomic<int> count{0};
+
+    void callbackPerform(const std::vector<uint8_t>) override {
+        ++count;
+        if (target) {
+            target->stop(); // the exact reentrant call that used to terminate
+        }
+    }
+};
+
+TEST(ProtocolInterfacesContractTest, StopFromCallbackDoesNotSelfJoin) {
+    const uint16_t kPort = 39417;
+
+    axonvex::interfaces::udp::UdpSocket rx("127.0.0.1", kPort);
+    StopOnMessageCallback cb;
+    cb.target = &rx;
+    rx.setMessageCallback(&cb);
+    if (!rx.start()) {
+        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
+    }
+
+    axonvex::interfaces::udp::UdpSocket tx("127.0.0.1", 0);
+    ASSERT_TRUE(tx.configure("remote_host", "127.0.0.1"));
+    ASSERT_TRUE(tx.configure("remote_port", std::to_string(kPort)));
+    ASSERT_TRUE(tx.start());
+
+    const std::vector<uint8_t> payload{1, 2, 3};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (cb.count.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+        tx.send(payload);
+        std::this_thread::yield();
+    }
+    ASSERT_GT(cb.count.load(), 0) << "receiver never got a datagram";
+
+    // The self-stop defers the join; an ordinary stop() from this thread must
+    // still complete the teardown rather than skipping it.
+    rx.stop();
+    EXPECT_FALSE(rx.isRunning());
+
+    tx.stop();
 }
 #endif
 
