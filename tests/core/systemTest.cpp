@@ -308,6 +308,35 @@ TEST_F(AxonVexSystemTest, ReinitializeAfterCallbackInitiatedEmergencyShutdown) {
     EXPECT_TRUE(system_->stop());
 }
 
+// C41 regression: initialize() called from an event callback runs ON the
+// event-processing thread. Pre-fix, the C39 helper detached the self-handle
+// and initializeComponents() then replaced eventPool_/eventQueue_/logger_
+// under the detached loop's live stack — a cross-pool free and a duplicate
+// queue consumer (pre-C39 this was a std::terminate; the detach made it
+// silent). initialize() now refuses on a worker thread.
+TEST_F(AxonVexSystemTest, InitializeFromEventCallbackIsRefused) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto result = std::make_shared<std::atomic<bool>>(true);
+    AxonVexSystem* sys = system_.get();
+    system_->registerEventCallback([sys, attempted, result](const SystemEvent&) {
+        if (!attempted->exchange(true)) {
+            result->store(sys->initialize()); // must be refused, not honored
+        }
+    });
+    EXPECT_TRUE(system_->start()); // STATE_CHANGE events drive the callback
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!attempted->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(attempted->load());
+    EXPECT_FALSE(result->load()) << "initialize() on the event thread must refuse";
+    // The system must still be intact and stoppable from the outside.
+    EXPECT_TRUE(system_->stop());
+}
+
 // C7 regression: emergencyShutdown/reset used to write currentState_ directly,
 // bypassing transitionState — no validation, no statistics, no STATE_CHANGE
 // event. The transition counter is the observable: a bypassed store leaves it
