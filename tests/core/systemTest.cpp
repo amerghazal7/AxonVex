@@ -318,20 +318,25 @@ TEST_F(AxonVexSystemTest, InitializeFromEventCallbackIsRefused) {
     EXPECT_TRUE(system_->initialize());
 
     auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
     auto result = std::make_shared<std::atomic<bool>>(true);
     AxonVexSystem* sys = system_.get();
-    system_->registerEventCallback([sys, attempted, result](const SystemEvent&) {
+    system_->registerEventCallback([sys, attempted, result, finished](const SystemEvent&) {
         if (!attempted->exchange(true)) {
             result->store(sys->initialize()); // must be refused, not honored
+            // Set only after the call returns: the poller below must never
+            // observe a "done" signal before result actually holds the
+            // outcome, or it can race the store and read a stale `true`.
+            finished->store(true);
         }
     });
     EXPECT_TRUE(system_->start()); // STATE_CHANGE events drive the callback
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!attempted->load() && std::chrono::steady_clock::now() < deadline) {
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    ASSERT_TRUE(attempted->load());
+    ASSERT_TRUE(finished->load());
     EXPECT_FALSE(result->load()) << "initialize() on the event thread must refuse";
     // The system must still be intact and stoppable from the outside.
     EXPECT_TRUE(system_->stop());
@@ -345,20 +350,23 @@ TEST_F(AxonVexSystemTest, StopFromEventCallbackIsRefusedWithoutEscalation) {
     EXPECT_TRUE(system_->initialize());
 
     auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
     auto stopResult = std::make_shared<std::atomic<bool>>(true);
     AxonVexSystem* sys = system_.get();
-    system_->registerEventCallback([sys, attempted, stopResult](const SystemEvent&) {
+    system_->registerEventCallback([sys, attempted, stopResult, finished](const SystemEvent&) {
         if (!attempted->exchange(true)) {
             stopResult->store(sys->stop());
+            // Set only after the call returns: see InitializeFromEventCallbackIsRefused.
+            finished->store(true);
         }
     });
     EXPECT_TRUE(system_->start());
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!attempted->load() && std::chrono::steady_clock::now() < deadline) {
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    ASSERT_TRUE(attempted->load());
+    ASSERT_TRUE(finished->load());
     EXPECT_FALSE(stopResult->load());
     // Pre-fix the swallowed self-join escalated to FATAL_ERROR; post-fix the
     // refusal happens before the STOPPING transition, so state stays RUNNING.
@@ -377,19 +385,26 @@ TEST_F(AxonVexSystemTest, ResetFromEventCallbackIsRefused) {
     EXPECT_TRUE(system_->initialize());
 
     auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
     AxonVexSystem* sys = system_.get();
-    system_->registerEventCallback([sys, attempted](const SystemEvent&) {
+    system_->registerEventCallback([sys, attempted, finished](const SystemEvent&) {
         if (!attempted->exchange(true)) {
             sys->reset();
+            // Set only after reset() returns: see
+            // InitializeFromEventCallbackIsRefused. Without this, polling on
+            // `attempted` lets the main thread race ahead of reset() itself
+            // (which returns void, so there is no result to observe) and the
+            // post-assertions below could run before reset() ever executes.
+            finished->store(true);
         }
     });
     EXPECT_TRUE(system_->start());
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!attempted->load() && std::chrono::steady_clock::now() < deadline) {
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    ASSERT_TRUE(attempted->load());
+    ASSERT_TRUE(finished->load());
     EXPECT_NE(system_->getState(), SystemState::UNINITIALIZED);
     EXPECT_TRUE(system_->stop());
 }
@@ -431,15 +446,28 @@ TEST_F(AxonVexSystemTest, EmergencyShutdownIsAValidatedStateTransition) {
 // UNINITIALIZED transition + statistics_.reset() (after both joins return),
 // and it is bounded below by zero only in the measure-zero case where both
 // loops happen to be at their top-of-loop check at the exact instant the
-// flags flip. 20 consecutive runs observed the bump every time (see
-// task-2-report.md) — if this ever proves flaky, the fallback is to assert
-// only the post-conditions this test already checks below (final state,
-// zeroed counter) and drop the bump assertion.
+// flags flip.
+//
+// Decision record (whole-branch review, evidence-based): 20 consecutive
+// serial runs observed the bump every time, but 6-way parallel load
+// (6 processes x 6 repeats = 36 runs) missed it once — the 5ms poll cadence
+// against a sub-5ms window is not reliably wide enough under contention, and
+// this remains true even after the C40 follow-up fix added extra
+// joinAndClearThreadHandle() calls to reset() (those only close the
+// deferred-self-join gap; they don't run on this test's plain-thread path,
+// where emergencyShutdown() already joins directly, so they don't widen this
+// particular window). Per the documented fallback, the sawBump assertion is
+// dropped rather than chasing a tighter poll: the invariant it was trying to
+// verify (reset() routes through transitionState() instead of bypassing it)
+// is already covered without a race by
+// EmergencyShutdownIsAValidatedStateTransition, which asserts the FATAL_ERROR
+// half of reset()'s path (reset() == emergencyShutdown() + transition to
+// UNINITIALIZED) directly and synchronously. This test keeps its
+// non-racy post-conditions: reset() actually completes, and the system ends
+// up UNINITIALIZED with statistics zeroed.
 TEST_F(AxonVexSystemTest, ResetIsAValidatedStateTransition) {
     EXPECT_TRUE(system_->initialize());
     EXPECT_TRUE(system_->start());
-
-    const uint64_t before = system_->getStatistics().totalStateTransitions.load();
 
     std::atomic<bool> done{false};
     std::thread worker([this, &done]() {
@@ -447,12 +475,8 @@ TEST_F(AxonVexSystemTest, ResetIsAValidatedStateTransition) {
         done.store(true);
     });
 
-    bool sawBump = false;
     auto deadline = std::chrono::steady_clock::now() + 5s;
     while (!done.load() && std::chrono::steady_clock::now() < deadline) {
-        if (system_->getStatistics().totalStateTransitions.load() > before) {
-            sawBump = true;
-        }
         std::this_thread::sleep_for(5ms);
     }
 
@@ -463,11 +487,10 @@ TEST_F(AxonVexSystemTest, ResetIsAValidatedStateTransition) {
     }
 
     ASSERT_TRUE(done.load()) << "reset() did not complete";
-    EXPECT_TRUE(sawBump) << "totalStateTransitions never moved off `before` during reset() — "
-                            "emergencyShutdown/reset bypassed transitionState (C7)";
     EXPECT_EQ(system_->getState(), SystemState::UNINITIALIZED);
     // reset()'s statistics_.reset() zeroes the counter — documented behavior,
-    // not evidence either way for the C7 fix.
+    // not evidence either way for the C7 fix (see EmergencyShutdownIsAValidatedStateTransition
+    // for the assertion that actually exercises it).
     EXPECT_EQ(system_->getStatistics().totalStateTransitions.load(), 0u);
 }
 

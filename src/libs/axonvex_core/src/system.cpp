@@ -184,8 +184,17 @@ AxonVexSystem::~AxonVexSystem() {
         emergencyShutdown();
     }
     // If a concurrent emergencyShutdown owned the teardown (our call above
-    // skipped via try_lock), wait for it to finish before members are destroyed.
-    std::lock_guard<std::mutex> wait(shutdownMutex_);
+    // skipped via try_lock), wait for it to finish before members are
+    // destroyed. This only synchronizes with mutex-owning teardowns: a
+    // deferred self-join emergencyShutdown (running ON eventProcessingThread_/
+    // monitoringThread_) releases the mutex via try_lock's early return while
+    // still unwinding user-code frames on that thread — the joins below cover
+    // that window. Legal here (no self-join risk): a worker thread cannot
+    // reach the destructor without going through initialize()/stop()/reset(),
+    // all of which refuse on isOnWorkerThread().
+    { std::lock_guard<std::mutex> wait(shutdownMutex_); }
+    joinAndClearThreadHandle(eventProcessingThread_);
+    joinAndClearThreadHandle(monitoringThread_);
 }
 
 // =================================================================
@@ -201,7 +210,7 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
     // monitoringThreadId_.
     if (isOnWorkerThread()) {
         if (logger_) {
-            logger_->error("System", "initialize() called from a system worker thread — refused. "
+            logger_->error("System", "initialize() called from a system worker thread -- refused. "
                                      "Use emergencyShutdown() from callbacks.");
         }
         return false;
@@ -435,7 +444,7 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
     // the STOPPING transition so a refused stop leaves the state untouched.
     if (isOnWorkerThread()) {
         if (logger_) {
-            logger_->error("System", "stop() called from a system worker thread — refused. "
+            logger_->error("System", "stop() called from a system worker thread -- refused. "
                                      "Use emergencyShutdown() from callbacks.");
         }
         return false;
@@ -524,7 +533,7 @@ void AxonVexSystem::emergencyShutdown() {
     // callback may run on a system thread; skip the join and reset there —
     // the destructor's second pass joins from the owner thread.
     if (eventProcessingThread_ && eventProcessingThread_->joinable() &&
-        eventProcessingThread_->get_id() != std::this_thread::get_id()) {
+        std::this_thread::get_id() != eventThreadId_.load()) {
         eventProcessingThread_->join();
         eventProcessingThread_.reset();
     }
@@ -534,7 +543,7 @@ void AxonVexSystem::emergencyShutdown() {
     drainEventQueue();
     // Stop monitoring thread next
     if (monitoringThread_ && monitoringThread_->joinable() &&
-        monitoringThread_->get_id() != std::this_thread::get_id()) {
+        std::this_thread::get_id() != monitoringThreadId_.load()) {
         monitoringThread_->join();
         monitoringThread_.reset();
     }
@@ -613,7 +622,7 @@ void AxonVexSystem::reset() {
     // below is safe to run on eventThreadId_/monitoringThreadId_.
     if (isOnWorkerThread()) {
         if (logger_) {
-            logger_->error("System", "reset() called from a system worker thread — refused. "
+            logger_->error("System", "reset() called from a system worker thread -- refused. "
                                      "Use emergencyShutdown() from callbacks.");
         }
         return;
@@ -625,7 +634,15 @@ void AxonVexSystem::reset() {
     // shutdownMutex_ — our emergencyShutdown() try_locks and skips in that
     // case) instead of guessing with a sleep. Safe from deadlock: worker
     // threads are refused above, so nobody joining US can hold this mutex.
+    // This only synchronizes with mutex-owning teardowns, not a deferred
+    // self-join emergencyShutdown: that variant runs ON eventProcessingThread_/
+    // monitoringThread_ and releases the mutex via try_lock's early return
+    // while still unwinding user-code frames on that thread. The joins below
+    // close that window — legal here because worker threads can't reach this
+    // point (refused above), so no self-join is possible.
     { std::lock_guard<std::mutex> wait(shutdownMutex_); }
+    joinAndClearThreadHandle(eventProcessingThread_);
+    joinAndClearThreadHandle(monitoringThread_);
 
     // Reset to uninitialized state
     // C7: FATAL_ERROR → UNINITIALIZED is already in the transition table.
