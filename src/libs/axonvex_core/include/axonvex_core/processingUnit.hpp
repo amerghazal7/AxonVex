@@ -63,11 +63,13 @@ class ProcessingUnit {
     explicit ProcessingUnit(const std::string& name);
     virtual ~ProcessingUnit();
 
-    // Non-copyable, movable
+    // Non-copyable, non-movable: the unit owns two mutexes (moves would be
+    // defined-as-deleted anyway) and ports/system hold stable raw pointers
+    // to it — relocation would dangle them (C8).
     ProcessingUnit(const ProcessingUnit&) = delete;
     ProcessingUnit& operator=(const ProcessingUnit&) = delete;
-    ProcessingUnit(ProcessingUnit&&) = default;
-    ProcessingUnit& operator=(ProcessingUnit&&) = default;
+    ProcessingUnit(ProcessingUnit&&) = delete;
+    ProcessingUnit& operator=(ProcessingUnit&&) = delete;
 
     // =================================================================
     // CORE PROCESSING INTERFACE

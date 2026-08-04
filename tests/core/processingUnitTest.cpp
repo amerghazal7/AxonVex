@@ -11,9 +11,21 @@
 #include <gtest/gtest.h>
 #include <string>
 #include <thread>
+#include <type_traits>
 
 namespace axonvex::core::test {
 namespace {
+
+// C8: ProcessingUnit must stay non-movable — ports and the system hold raw
+// pointers to it with a stable-reference contract. These asserts lock that
+// in at compile time (the old '= default' moves were silently deleted; these
+// fail loudly if anyone tries to reintroduce movability).
+static_assert(!std::is_move_constructible<axonvex::core::ProcessingUnit>::value,
+              "ProcessingUnit is non-movable: ports/system hold raw pointers to it (C8)");
+static_assert(!std::is_move_assignable<axonvex::core::ProcessingUnit>::value,
+              "ProcessingUnit is non-movable: ports/system hold raw pointers to it (C8)");
+static_assert(!std::is_copy_constructible<axonvex::core::ProcessingUnit>::value,
+              "ProcessingUnit is non-copyable (C8)");
 
 // Test implementation of ProcessingUnit
 class TestProcessingUnit : public ProcessingUnit {
