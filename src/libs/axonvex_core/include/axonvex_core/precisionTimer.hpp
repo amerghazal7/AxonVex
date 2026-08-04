@@ -66,6 +66,7 @@ class PrecisionTimer {
 
     static constexpr size_t DEFAULT_MAX_SAMPLES = 10000;
 
+    // max_samples is clamped to >= 1 (0 would divide-by-zero in the ring-buffer write).
     explicit PrecisionTimer(size_t max_samples = DEFAULT_MAX_SAMPLES);
     ~PrecisionTimer() = default;
 

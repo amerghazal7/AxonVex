@@ -193,6 +193,34 @@ AxonVexSystem::~AxonVexSystem() {
 // =================================================================
 
 bool AxonVexSystem::initialize(const std::string& configPath) {
+    // C39: join and clear any stale thread handles BEFORE
+    // initializeComponents() below replaces logger_/eventPool_/eventQueue_/
+    // timingController_. A stale thread can still be running here — from
+    // emergencyShutdown's deferred self-join (it runs on the very thread it
+    // would otherwise join, so it skips the join and leaves the handle set,
+    // C33/C36) or from a throw between a previous initialize()'s thread
+    // start and its INITIALIZED transition (the catch path's
+    // cleanupComponents() never touches thread handles) — and that stale
+    // thread dereferences logger_/timingController_ inside
+    // emergencyShutdown()/monitoringLoop()/eventProcessingLoop(). Freeing
+    // those objects out from under it (by calling initializeComponents()
+    // first) is a use-after-free window that reset()'s sleep_for(100ms)
+    // only ever masked. This join must stay above initializeComponents().
+    //
+    // Ordering vs the C38 flag-clear further down is load-bearing, and the
+    // argument holds even more cleanly here at the top: no flags have been
+    // touched yet and currentState_ is still whatever the last
+    // stop()/emergencyShutdown() left it (FATAL_ERROR/UNINITIALIZED), so any
+    // stale thread's loop condition is still guaranteed to be exiting (or
+    // already exited). Clearing isShuttingDown_ or setting the per-thread
+    // run flags true BEFORE this join would let a stale loop observe
+    // "revived" flags and keep running instead of exiting, turning the join
+    // below into a potential indefinite block. Join both handles first,
+    // THEN initialize components, THEN clear/set flags, THEN start new
+    // threads.
+    joinAndClearThreadHandle(monitoringThread_);
+    joinAndClearThreadHandle(eventProcessingThread_);
+
     // Initialize core components first to ensure they're ready for use
     if (!initializeComponents()) {
         logStateTransition(SystemState::UNINITIALIZED, SystemState::ERROR);
@@ -224,33 +252,6 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             cleanupComponents();
             return false;
         }
-
-        // C39: join and clear any stale thread handles BEFORE touching the
-        // shutdown/run flags below. A handle can still be set here from
-        // emergencyShutdown's deferred self-join (it runs on the very thread
-        // it would otherwise join, so it skips the join and leaves the
-        // handle set, C33/C36) or from a throw between a previous
-        // initialize()'s thread start and its INITIALIZED transition (the
-        // catch path's cleanupComponents() never touches thread handles).
-        // Assigning std::make_unique<std::thread> over a joinable handle
-        // destroys a joinable std::thread -> std::terminate.
-        //
-        // Ordering vs the C38 flag-clear immediately below is load-bearing:
-        // at this point isShuttingDown_ is still whatever the last
-        // stop()/emergencyShutdown() left it (true), and
-        // monitoringEnabled_/eventProcessingRunning_ are still false, so any
-        // stale thread's loop condition is still guaranteed to be exiting
-        // (or already exited). Clearing isShuttingDown_ or setting the
-        // per-thread run flags true BEFORE this join would let a stale loop
-        // observe "revived" flags and keep running instead of exiting,
-        // turning the join below into a potential indefinite block. The
-        // currentState_ >= STOPPING guard in the loops does not cover this
-        // window either: this call's own transitionState(INITIALIZING)
-        // above has already moved currentState_ off ERROR/FATAL_ERROR by
-        // the time we get here. Join both handles first, THEN clear/set
-        // flags, THEN start new threads.
-        joinAndClearThreadHandle(monitoringThread_);
-        joinAndClearThreadHandle(eventProcessingThread_);
 
         // C38: initialize() is the single owner of clearing the shutdown
         // latch. stop()/emergencyShutdown() set it; nothing else may clear
@@ -1408,12 +1409,22 @@ void AxonVexSystem::drainEventQueue() noexcept {
 
 void AxonVexSystem::joinAndClearThreadHandle(std::unique_ptr<std::thread>& handle) {
     // Self-join guard, same discipline as emergencyShutdown's C33/C36
-    // teardown: never join std::this_thread (deadlock). A handle reaching
-    // here still self-joinable belongs to whatever thread is calling
-    // initialize(), which cannot be one of our own worker threads in any
-    // supported usage, so this branch is defensive rather than reachable.
-    if (handle && handle->joinable() && handle->get_id() != std::this_thread::get_id()) {
-        handle->join();
+    // teardown: never join std::this_thread (deadlock). This branch is
+    // reachable: initialize() can be invoked from a callback running on one
+    // of our own worker threads (e.g. an event callback that reinitializes
+    // the system after an e-stop), so `handle` may equal the calling
+    // thread's own handle here.
+    if (handle && handle->joinable()) {
+        if (handle->get_id() != std::this_thread::get_id()) {
+            handle->join();
+        } else {
+            // Self case: detach rather than destroy. handle.reset() below
+            // would run ~std::thread on a still-joinable handle for the
+            // thread we are currently executing on -> std::terminate. The
+            // thread is exiting per the flags this call already set, so
+            // detaching just lets the runtime reclaim it once it returns.
+            handle->detach();
+        }
     }
     handle.reset();
 }
