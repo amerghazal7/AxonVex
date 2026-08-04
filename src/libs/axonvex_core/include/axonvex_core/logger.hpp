@@ -167,19 +167,21 @@ class FileOutput : public LogOutput {
  * @brief High-performance real-time logger for AxonVex Framework
  *
  * Features:
- * - Asynchronous logging with <500ns per log entry target
+ * - Asynchronous logging: the hot call path enqueues to a pre-allocated
+ *   message pool but builds std::strings (allocates); do not log on RT paths
  * - Lock-free design using ThreadSafeQueue and MemoryPool
  * - Multiple output targets (console, file, custom)
  * - Configurable log levels and filtering
- * - Real-time safe (no dynamic allocation during logging)
+ * - NOT RT-safe: logging allocates (see note above); a convenience API, not a hot-path one
  * - Thread-safe multi-producer design
  * - Comprehensive statistics and monitoring
  * - High-performance formatting with minimal overhead
  *
  * Performance characteristics:
- * - Logging overhead: <500ns per entry (target)
+ * - Logging overhead: dominated by the per-call std::string allocations in
+ *   LogMessage/formatString; not a fixed-latency guarantee, see the note above
  * - Queue capacity: Configurable (default 16K messages)
- * - Memory usage: Pre-allocated, no runtime allocation
+ * - Memory usage: message slots are pool-allocated; the strings they carry are not
  * - Throughput: 1M+ messages per second
  * - Thread safety: Lock-free multi-producer, single consumer
  *
@@ -389,6 +391,16 @@ class Logger {
     // String formatting helper
     template <typename... Args>
     std::string formatString(const std::string& format, Args&&... args);
+
+    // C14: {} placeholders substituted in order via operator<<. Extra
+    // placeholders stay literal; extra arguments are ignored. Deliberately
+    // hand-rolled (no fmt dependency) and NOT RT-safe: allocates — logf is
+    // a convenience API, not a hot-path one.
+    static void formatImpl(std::ostringstream& stream, const std::string& format, size_t pos);
+
+    template <typename T, typename... Rest>
+    static void formatImpl(std::ostringstream& stream, const std::string& format, size_t pos,
+                           T&& value, Rest&&... rest);
 };
 
 // Implementation
@@ -629,11 +641,27 @@ inline void Logger::deallocateMessage(LogMessage* message) {
     }
 }
 
+inline void Logger::formatImpl(std::ostringstream& stream, const std::string& format, size_t pos) {
+    stream << format.substr(pos); // no args left: remainder verbatim (incl. any literal {})
+}
+
+template <typename T, typename... Rest>
+inline void Logger::formatImpl(std::ostringstream& stream, const std::string& format, size_t pos,
+                               T&& value, Rest&&... rest) {
+    const size_t placeholder = format.find("{}", pos);
+    if (placeholder == std::string::npos) {
+        stream << format.substr(pos); // more args than placeholders: extras ignored
+        return;
+    }
+    stream << format.substr(pos, placeholder - pos) << std::forward<T>(value);
+    formatImpl(stream, format, placeholder + 2, std::forward<Rest>(rest)...);
+}
+
 template <typename... Args>
 inline std::string Logger::formatString(const std::string& format, Args&&... args) {
-    // Simple placeholder-based formatting
-    // In a production system, you might want to use fmt library or similar
-    return format; // Simplified for now
+    std::ostringstream stream;
+    formatImpl(stream, format, 0, std::forward<Args>(args)...);
+    return stream.str();
 }
 
 // Console Output Implementation
@@ -1089,5 +1117,4 @@ inline void initializeFileLogging(const std::string& filename) {
     (logger).logf(axonvex::core::LogLevel::Error, category, format, __VA_ARGS__)
 
 #define LOGF_CRITICAL(logger, category, format, ...)                                               \
-    (logger).logf(axonvex::core::LogLevel::Critical, category, format, __VA_ARGS__)(logger).logf(  \
-        axonvex::core::LogLevel::Critical, category, format, __VA_ARGS__)
+    (logger).logf(axonvex::core::LogLevel::Critical, category, format, __VA_ARGS__)
