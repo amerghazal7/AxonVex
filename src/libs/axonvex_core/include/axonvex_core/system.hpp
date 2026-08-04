@@ -317,6 +317,17 @@ class AxonVexSystem {
 
     /**
      * @brief Reset the system to uninitialized state
+     *
+     * @note Not safe against concurrent lifecycle calls. reset() forces an
+     * emergencyShutdown() (which unconditionally reaches FATAL_ERROR) and then
+     * waits ~100ms before transitioning FATAL_ERROR -> UNINITIALIZED. If another
+     * thread's initialize()/start()/reset() moves currentState_ away from
+     * FATAL_ERROR during that window, the UNINITIALIZED transition is rejected
+     * (logged as a warning) and reset() proceeds to tear down containers,
+     * timingController_, configuration_, and logger_ regardless — getState()
+     * can then transiently report a state (e.g. INITIALIZING) that no longer
+     * has a live system behind it. Callers must serialize reset() with other
+     * lifecycle calls externally; reset() does not do it for them.
      */
     void reset();
 

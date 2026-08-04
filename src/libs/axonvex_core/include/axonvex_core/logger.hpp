@@ -746,8 +746,20 @@ inline std::string LogOutput::defaultFormat(const LogMessage& message) const {
             break;
     }
 
+    // C37: std::localtime returns a pointer into a shared static buffer and is
+    // not reentrant/thread-safe (glibc's tzset_internal can even reallocate
+    // its internal state under it) — two Logger worker threads calling this
+    // concurrently race on libc-internal state, not just the output. Use the
+    // reentrant POSIX/Windows variants which write into a caller-owned
+    // std::tm instead of a shared static.
+    std::tm local_tm{};
+#ifdef _WIN32
+    localtime_s(&local_tm, &time_t);
+#else
+    localtime_r(&time_t, &local_tm);
+#endif
     char time_buf[100];
-    std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", std::localtime(&time_t));
+    std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &local_tm);
 
     std::string formatted =
         std::string(time_buf) + " [" + level_str + "] " + message.category + ": " + message.message;
@@ -872,7 +884,6 @@ constexpr const char* WHITE = "\033[1;37m";
 constexpr const char* GRAY = "\033[1;30m";
 } // namespace Colors
 
-
 /**
  * @brief Colored console logger that outputs immediately
  */
@@ -896,8 +907,8 @@ class ColoredStreamLogger {
                 // auto now = std::chrono::system_clock::now();
                 // auto time_t = std::chrono::system_clock::to_time_t(now);
                 // auto ms =
-                //     std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) %
-                //     1000;
+                //     std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch())
+                //     % 1000;
 
                 // std::ostringstream colored_output;
                 // colored_output << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S.")
@@ -905,11 +916,7 @@ class ColoredStreamLogger {
                 //                << ColorCode << message << Colors::RESET;
 
                 std::ostringstream colored_output;
-                colored_output << " "
-                               << ColorCode << message << Colors::RESET;
-
-
-
+                colored_output << " " << ColorCode << message << Colors::RESET;
 
                 // Also log to async logger without color codes
                 auto& logger = getGlobalLogger().getLogger();
