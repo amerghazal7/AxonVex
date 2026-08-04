@@ -429,6 +429,18 @@ bool AxonVexSystem::resume() {
 }
 
 bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
+    // C40: stop() joins the worker threads and destroys components — it
+    // cannot run on a worker thread (the old path self-joined, threw, and
+    // silently escalated to emergencyShutdown/FATAL_ERROR). Refuse before
+    // the STOPPING transition so a refused stop leaves the state untouched.
+    if (isOnWorkerThread()) {
+        if (logger_) {
+            logger_->error("System", "stop() called from a system worker thread — refused. "
+                                     "Use emergencyShutdown() from callbacks.");
+        }
+        return false;
+    }
+
     if (!transitionState(SystemState::STOPPING)) {
         return false;
     }
@@ -594,10 +606,26 @@ SafetyHook* AxonVexSystem::getSafetyHook() const {
 }
 
 void AxonVexSystem::reset() {
+    // C40: reset() destroys timingController_/configuration_/logger_ that a
+    // worker thread's own call stack may be using; a worker calling this
+    // would tear down its own components mid-callback. Refuse — same
+    // contract as initialize()/stop(). Must be the first statement: nothing
+    // below is safe to run on eventThreadId_/monitoringThreadId_.
+    if (isOnWorkerThread()) {
+        if (logger_) {
+            logger_->error("System", "reset() called from a system worker thread — refused. "
+                                     "Use emergencyShutdown() from callbacks.");
+        }
+        return;
+    }
+
     emergencyShutdown();
 
-    // Wait a moment for cleanup
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // C40: wait for an in-flight teardown (another thread may own
+    // shutdownMutex_ — our emergencyShutdown() try_locks and skips in that
+    // case) instead of guessing with a sleep. Safe from deadlock: worker
+    // threads are refused above, so nobody joining US can hold this mutex.
+    { std::lock_guard<std::mutex> wait(shutdownMutex_); }
 
     // Reset to uninitialized state
     // C7: FATAL_ERROR → UNINITIALIZED is already in the transition table.

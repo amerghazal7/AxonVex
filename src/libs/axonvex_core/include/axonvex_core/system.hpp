@@ -304,7 +304,12 @@ class AxonVexSystem {
      * @brief Stop the system gracefully
      *
      * @param timeoutMs Maximum time to wait for graceful shutdown
-     * @return true if stop successful
+     * @return true if stop successful; false if it fails, or if called from
+     * a system worker thread (event-processing or monitoring) — stop() joins
+     * those threads and destroys components, so a worker calling it would
+     * join/destroy itself (C40). A refused call leaves currentState_
+     * untouched. Use emergencyShutdown() from an event/health callback
+     * instead.
      */
     bool stop(std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(5000));
 
@@ -316,12 +321,20 @@ class AxonVexSystem {
     /**
      * @brief Reset the system to uninitialized state
      *
-     * @note Not safe against concurrent lifecycle calls. reset() forces an
-     * emergencyShutdown() (which unconditionally reaches FATAL_ERROR) and then
-     * waits ~100ms before transitioning FATAL_ERROR -> UNINITIALIZED. If another
-     * thread's initialize()/start()/reset() moves currentState_ away from
-     * FATAL_ERROR during that window, the UNINITIALIZED transition is rejected
-     * (logged as a warning) and reset() proceeds to tear down containers,
+     * @note Refuses and returns immediately, without touching any state, if
+     * called from a system worker thread (event-processing or monitoring) —
+     * reset() destroys timingController_/configuration_/logger_, which a
+     * worker's own call stack may still be using (C40). Use
+     * emergencyShutdown() from an event/health callback instead.
+     *
+     * @note Not safe against concurrent lifecycle calls otherwise. reset()
+     * forces an emergencyShutdown() (which unconditionally reaches
+     * FATAL_ERROR), waits for any in-flight teardown to finish (blocks on the
+     * same mutex emergencyShutdown()/the destructor use), and then
+     * transitions FATAL_ERROR -> UNINITIALIZED. If another thread's
+     * initialize()/start()/reset() moves currentState_ away from FATAL_ERROR
+     * during that window, the UNINITIALIZED transition is rejected (logged as
+     * a warning) and reset() proceeds to tear down containers,
      * timingController_, configuration_, and logger_ regardless — getState()
      * can then transiently report a state (e.g. INITIALIZING) that no longer
      * has a live system behind it. Callers must serialize reset() with other
