@@ -197,6 +197,15 @@ class Configuration {
     bool loadFromString(const std::string& json_string, bool merge_with_existing = false);
 
     /**
+     * @brief Load configuration from an already-parsed JSON value
+     *
+     * @param json_data Parsed JSON configuration
+     * @param merge_with_existing If true, merge with current config
+     * @return true if loaded successfully
+     */
+    bool loadFromJson(const nlohmann::json& json_data, bool merge_with_existing = false);
+
+    /**
      * @brief Load configuration from environment variables
      *
      * @param prefix Environment variable prefix (e.g., "AXONVEX_")
@@ -240,7 +249,8 @@ class Configuration {
     get(const std::string& key, const T& default_value = T{}) const;
 
     template <typename T>
-    typename std::enable_if<!std::is_same<typename std::decay<T>::type, std::string>::value, T>::type
+    typename std::enable_if<!std::is_same<typename std::decay<T>::type, std::string>::value,
+                            T>::type
     get(const std::string& key, const T& default_value = T{}) const;
 
     /**
@@ -535,7 +545,6 @@ class Configuration {
     static constexpr std::memory_order release = std::memory_order_release;
 
     // Helper methods
-    bool loadFromJson(const nlohmann::json& json_data, bool merge_with_existing);
     std::vector<ValidationError> validateInternal(const nlohmann::json& data) const;
     void notifyCallbacks(const std::string& key, const ConfigValue& old_value,
                          const ConfigValue& new_value);
@@ -553,9 +562,9 @@ class Configuration {
 //==============================================================================
 
 template <typename T>
-inline typename std::enable_if<std::is_same<typename std::decay<T>::type, std::string>::value,
-                               T>::type
-Configuration::get(const std::string& key, const T& default_value) const {
+inline
+    typename std::enable_if<std::is_same<typename std::decay<T>::type, std::string>::value, T>::type
+    Configuration::get(const std::string& key, const T& default_value) const {
     std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
