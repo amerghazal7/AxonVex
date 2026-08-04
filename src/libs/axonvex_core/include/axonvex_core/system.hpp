@@ -720,6 +720,25 @@ class AxonVexSystem {
     std::unordered_map<std::string, BasePort*> systemInputPorts_;
     std::unordered_map<std::string, BasePort*> systemOutputPorts_;
 
+    /**
+     * C9: acquires this system's and the target's systemPortsMutex_ without a
+     * lock-order deadlock (std::lock), and locks only once when target == this
+     * (locking a non-recursive mutex twice is UB). Second lock is empty in the
+     * self case.
+     */
+    std::pair<std::unique_lock<std::mutex>, std::unique_lock<std::mutex>> lockSystemPortsWith(
+        AxonVexSystem* targetSystem) {
+        std::unique_lock<std::mutex> lock1(systemPortsMutex_, std::defer_lock);
+        std::unique_lock<std::mutex> lock2;
+        if (targetSystem == this) {
+            lock1.lock();
+        } else {
+            lock2 = std::unique_lock<std::mutex>(targetSystem->systemPortsMutex_, std::defer_lock);
+            std::lock(lock1, lock2);
+        }
+        return std::make_pair(std::move(lock1), std::move(lock2));
+    }
+
     // Statistics and monitoring
     mutable SystemStatistics statistics_;
     mutable std::mutex statisticsMutex_;
@@ -815,8 +834,7 @@ bool AxonVexSystem::connectToSystem(const std::string& outputPortName, AxonVexSy
         return false;
     }
 
-    std::lock_guard<std::mutex> lock1(systemPortsMutex_);
-    std::lock_guard<std::mutex> lock2(targetSystem->systemPortsMutex_);
+    auto portLocks = lockSystemPortsWith(targetSystem);
 
     // Find source output port
     auto outputIt = systemOutputPorts_.find(outputPortName);
@@ -875,8 +893,7 @@ bool AxonVexSystem::disconnectFromSystem(const std::string& outputPortName,
         return false;
     }
 
-    std::lock_guard<std::mutex> lock1(systemPortsMutex_);
-    std::lock_guard<std::mutex> lock2(targetSystem->systemPortsMutex_);
+    auto portLocks = lockSystemPortsWith(targetSystem);
 
     // Find source output port
     auto outputIt = systemOutputPorts_.find(outputPortName);
