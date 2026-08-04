@@ -17,6 +17,7 @@
  * - Thread safety testing
  */
 
+#include <atomic>
 #include <axonvex_core/configuration.hpp>
 #include <chrono>
 #include <cstdlib>
@@ -623,4 +624,99 @@ TEST_F(ConfigurationTest, EnvironmentVariableTest) {
     unsetenv("AXONVEX_SYSTEM_NAME");
     unsetenv("AXONVEX_SYSTEM_EXECUTION_FREQUENCY");
     unsetenv("AXONVEX_SYSTEM_EXECUTION_ENABLED");
+}
+
+// C5 regression. applyUpdates used to unlock config_mutex_ mid-merge to notify
+// callbacks while the recursive merge still held nlohmann::json references into
+// config_data_. Anything that mutated the tree during the notification — a
+// concurrent writer, or the callback itself — could destroy the node those
+// references pointed into, and the merge then resumed writing through them
+// (ASan: heap-use-after-free). Updates are now merged fully under the lock and
+// callbacks are notified afterwards from a collected change list, so callbacks
+// observe the completed update and may freely mutate the configuration.
+TEST_F(ConfigurationTest, CallbackMayMutateConfigDuringUpdateNotification) {
+    ASSERT_TRUE(
+        config->loadFromJson(nlohmann::json::parse(R"({"a": {"x": 1, "y": 2, "z": 3}})"), false));
+
+    std::atomic<int> fired{0};
+    config->registerCallback(
+        "*", [this, &fired](const std::string&, const ConfigValue&, const ConfigValue&) {
+            if (fired.fetch_add(1) == 0) {
+                // Destroys the subtree the old merge still held references into.
+                config->remove("a");
+            }
+        });
+
+    // Multi-key nested update: pre-fix the merge wrote the remaining keys
+    // through dangling references after the callback removed "a".
+    EXPECT_TRUE(config->applyUpdates(nlohmann::json::parse(R"({"a": {"x": 10, "y": 20, "z": 30}})"),
+                                     false));
+    EXPECT_GT(fired.load(), 0);
+}
+
+// C5 regression, second shape. notifyCallbacks invoked user callbacks while
+// holding callbacks_mutex_ — the same mutex registerCallback/unregisterCallback
+// take — so a callback touching the registration API deadlocked on a
+// non-recursive mutex. Deadline-guarded: a regression hangs rather than fails.
+TEST_F(ConfigurationTest, CallbackMayReenterCallbackRegistration) {
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    auto cfg = config.get();
+
+    std::thread worker([cfg, done]() {
+        ASSERT_TRUE(cfg->loadFromJson(nlohmann::json::parse(R"({"k": 1})"), false));
+        std::atomic<int> fired{0};
+        cfg->registerCallback(
+            "*", [cfg, &fired](const std::string&, const ConfigValue&, const ConfigValue&) {
+                ++fired;
+                const size_t id = cfg->registerCallback(
+                    "other.*", [](const std::string&, const ConfigValue&, const ConfigValue&) {});
+                cfg->unregisterCallback(id);
+            });
+        EXPECT_TRUE(cfg->applyUpdates(nlohmann::json::parse(R"({"k": 2})"), false));
+        EXPECT_GT(fired.load(), 0);
+        done->store(true);
+    });
+
+    // Polled, not condition-variable based: GCC 11's libtsan does not intercept
+    // pthread_cond_clockwait and reports bogus races for wait_for.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!done->load()) {
+        worker.detach(); // wedged; leak it rather than hang the suite
+        FAIL() << "callback re-entering the registration API deadlocked";
+    }
+    worker.join();
+}
+
+// C5: concurrent writers must be safe against an in-flight update's
+// notifications. TSan is the real assertion here.
+TEST_F(ConfigurationTest, ConcurrentUpdatesAndWritesAreRaceFree) {
+    ASSERT_TRUE(
+        config->loadFromJson(nlohmann::json::parse(R"({"a": {"x": 1}, "b": {"y": 2}})"), false));
+
+    std::atomic<int> fired{0};
+    config->registerCallback(
+        "*", [&fired](const std::string&, const ConfigValue&, const ConfigValue&) { ++fired; });
+
+    std::atomic<bool> stop{false};
+    std::thread writer([this, &stop]() {
+        int i = 0;
+        while (!stop.load()) {
+            config->set("b.y", ++i, false);
+            config->remove("b.tmp");
+            config->set("b.tmp", i, false);
+        }
+    });
+
+    for (int i = 0; i < 200; ++i) {
+        nlohmann::json update;
+        update["a"]["x"] = i;
+        update["a"]["nested"]["k"] = i * 2;
+        EXPECT_TRUE(config->applyUpdates(update, false));
+    }
+    stop.store(true);
+    writer.join();
+    EXPECT_GT(fired.load(), 0);
 }

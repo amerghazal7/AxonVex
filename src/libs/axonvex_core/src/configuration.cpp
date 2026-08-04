@@ -18,6 +18,7 @@
 #include <fstream>
 #include <regex>
 #include <sstream>
+#include <tuple>
 
 extern char** environ; // Environment variables declaration
 
@@ -81,9 +82,8 @@ bool Configuration::loadFromEnvironment(const std::string& prefix, bool merge_wi
 
             while (start < dotted_key.size()) {
                 size_t dot = dotted_key.find('.', start);
-                std::string part =
-                    dot == std::string::npos ? dotted_key.substr(start)
-                                             : dotted_key.substr(start, dot - start);
+                std::string part = dot == std::string::npos ? dotted_key.substr(start)
+                                                            : dotted_key.substr(start, dot - start);
 
                 if (dot == std::string::npos) {
                     (*current)[part] = value;
@@ -327,51 +327,56 @@ void Configuration::clearCallbacks() {
 }
 
 bool Configuration::applyUpdates(const nlohmann::json& updates, bool validate) {
-    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
-
-    try {
-        // Validate updates if requested
-        if (validate && validation_enabled_.load(relaxed)) {
-            auto errors = validateInternal(updates);
-            if (!errors.empty()) {
-                stats_.validation_failures.fetch_add(1, relaxed);
-                return false;
+    // C5: collect changes under the lock, notify after releasing it. The old
+    // code unlocked mid-merge while the recursive lambda held json references
+    // into config_data_; a concurrent writer or the callback itself could
+    // destroy the referenced nodes and the merge resumed through them (UAF).
+    std::vector<std::tuple<std::string, ConfigValue, ConfigValue>> changes;
+    {
+        std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
+        try {
+            // Validate updates if requested
+            if (validate && validation_enabled_.load(relaxed)) {
+                auto errors = validateInternal(updates);
+                if (!errors.empty()) {
+                    stats_.validation_failures.fetch_add(1, relaxed);
+                    return false;
+                }
             }
-        }
 
-        // Apply updates recursively
-        std::function<void(nlohmann::json&, const nlohmann::json&, const std::string&)> merge =
-            [&](nlohmann::json& target, const nlohmann::json& source, const std::string& prefix) {
-                for (auto it = source.begin(); it != source.end(); ++it) {
-                    std::string full_key = prefix.empty() ? it.key() : prefix + "." + it.key();
+            // Apply updates recursively
+            std::function<void(nlohmann::json&, const nlohmann::json&, const std::string&)> merge =
+                [&](nlohmann::json& target, const nlohmann::json& source,
+                    const std::string& prefix) {
+                    for (auto it = source.begin(); it != source.end(); ++it) {
+                        std::string full_key = prefix.empty() ? it.key() : prefix + "." + it.key();
 
-                    ConfigValue old_value;
-                    if (target.contains(it.key())) {
-                        old_value = target[it.key()];
-                    }
-
-                    if (it->is_object() && target.contains(it.key()) &&
-                        target[it.key()].is_object()) {
-                        merge(target[it.key()], *it, full_key);
-                    } else {
-                        target[it.key()] = *it;
-
-                        // Notify callbacks for this key
-                        if (monitoring_enabled_.load(relaxed)) {
-                            lock.unlock();
-                            notifyCallbacks(full_key, old_value, *it);
-                            lock.lock();
+                        if (it->is_object() && target.contains(it.key()) &&
+                            target[it.key()].is_object()) {
+                            merge(target[it.key()], *it, full_key);
+                        } else {
+                            ConfigValue old_value;
+                            if (target.contains(it.key())) {
+                                old_value = target[it.key()];
+                            }
+                            target[it.key()] = *it;
+                            if (monitoring_enabled_.load(relaxed)) {
+                                changes.emplace_back(full_key, std::move(old_value), *it);
+                            }
                         }
                     }
-                }
-            };
+                };
 
-        merge(config_data_, updates, "");
-        stats_.total_updates.fetch_add(1, relaxed);
-        stats_.runtime_updates.fetch_add(1, relaxed);
+            merge(config_data_, updates, "");
+            stats_.total_updates.fetch_add(1, relaxed);
+            stats_.runtime_updates.fetch_add(1, relaxed);
+        } catch (const std::exception&) { return false; }
+    }
 
-        return true;
-    } catch (const std::exception&) { return false; }
+    for (const auto& change : changes) {
+        notifyCallbacks(std::get<0>(change), std::get<1>(change), std::get<2>(change));
+    }
+    return true;
 }
 
 void Configuration::enableFileWatching(bool enable) {
@@ -576,19 +581,26 @@ std::vector<ValidationError> Configuration::validateInternal(const nlohmann::jso
 
 void Configuration::notifyCallbacks(const std::string& key, const ConfigValue& old_value,
                                     const ConfigValue& new_value) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(callbacks_mutex_));
-
-    for (const auto& pair : callbacks_) {
-        const std::string& pattern = pair.second.first;
-        const ConfigurationCallback& callback = pair.second.second;
-
-        if (matchesPattern(key, pattern)) {
-            try {
-                callback(key, old_value, new_value);
-                stats_.callback_invocations.fetch_add(1, relaxed);
-            } catch (const std::exception&) {
-                // Ignore callback exceptions
+    // C5: snapshot under the lock, invoke unlocked, so a callback may call
+    // registerCallback/unregisterCallback (both take callbacks_mutex_) without
+    // deadlocking. An unregister racing a notification may still see one
+    // in-flight invocation - inherent to snapshot-then-dispatch.
+    std::vector<ConfigurationCallback> matched;
+    {
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        for (const auto& pair : callbacks_) {
+            if (matchesPattern(key, pair.second.first)) {
+                matched.push_back(pair.second.second);
             }
+        }
+    }
+
+    for (const auto& callback : matched) {
+        try {
+            callback(key, old_value, new_value);
+            stats_.callback_invocations.fetch_add(1, relaxed);
+        } catch (const std::exception&) {
+            // Ignore callback exceptions
         }
     }
 }
