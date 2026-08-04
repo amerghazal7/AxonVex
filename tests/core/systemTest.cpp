@@ -271,6 +271,87 @@ TEST_F(AxonVexSystemTest, SystemReset) {
     EXPECT_EQ(system_->getProcessingUnitCount(), 0);
 }
 
+// C7 regression: emergencyShutdown/reset used to write currentState_ directly,
+// bypassing transitionState — no validation, no statistics, no STATE_CHANGE
+// event. The transition counter is the observable: a bypassed store leaves it
+// unchanged.
+TEST_F(AxonVexSystemTest, EmergencyShutdownIsAValidatedStateTransition) {
+    EXPECT_TRUE(system_->initialize());
+    EXPECT_TRUE(system_->start());
+
+    const uint64_t before = system_->getStatistics().totalStateTransitions.load();
+    system_->emergencyShutdown();
+
+    EXPECT_EQ(system_->getState(), SystemState::FATAL_ERROR);
+    EXPECT_EQ(system_->getStatistics().totalStateTransitions.load(), before + 1);
+}
+
+// C7 regression, reset() variant. reset() = emergencyShutdown() (→ FATAL_ERROR,
+// +1 transition), a ~100ms cleanup sleep, then transitionState(→
+// UNINITIALIZED) (+1 more) — but reset()'s own statistics_.reset() call runs
+// immediately after that second transition and zeroes totalStateTransitions
+// back to 0 as part of its documented job (see SystemStatistics::reset()).
+// Reading the counter after reset() returns is therefore 0 either way and
+// can't distinguish the fix from the bypass it replaces. Run reset() on a
+// background thread and poll for the counter moving off `before` during the
+// cleanup-sleep window instead.
+TEST_F(AxonVexSystemTest, ResetIsAValidatedStateTransition) {
+    EXPECT_TRUE(system_->initialize());
+    EXPECT_TRUE(system_->start());
+
+    const uint64_t before = system_->getStatistics().totalStateTransitions.load();
+
+    std::atomic<bool> done{false};
+    std::thread worker([this, &done]() {
+        system_->reset();
+        done.store(true);
+    });
+
+    bool sawBump = false;
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+        if (system_->getStatistics().totalStateTransitions.load() > before) {
+            sawBump = true;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+
+    if (!done.load()) {
+        worker.detach();
+    } else {
+        worker.join();
+    }
+
+    ASSERT_TRUE(done.load()) << "reset() did not complete";
+    EXPECT_TRUE(sawBump) << "totalStateTransitions never moved off `before` during reset() — "
+                            "emergencyShutdown/reset bypassed transitionState (C7)";
+    EXPECT_EQ(system_->getState(), SystemState::UNINITIALIZED);
+    // reset()'s statistics_.reset() zeroes the counter — documented behavior,
+    // not evidence either way for the C7 fix.
+    EXPECT_EQ(system_->getStatistics().totalStateTransitions.load(), 0u);
+}
+
+// FATAL_ERROR must be reachable from ANY state — an e-stop is always legal.
+// Pre-fix the transition table only allowed it from STOPPING.
+TEST_F(AxonVexSystemTest, EmergencyShutdownFromInitializedIsValidated) {
+    EXPECT_TRUE(system_->initialize());
+
+    const uint64_t before = system_->getStatistics().totalStateTransitions.load();
+    system_->emergencyShutdown();
+
+    EXPECT_EQ(system_->getState(), SystemState::FATAL_ERROR);
+    EXPECT_EQ(system_->getStatistics().totalStateTransitions.load(), before + 1);
+}
+
+// Guard test for the trap the C7 fix opens: e-stop on a NEVER-initialized
+// system now reaches publishEvent, whose eventPool_/eventQueue_ are null.
+// Passes trivially pre-fix; crashes post-fix if the null guard is missing.
+TEST_F(AxonVexSystemTest, EmergencyShutdownOnUninitializedSystemIsSafe) {
+    TestAxonVexSystem s;
+    s.emergencyShutdown();
+    EXPECT_EQ(s.getState(), SystemState::FATAL_ERROR);
+}
+
 // =================================================================
 // PROCESSING UNIT MANAGEMENT TESTS
 // =================================================================
