@@ -337,6 +337,63 @@ TEST_F(AxonVexSystemTest, InitializeFromEventCallbackIsRefused) {
     EXPECT_TRUE(system_->stop());
 }
 
+// C40 regression: stop() from an event callback self-joined, threw
+// resource_deadlock_would_occur into its own catch, and silently escalated a
+// graceful stop to FATAL_ERROR. It now refuses up front, before the
+// STOPPING transition, so the system stays RUNNING.
+TEST_F(AxonVexSystemTest, StopFromEventCallbackIsRefusedWithoutEscalation) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto stopResult = std::make_shared<std::atomic<bool>>(true);
+    AxonVexSystem* sys = system_.get();
+    system_->registerEventCallback([sys, attempted, stopResult](const SystemEvent&) {
+        if (!attempted->exchange(true)) {
+            stopResult->store(sys->stop());
+        }
+    });
+    EXPECT_TRUE(system_->start());
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!attempted->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(attempted->load());
+    EXPECT_FALSE(stopResult->load());
+    // Pre-fix the swallowed self-join escalated to FATAL_ERROR; post-fix the
+    // refusal happens before the STOPPING transition, so state stays RUNNING.
+    EXPECT_EQ(system_->getState(), SystemState::RUNNING);
+    EXPECT_TRUE(system_->stop()); // a real stop from outside still works
+}
+
+// C40 regression, reset() variant. reset() from an event callback ran
+// emergencyShutdown() + a destructive teardown (timingController_/
+// configuration_/logger_.reset()) on the very event thread invoking it — the
+// callback's own call stack was using those objects underneath it. It now
+// refuses up front and returns without touching anything. reset() returns
+// void, so the refusal is observed indirectly: the system must still be
+// intact (not UNINITIALIZED) and a subsequent external stop() must succeed.
+TEST_F(AxonVexSystemTest, ResetFromEventCallbackIsRefused) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    AxonVexSystem* sys = system_.get();
+    system_->registerEventCallback([sys, attempted](const SystemEvent&) {
+        if (!attempted->exchange(true)) {
+            sys->reset();
+        }
+    });
+    EXPECT_TRUE(system_->start());
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!attempted->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(attempted->load());
+    EXPECT_NE(system_->getState(), SystemState::UNINITIALIZED);
+    EXPECT_TRUE(system_->stop());
+}
+
 // C7 regression: emergencyShutdown/reset used to write currentState_ directly,
 // bypassing transitionState — no validation, no statistics, no STATE_CHANGE
 // event. The transition counter is the observable: a bypassed store leaves it
@@ -353,14 +410,31 @@ TEST_F(AxonVexSystemTest, EmergencyShutdownIsAValidatedStateTransition) {
 }
 
 // C7 regression, reset() variant. reset() = emergencyShutdown() (→ FATAL_ERROR,
-// +1 transition), a ~100ms cleanup sleep, then transitionState(→
+// +1 transition), a wait for in-flight teardown, then transitionState(→
 // UNINITIALIZED) (+1 more) — but reset()'s own statistics_.reset() call runs
 // immediately after that second transition and zeroes totalStateTransitions
 // back to 0 as part of its documented job (see SystemStatistics::reset()).
 // Reading the counter after reset() returns is therefore 0 either way and
 // can't distinguish the fix from the bypass it replaces. Run reset() on a
-// background thread and poll for the counter moving off `before` during the
-// cleanup-sleep window instead.
+// background thread and poll for the counter moving off `before` instead.
+//
+// C40 removed reset()'s sleep_for(100ms) guess in favor of blocking on
+// shutdownMutex_ — on this system (no concurrent teardown owner) that wait is
+// near-instant, so the discriminating window is no longer a fabricated
+// delay. It is real anyway: this test's reset() call runs on a plain
+// std::thread (not a system worker), so emergencyShutdown() actually joins
+// eventProcessingThread_ and monitoringThread_ here rather than skipping via
+// the self-join guard — and each of those loops only re-checks its shutdown
+// flag once per ~100ms poll cadence (eventProcessingLoop's tryDequeue
+// timeout, monitoringLoop's sleep_for). That join time is the window: it
+// elapses between the FATAL_ERROR transition (immediate) and the
+// UNINITIALIZED transition + statistics_.reset() (after both joins return),
+// and it is bounded below by zero only in the measure-zero case where both
+// loops happen to be at their top-of-loop check at the exact instant the
+// flags flip. 20 consecutive runs observed the bump every time (see
+// task-2-report.md) — if this ever proves flaky, the fallback is to assert
+// only the post-conditions this test already checks below (final state,
+// zeroed counter) and drop the bump assertion.
 TEST_F(AxonVexSystemTest, ResetIsAValidatedStateTransition) {
     EXPECT_TRUE(system_->initialize());
     EXPECT_TRUE(system_->start());
