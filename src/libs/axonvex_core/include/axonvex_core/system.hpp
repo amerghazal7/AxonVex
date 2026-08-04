@@ -743,6 +743,17 @@ class AxonVexSystem {
     // has been joined (C25 leak fix)
     void drainEventQueue() noexcept;
 
+    /**
+     * C39: joins and clears a worker-thread handle if it is joinable and not
+     * this thread (self-join guard, same discipline as emergencyShutdown's
+     * C33/C36 teardown). Called before every assignment over a thread-handle
+     * member: assigning over a joinable std::thread is std::terminate. The
+     * reachable stale-handle producers are a throw between thread-start and
+     * INITIALIZED (catch path leaves threads running, ERROR permits retry)
+     * and emergencyShutdown's deferred self-join.
+     */
+    void joinAndClearThreadHandle(std::unique_ptr<std::thread>& handle);
+
     // =================================================================
     // INTERNAL METHODS
     // =================================================================

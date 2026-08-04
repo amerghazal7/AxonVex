@@ -225,6 +225,33 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             return false;
         }
 
+        // C39: join and clear any stale thread handles BEFORE touching the
+        // shutdown/run flags below. A handle can still be set here from
+        // emergencyShutdown's deferred self-join (it runs on the very thread
+        // it would otherwise join, so it skips the join and leaves the
+        // handle set, C33/C36) or from a throw between a previous
+        // initialize()'s thread start and its INITIALIZED transition (the
+        // catch path's cleanupComponents() never touches thread handles).
+        // Assigning std::make_unique<std::thread> over a joinable handle
+        // destroys a joinable std::thread -> std::terminate.
+        //
+        // Ordering vs the C38 flag-clear immediately below is load-bearing:
+        // at this point isShuttingDown_ is still whatever the last
+        // stop()/emergencyShutdown() left it (true), and
+        // monitoringEnabled_/eventProcessingRunning_ are still false, so any
+        // stale thread's loop condition is still guaranteed to be exiting
+        // (or already exited). Clearing isShuttingDown_ or setting the
+        // per-thread run flags true BEFORE this join would let a stale loop
+        // observe "revived" flags and keep running instead of exiting,
+        // turning the join below into a potential indefinite block. The
+        // currentState_ >= STOPPING guard in the loops does not cover this
+        // window either: this call's own transitionState(INITIALIZING)
+        // above has already moved currentState_ off ERROR/FATAL_ERROR by
+        // the time we get here. Join both handles first, THEN clear/set
+        // flags, THEN start new threads.
+        joinAndClearThreadHandle(monitoringThread_);
+        joinAndClearThreadHandle(eventProcessingThread_);
+
         // C38: initialize() is the single owner of clearing the shutdown
         // latch. stop()/emergencyShutdown() set it; nothing else may clear
         // it. This does NOT decide a race against a concurrent e-stop:
@@ -1377,6 +1404,18 @@ void AxonVexSystem::drainEventQueue() noexcept {
         }
         eventPool_->deallocateObject(eventOpt.value());
     }
+}
+
+void AxonVexSystem::joinAndClearThreadHandle(std::unique_ptr<std::thread>& handle) {
+    // Self-join guard, same discipline as emergencyShutdown's C33/C36
+    // teardown: never join std::this_thread (deadlock). A handle reaching
+    // here still self-joinable belongs to whatever thread is calling
+    // initialize(), which cannot be one of our own worker threads in any
+    // supported usage, so this branch is defensive rather than reachable.
+    if (handle && handle->joinable() && handle->get_id() != std::this_thread::get_id()) {
+        handle->join();
+    }
+    handle.reset();
 }
 
 void AxonVexSystem::publishEvent(const SystemEvent& event) {

@@ -271,6 +271,43 @@ TEST_F(AxonVexSystemTest, SystemReset) {
     EXPECT_EQ(system_->getProcessingUnitCount(), 0);
 }
 
+// C39 guard: an e-stop initiated FROM an event callback runs emergencyShutdown
+// on the event thread itself, whose self-join guard (C33/C36) leaves the
+// thread handle set. Re-initialization must join-and-clear stale handles
+// before assigning new threads over them (~std::thread on a joinable thread
+// is std::terminate). The throw-mid-initialize shape of C39 has no
+// deterministic seam; this locks the nearest reachable lifecycle.
+TEST_F(AxonVexSystemTest, ReinitializeAfterCallbackInitiatedEmergencyShutdown) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto fired = std::make_shared<std::atomic<bool>>(false);
+    AxonVexSystem* sys = system_.get();
+    system_->registerEventCallback([sys, fired](const SystemEvent&) {
+        if (!fired->exchange(true)) {
+            sys->emergencyShutdown(); // runs on the event thread
+        }
+    });
+    // STATE_CHANGE events (published under start()'s own transitionState calls)
+    // trigger the callback asynchronously on the event thread, racing this
+    // thread's own transitionState(RUNNING): the e-stop may land before or
+    // after start() reaches RUNNING, so start()'s return value is not
+    // deterministic here — only that FATAL_ERROR is eventually reached
+    // (asserted below) matters for this guard.
+    system_->start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (system_->getState() != SystemState::FATAL_ERROR &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(system_->getState(), SystemState::FATAL_ERROR);
+
+    system_->reset();
+    EXPECT_TRUE(system_->initialize()); // must not terminate on a stale handle
+    EXPECT_TRUE(system_->start());
+    EXPECT_TRUE(system_->stop());
+}
+
 // C7 regression: emergencyShutdown/reset used to write currentState_ directly,
 // bypassing transitionState — no validation, no statistics, no STATE_CHANGE
 // event. The transition counter is the observable: a bypassed store leaves it
