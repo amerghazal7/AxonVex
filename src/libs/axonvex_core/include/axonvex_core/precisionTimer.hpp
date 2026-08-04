@@ -57,7 +57,10 @@ struct TimingStatistics {
  */
 class PrecisionTimer {
   public:
-    using ClockType = std::chrono::high_resolution_clock;
+    // C19: must be a steady clock — high_resolution_clock is permitted to
+    // alias system_clock (non-steady), and wall-clock adjustments (NTP step,
+    // manual clock set) would corrupt elapsed-time measurements.
+    using ClockType = std::chrono::steady_clock;
     using TimePointType = ClockType::time_point;
     using DurationType = std::chrono::nanoseconds;
 
@@ -73,6 +76,9 @@ class PrecisionTimer {
     DurationType lap() noexcept;
 
     // Timing queries
+    // C19: none of these throw. If the timer has never been started (not
+    // running and no completed measurements), they return zero — a timing
+    // getter callable from RT-adjacent paths must not throw.
     DurationType getElapsedNanoseconds() const;
     double getElapsedSeconds() const;
     double getElapsedMilliseconds() const;
@@ -109,6 +115,9 @@ class PrecisionTimer {
 
     mutable std::mutex samples_mutex_;
     std::vector<DurationType> samples_;
+    // C19: ring-buffer write index once samples_ reaches max_samples_ capacity
+    // (avoids O(n) erase(begin()) under the mutex on every measurement).
+    size_t sampleHead_{0};
 
     void addSample(DurationType duration) noexcept;
     static DurationType calculatePercentileImpl(const std::vector<DurationType>& sorted_samples,

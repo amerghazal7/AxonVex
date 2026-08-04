@@ -62,6 +62,7 @@ void PrecisionTimer::reset() noexcept {
 
     std::lock_guard<std::mutex> lock(samples_mutex_);
     samples_.clear();
+    sampleHead_ = 0;
 }
 
 PrecisionTimer::DurationType PrecisionTimer::lap() noexcept {
@@ -87,8 +88,10 @@ PrecisionTimer::DurationType PrecisionTimer::lap() noexcept {
 }
 
 PrecisionTimer::DurationType PrecisionTimer::getElapsedNanoseconds() const {
+    // C19: never throw — timing getters callable from RT-adjacent paths must
+    // not throw. A timer that has never been started/measured reports zero.
     if (!running_ && total_measurements_ == 0) {
-        throw std::runtime_error("Timer has not been started");
+        return DurationType::zero();
     }
 
     auto current_time = ClockType::now();
@@ -140,6 +143,7 @@ uint64_t PrecisionTimer::getTotalMeasurements() const noexcept {
 void PrecisionTimer::clearSamples() noexcept {
     std::lock_guard<std::mutex> lock(samples_mutex_);
     samples_.clear();
+    sampleHead_ = 0;
 }
 
 TimingStatistics PrecisionTimer::getStatistics() const {
@@ -230,12 +234,17 @@ bool PrecisionTimer::isClockSteady() {
 void PrecisionTimer::addSample(DurationType duration) noexcept {
     std::lock_guard<std::mutex> lock(samples_mutex_);
 
-    if (samples_.size() >= max_samples_) {
-        // Remove oldest sample to make room for new one
-        samples_.erase(samples_.begin());
+    if (samples_.size() < max_samples_) {
+        samples_.push_back(duration);
+    } else {
+        // C19: ring-write instead of erase(begin()) — O(1) instead of an
+        // O(n) shift under the mutex on every measured execution. Readers
+        // (getStatistics/calculatePercentile) copy + sort, so sample order
+        // is irrelevant; the retained set is still the most recent
+        // max_samples_ measurements.
+        samples_[sampleHead_] = duration;
+        sampleHead_ = (sampleHead_ + 1) % max_samples_;
     }
-
-    samples_.push_back(duration);
 }
 
 PrecisionTimer::DurationType PrecisionTimer::calculatePercentileImpl(
