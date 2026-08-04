@@ -135,6 +135,9 @@ class RingBufferStatistics : public axonvex::core::PerformanceStatisticsBase<Rin
  * `buffer_[current_write]` -- one write is silently lost and the index is
  * only advanced once instead of twice. The symmetric corruption happens with
  * two readers on `read_index_`.
+ *
+ * clear() and resetStatistics() are not safe against a concurrent producer or
+ * consumer; quiesce both threads first.
  */
 template <typename T>
 class RingBuffer {

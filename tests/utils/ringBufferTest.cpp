@@ -55,6 +55,12 @@ TEST(RingBufferTest, ConstructionAndDestructionAreBalanced) {
     LifetimeCounter::constructions.store(0);
     LifetimeCounter::destructions.store(0);
     { RingBuffer<LifetimeCounter> buffer(RingBuffer<LifetimeCounter>::MIN_CAPACITY); }
+    // Not just balanced -- exactly one construction per slot. The double-
+    // construct bug this test guards against left constructions == 2 *
+    // capacity while destructions == capacity, so a naive balance check
+    // (equal, but both wrong) would have passed it.
+    EXPECT_EQ(LifetimeCounter::constructions.load(),
+              static_cast<int>(RingBuffer<LifetimeCounter>::MIN_CAPACITY));
     EXPECT_EQ(LifetimeCounter::constructions.load(), LifetimeCounter::destructions.load());
 }
 
