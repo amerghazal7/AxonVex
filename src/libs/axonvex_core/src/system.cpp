@@ -228,6 +228,13 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             return false;
         }
 
+        // C38: initialize() is the single owner of clearing the shutdown
+        // latch. stop()/emergencyShutdown() set it; nothing else may clear
+        // it. Cleared here, immediately before the threads that read it
+        // start, so a racing e-stop that re-sets it wins (its flags end the
+        // fresh threads' loops, which is the correct outcome).
+        isShuttingDown_.store(false);
+
         // Start monitoring if enabled
         if (systemConfig_.enablePerformanceMonitoring) {
             monitoringEnabled_.store(true);
