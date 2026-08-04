@@ -218,16 +218,6 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             }
         }
 
-        // Rebuild components with the (possibly file-loaded) configuration.
-        // Return queued events to the pool first: replacing a pool that still
-        // holds live objects leaks their contents (C25) — MemoryPool's
-        // destructor does not destruct allocated blocks.
-        drainEventQueue();
-        if (!initializeComponents()) {
-            logStateTransition(SystemState::INITIALIZING, SystemState::ERROR);
-            return false;
-        }
-
         // Initialize the processing blocks layout (implemented by derived classes)
         if (!initializeBlocksLayout()) {
             if (logger_) {
@@ -461,8 +451,10 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
 }
 
 void AxonVexSystem::emergencyShutdown() {
-    SystemState oldState = currentState_.load();
-    currentState_.store(SystemState::FATAL_ERROR);
+    // C7: validated transition (legal from any state). Runs before
+    // isShuttingDown_ is set so the STATE_CHANGE event isn't dropped
+    // by publishEvent's shutdown guard.
+    transitionState(SystemState::FATAL_ERROR);
     isShuttingDown_.store(true);
     eventProcessingRunning_.store(false);
     monitoringEnabled_.store(false);
@@ -513,7 +505,6 @@ void AxonVexSystem::emergencyShutdown() {
     } catch (...) {
         // Ignore all exceptions during emergency shutdown
     }
-    notifyStateChange(oldState, SystemState::FATAL_ERROR);
 }
 
 // =================================================================
@@ -570,7 +561,8 @@ void AxonVexSystem::reset() {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // Reset to uninitialized state
-    currentState_.store(SystemState::UNINITIALIZED);
+    // C7: FATAL_ERROR → UNINITIALIZED is already in the transition table.
+    transitionState(SystemState::UNINITIALIZED);
     statistics_.reset();
     currentRecoveryAttempts_.store(0);
 
@@ -1075,51 +1067,59 @@ bool AxonVexSystem::transitionState(SystemState newState) {
 
     SystemState currentState = currentState_.load();
 
-    // Validate state transition (simplified logic)
+    // C7: an emergency shutdown is legal from every state — FATAL_ERROR is the
+    // one transition that must never be refused.
     bool validTransition = false;
-
-    switch (currentState) {
-        case SystemState::UNINITIALIZED:
-            validTransition = (newState == SystemState::INITIALIZING);
-            break;
-        case SystemState::INITIALIZING:
-            validTransition =
-                (newState == SystemState::INITIALIZED || newState == SystemState::ERROR);
-            break;
-        case SystemState::INITIALIZED:
-            validTransition = (newState == SystemState::STARTING);
-            break;
-        case SystemState::STARTING:
-            validTransition = (newState == SystemState::RUNNING || newState == SystemState::ERROR);
-            break;
-        case SystemState::RUNNING:
-            validTransition = (newState == SystemState::PAUSING ||
-                               newState == SystemState::STOPPING || newState == SystemState::ERROR);
-            break;
-        case SystemState::PAUSING:
-            validTransition = (newState == SystemState::PAUSED || newState == SystemState::ERROR);
-            break;
-        case SystemState::PAUSED:
-            validTransition = (newState == SystemState::RESUMING ||
-                               newState == SystemState::STOPPING || newState == SystemState::ERROR);
-            break;
-        case SystemState::RESUMING:
-            validTransition = (newState == SystemState::RUNNING || newState == SystemState::ERROR);
-            break;
-        case SystemState::STOPPING:
-            validTransition =
-                (newState == SystemState::STOPPED || newState == SystemState::FATAL_ERROR);
-            break;
-        case SystemState::STOPPED:
-            validTransition =
-                (newState == SystemState::STARTING || newState == SystemState::UNINITIALIZED);
-            break;
-        case SystemState::ERROR:
-            validTransition = true; // Can transition to any state from error
-            break;
-        case SystemState::FATAL_ERROR:
-            validTransition = (newState == SystemState::UNINITIALIZED);
-            break;
+    if (newState == SystemState::FATAL_ERROR) {
+        validTransition = true;
+    } else {
+        switch (currentState) {
+            case SystemState::UNINITIALIZED:
+                validTransition = (newState == SystemState::INITIALIZING);
+                break;
+            case SystemState::INITIALIZING:
+                validTransition =
+                    (newState == SystemState::INITIALIZED || newState == SystemState::ERROR);
+                break;
+            case SystemState::INITIALIZED:
+                validTransition = (newState == SystemState::STARTING);
+                break;
+            case SystemState::STARTING:
+                validTransition =
+                    (newState == SystemState::RUNNING || newState == SystemState::ERROR);
+                break;
+            case SystemState::RUNNING:
+                validTransition =
+                    (newState == SystemState::PAUSING || newState == SystemState::STOPPING ||
+                     newState == SystemState::ERROR);
+                break;
+            case SystemState::PAUSING:
+                validTransition =
+                    (newState == SystemState::PAUSED || newState == SystemState::ERROR);
+                break;
+            case SystemState::PAUSED:
+                validTransition =
+                    (newState == SystemState::RESUMING || newState == SystemState::STOPPING ||
+                     newState == SystemState::ERROR);
+                break;
+            case SystemState::RESUMING:
+                validTransition =
+                    (newState == SystemState::RUNNING || newState == SystemState::ERROR);
+                break;
+            case SystemState::STOPPING:
+                validTransition = (newState == SystemState::STOPPED);
+                break;
+            case SystemState::STOPPED:
+                validTransition =
+                    (newState == SystemState::STARTING || newState == SystemState::UNINITIALIZED);
+                break;
+            case SystemState::ERROR:
+                validTransition = true; // Can transition to any state from error
+                break;
+            case SystemState::FATAL_ERROR:
+                validTransition = (newState == SystemState::UNINITIALIZED);
+                break;
+        }
     }
 
     if (!validTransition) {
@@ -1384,6 +1384,10 @@ void AxonVexSystem::drainEventQueue() noexcept {
 }
 
 void AxonVexSystem::publishEvent(const SystemEvent& event) {
+    // Components may not exist yet (e-stop on a never-initialized system).
+    if (!eventPool_ || !eventQueue_) {
+        return;
+    }
     // C25: once shutdown begins the event thread stops draining the queue —
     // allocating here would leak the event's strings. Drop shutdown-time events.
     if (isShuttingDown_.load()) {
