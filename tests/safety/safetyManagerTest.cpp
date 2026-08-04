@@ -594,3 +594,113 @@ TEST(SafetyManagerTest, EvaluationPeriodMayChangeWhileRunning) {
     EXPECT_GT(ptr->evaluations.load(), 0);
     EXPECT_GT(mgr.getEvaluationPeriod().count(), 0);
 }
+
+// C26: a policy whose evaluate() throws used to propagate out of the evaluation
+// worker and call std::terminate. It must not — and it must not be silently
+// swallowed either: a policy that cannot report cannot vouch for the system, so
+// the throw surfaces as a CRITICAL violation through the normal event path.
+namespace {
+class ThrowingPolicy final : public axonvex::safety::SafetyPolicy {
+  public:
+    ThrowingPolicy() : SafetyPolicy("throwing") {}
+    std::atomic<int> evaluations{0};
+    axonvex::safety::PolicyResult evaluate() override {
+        ++evaluations;
+        throw std::runtime_error("policy blew up");
+    }
+};
+
+class CountingPolicy final : public axonvex::safety::SafetyPolicy {
+  public:
+    CountingPolicy() : SafetyPolicy("counting") {}
+    std::atomic<int> evaluations{0};
+    axonvex::safety::PolicyResult evaluate() override {
+        ++evaluations;
+        return {};
+    }
+};
+
+class RecordingHandler final : public axonvex::core::Callback<axonvex::safety::SafetyEvent> {
+  public:
+    std::atomic<int> count{0};
+    std::mutex mtx;
+    axonvex::safety::SafetyLevel worst{axonvex::safety::SafetyLevel::NOMINAL};
+    void callbackPerform(const axonvex::safety::SafetyEvent event) override {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (event.level > worst) {
+            worst = event.level;
+        }
+        ++count;
+    }
+};
+
+// C33's shape, fourth occurrence: policies run ON the evaluation worker, so a
+// policy calling stop() used to make that thread join itself.
+class StoppingPolicy final : public axonvex::safety::SafetyPolicy {
+  public:
+    StoppingPolicy() : SafetyPolicy("stopping") {}
+    axonvex::safety::SafetyManager* target{nullptr};
+    std::atomic<int> evaluations{0};
+    axonvex::safety::PolicyResult evaluate() override {
+        ++evaluations;
+        if (target) {
+            target->stop();
+        }
+        return {};
+    }
+};
+} // namespace
+
+TEST(SafetyManagerTest, ThrowingPolicyIsReportedNotFatal) {
+    axonvex::safety::SafetyManager mgr(std::chrono::milliseconds(5));
+    auto bad = std::unique_ptr<ThrowingPolicy>(new ThrowingPolicy());
+    auto good = std::unique_ptr<CountingPolicy>(new CountingPolicy());
+    auto* badPtr = bad.get();
+    auto* goodPtr = good.get();
+    RecordingHandler handler;
+
+    mgr.registerHandler(&handler);
+    mgr.addPolicy(std::move(bad));
+    mgr.addPolicy(std::move(good));
+
+    // The throw is reported as a violation, not swallowed and not fatal.
+    const auto level = mgr.evaluateAll();
+    EXPECT_EQ(level, axonvex::safety::SafetyLevel::CRITICAL);
+    EXPECT_GT(handler.count.load(), 0);
+    {
+        std::lock_guard<std::mutex> lock(handler.mtx);
+        EXPECT_EQ(handler.worst, axonvex::safety::SafetyLevel::CRITICAL);
+    }
+    // A throwing policy must not abort the cycle for the others.
+    EXPECT_GT(goodPtr->evaluations.load(), 0);
+    EXPECT_GT(badPtr->evaluations.load(), 0);
+
+    // And the periodic loop survives it repeatedly.
+    ASSERT_TRUE(mgr.start());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    const int before = badPtr->evaluations.load();
+    while (badPtr->evaluations.load() < before + 3 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    mgr.stop();
+    EXPECT_GE(badPtr->evaluations.load(), before + 3);
+}
+
+TEST(SafetyManagerTest, PolicyMayStopTheManager) {
+    axonvex::safety::SafetyManager mgr(std::chrono::milliseconds(5));
+    auto policy = std::unique_ptr<StoppingPolicy>(new StoppingPolicy());
+    auto* ptr = policy.get();
+    ptr->target = &mgr;
+    mgr.addPolicy(std::move(policy));
+
+    ASSERT_TRUE(mgr.start());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (ptr->evaluations.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_GT(ptr->evaluations.load(), 0);
+
+    // The self-stop defers the join; an external stop() must still complete it.
+    mgr.stop();
+    EXPECT_FALSE(mgr.isRunning());
+}

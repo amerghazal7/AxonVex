@@ -56,7 +56,10 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
             return false;
         }
         running_.store(true);
-        worker_ = std::thread([this]() { recvLoop(); });
+        worker_ = std::thread([this]() {
+            workerId_.store(std::this_thread::get_id(), std::memory_order_release);
+            recvLoop();
+        });
         return true;
 #else
         // No sockets on this platform. Reporting success and spinning a thread
@@ -68,11 +71,25 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
     }
 
     void stop() override {
-        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
-        // No early return on running_: after a deferred self-stop (below) the
-        // flag is already false while the thread and fd still need reclaiming.
-        // Every step below is individually idempotent instead.
         running_.store(false);
+
+        // Checked before lifecycleMutex_ and without touching worker_. Two
+        // reasons. (1) Callbacks run ON this thread, and an external stop()
+        // holds lifecycleMutex_ while waiting to join us — blocking here would
+        // deadlock both. (2) start() move-assigns worker_ with no happens-before
+        // edge to the child, so the child must not read the std::thread object;
+        // the id is published by the child itself instead.
+        if (workerId_.load(std::memory_order_acquire) == std::this_thread::get_id()) {
+            // Self-stop from a message or error callback. Joining would be a
+            // self-join: system_error unwinding out of the thread entry, i.e.
+            // std::terminate. The loop exits once this callback returns; the
+            // join and close are left to the destructor or an external stop().
+            return;
+        }
+
+        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
+        // Every step below is individually idempotent, so a repeat stop() (or
+        // one completing a deferred self-stop) is harmless.
 #if defined(AXONVEX_PLATFORM_LINUX)
         // shutdown() wakes a blocked recv() immediately without invalidating the
         // fd, so it is safe to call while recvLoop is inside recv(). close() is
@@ -93,21 +110,9 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
             ::shutdown(sock_, SHUT_RDWR);
 #endif
         if (worker_.joinable()) {
-            if (worker_.get_id() == std::this_thread::get_id()) {
-                // stop() was called from a message or error callback, and those
-                // run on the worker thread itself. Joining here is a self-join:
-                // it throws system_error("Resource deadlock avoided"), and from
-                // inside a callback that escapes recvLoop and the thread entry
-                // lambda, so std::terminate takes the whole process down.
-                //
-                // running_ is already false, so the loop exits as soon as this
-                // callback returns. The join and the close are deferred to the
-                // destructor or to a later stop() from another thread, both of
-                // which will find the worker already finished.
-                return;
-            }
             worker_.join();
         }
+        workerId_.store(std::thread::id(), std::memory_order_release);
 #if defined(AXONVEX_PLATFORM_LINUX)
         std::lock_guard<std::mutex> lock(sockMutex_);
         if (sock_ >= 0) {
@@ -414,6 +419,8 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
     std::thread worker_;
     /// Serialises start()/stop() so only one caller ever tears the thread down.
     mutable std::mutex lifecycleMutex_;
+    /// Published by the worker itself; see stop().
+    std::atomic<std::thread::id> workerId_{std::thread::id()};
 
     MessageCallback* defaultMsgCb_{nullptr};
 

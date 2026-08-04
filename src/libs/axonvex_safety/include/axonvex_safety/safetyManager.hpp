@@ -58,15 +58,34 @@ class SafetyManager : public axonvex::core::SafetyHook {
         if (running_.exchange(true))
             return true;
         emergencyStopped_.store(false);
-        worker_ = std::thread([this]() { evaluationLoop(); });
+        worker_ = std::thread([this]() {
+            workerId_.store(std::this_thread::get_id(), std::memory_order_release);
+            evaluationLoop();
+        });
         return true;
     }
 
     void stop() {
-        if (!running_.exchange(false))
+        // No early return on running_: after a deferred self-stop the flag is
+        // already false while the thread still needs reclaiming.
+        running_.store(false);
+
+        // Checked before anything else touches worker_. Policies and handlers
+        // run ON the evaluation worker, so self-detection must not read the
+        // std::thread object — start() move-assigns it and the child has no
+        // happens-before edge to that write. The id is published by the child.
+        if (workerId_.load(std::memory_order_acquire) == std::this_thread::get_id()) {
+            // Self-stop from a policy or handler. Joining would be a self-join:
+            // system_error unwinding out of the thread entry, i.e.
+            // std::terminate (C33's shape). The loop exits after this cycle;
+            // the join is left to the destructor or an external stop().
             return;
-        if (worker_.joinable())
+        }
+
+        if (worker_.joinable()) {
             worker_.join();
+        }
+        workerId_.store(std::thread::id(), std::memory_order_release);
     }
 
     bool isRunning() const {
@@ -103,7 +122,13 @@ class SafetyManager : public axonvex::core::SafetyHook {
         {
             std::lock_guard<std::mutex> lock(emergencyCallbackMutex_);
             if (emergencyCallback_) {
-                emergencyCallback_(reason);
+                try {
+                    emergencyCallback_(reason);
+                } catch (...) {
+                    // The e-stop has already been recorded and published; a
+                    // throwing hook must not unwind out of whichever thread
+                    // tripped it (C26).
+                }
             }
         }
     }
@@ -219,7 +244,25 @@ class SafetyManager : public axonvex::core::SafetyHook {
             if (!policy || !policy->isEnabled())
                 continue;
 
-            PolicyResult result = policy->evaluate();
+            // A policy that throws must not take the process down (C26), and
+            // must not be quietly skipped either: a policy that cannot report
+            // is a policy that cannot vouch for the system, so treating the
+            // throw as NOMINAL would be a silent failure of the exact kind this
+            // subsystem exists to prevent. It is reported as CRITICAL — high
+            // enough to surface through the normal event path and to dominate
+            // the cycle's worst level, deliberately short of EMERGENCY so a
+            // malfunctioning policy cannot trip the e-stop on its own.
+            PolicyResult result;
+            try {
+                result = policy->evaluate();
+            } catch (const std::exception& e) {
+                result.level = SafetyLevel::CRITICAL;
+                result.description = "policy evaluate() threw: " + std::string(e.what());
+            } catch (...) {
+                result.level = SafetyLevel::CRITICAL;
+                result.description = "policy evaluate() threw a non-standard exception";
+            }
+
             if (result.level > worst) {
                 worst = result.level;
                 cycleWorst_.store(worst);
@@ -339,7 +382,16 @@ class SafetyManager : public axonvex::core::SafetyHook {
     void evaluationLoop() {
         while (running_.load()) {
             if (!emergencyStopped_.load()) {
-                evaluateAll();
+                // Backstop (C26). evaluateAll already contains every call into
+                // user code and guards each one, so nothing should reach here —
+                // but this is a thread entry, and an escaping exception means
+                // std::terminate, taking down the process whose safety this
+                // subsystem is meant to preserve. The loop keeps running: a
+                // failed cycle is not a reason to stop evaluating, and the
+                // per-policy handling above has already published the fault.
+                try {
+                    evaluateAll();
+                } catch (...) {}
             }
             std::this_thread::sleep_for(evaluationPeriod_.load());
         }
@@ -349,6 +401,8 @@ class SafetyManager : public axonvex::core::SafetyHook {
     std::atomic<bool> running_{false};
     std::atomic<bool> emergencyStopped_{false};
     std::thread worker_;
+    /// Published by the worker itself; see stop().
+    std::atomic<std::thread::id> workerId_{std::thread::id()};
 
     mutable std::mutex evaluationMutex_;
     std::atomic<std::thread::id> evaluatingThread_{std::thread::id()};
