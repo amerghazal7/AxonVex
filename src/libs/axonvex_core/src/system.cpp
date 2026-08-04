@@ -193,6 +193,20 @@ AxonVexSystem::~AxonVexSystem() {
 // =================================================================
 
 bool AxonVexSystem::initialize(const std::string& configPath) {
+    // C41: lifecycle teardown destroys components this worker's own stack is
+    // using; refusal is the only honest behavior. emergencyShutdown() remains
+    // the sanctioned from-any-thread path (it stops but never destroys).
+    // Must be the first statement: everything below (including the C39
+    // joins just after this) assumes it is not running on eventThreadId_/
+    // monitoringThreadId_.
+    if (isOnWorkerThread()) {
+        if (logger_) {
+            logger_->error("System", "initialize() called from a system worker thread — refused. "
+                                     "Use emergencyShutdown() from callbacks.");
+        }
+        return false;
+    }
+
     // C39: join and clear any stale thread handles BEFORE
     // initializeComponents() below replaces logger_/eventPool_/eventQueue_/
     // timingController_. A stale thread can still be running here — from
@@ -1255,7 +1269,37 @@ bool AxonVexSystem::startComponents() {
     }
 }
 
+namespace {
+/**
+ * C41: publishes the calling thread's id into `slot` on construction and
+ * clears it (back to std::thread::id{}, the "no worker" sentinel
+ * isOnWorkerThread() checks against) on destruction — every exit path of the
+ * loop that owns the guard, including an exception escaping the loop body,
+ * runs the clear. Ids are reusable once a thread exits, so a stale id left
+ * behind after a loop ends could later alias an unrelated thread; the clear
+ * is not optional cleanup, it is the correctness condition.
+ */
+class WorkerThreadIdGuard {
+  public:
+    explicit WorkerThreadIdGuard(std::atomic<std::thread::id>& slot) : slot_(slot) {
+        slot_.store(std::this_thread::get_id());
+    }
+    ~WorkerThreadIdGuard() {
+        slot_.store(std::thread::id{});
+    }
+    WorkerThreadIdGuard(const WorkerThreadIdGuard&) = delete;
+    WorkerThreadIdGuard& operator=(const WorkerThreadIdGuard&) = delete;
+
+  private:
+    std::atomic<std::thread::id>& slot_;
+};
+} // namespace
+
 void AxonVexSystem::monitoringLoop() {
+    // C41: published first, cleared last (by the guard's destructor, on
+    // every exit path) so isOnWorkerThread() can identify this thread.
+    WorkerThreadIdGuard idGuard(monitoringThreadId_);
+
     auto lastUpdate = std::chrono::steady_clock::now();
     // Loop-local timer: the old unlocked read of lastHealth_.lastCheckTime raced
     // performHealthCheck() on other threads (C18).
@@ -1408,25 +1452,21 @@ void AxonVexSystem::drainEventQueue() noexcept {
 }
 
 void AxonVexSystem::joinAndClearThreadHandle(std::unique_ptr<std::thread>& handle) {
-    // Self-join guard, same discipline as emergencyShutdown's C33/C36
-    // teardown: never join std::this_thread (deadlock). This branch is
-    // reachable: initialize() can be invoked from a callback running on one
-    // of our own worker threads (e.g. an event callback that reinitializes
-    // the system after an e-stop), so `handle` may equal the calling
-    // thread's own handle here.
+    // C41: callers must not run on the thread the handle names; initialize()
+    // guarantees this via isOnWorkerThread() refusal. This helper used to
+    // carry a self-join guard (detach instead of join) for exactly the
+    // reinit-from-callback path initialize()'s refusal now closes before
+    // ever reaching here — nothing else relied on it, so it is gone rather
+    // than kept as unreachable defense-in-depth.
     if (handle && handle->joinable()) {
-        if (handle->get_id() != std::this_thread::get_id()) {
-            handle->join();
-        } else {
-            // Self case: detach rather than destroy. handle.reset() below
-            // would run ~std::thread on a still-joinable handle for the
-            // thread we are currently executing on -> std::terminate. The
-            // thread is exiting per the flags this call already set, so
-            // detaching just lets the runtime reclaim it once it returns.
-            handle->detach();
-        }
+        handle->join();
     }
     handle.reset();
+}
+
+bool AxonVexSystem::isOnWorkerThread() const noexcept {
+    const std::thread::id self = std::this_thread::get_id();
+    return self == eventThreadId_.load() || self == monitoringThreadId_.load();
 }
 
 void AxonVexSystem::publishEvent(const SystemEvent& event) {
@@ -1462,6 +1502,10 @@ void AxonVexSystem::publishEvent(const SystemEvent& event) {
 }
 
 void AxonVexSystem::eventProcessingLoop() {
+    // C41: published first, cleared last (by the guard's destructor, on
+    // every exit path) so isOnWorkerThread() can identify this thread.
+    WorkerThreadIdGuard idGuard(eventThreadId_);
+
     while (eventProcessingRunning_.load() && !isShuttingDown_.load()) {
         // Guard against accessing resources during shutdown
         if (currentState_.load() >= SystemState::STOPPING) {

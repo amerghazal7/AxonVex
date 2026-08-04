@@ -243,6 +243,13 @@ class AxonVexSystem {
      *
      * @param configPath Path to configuration file (optional)
      * @return true if initialization successful
+     *
+     * @note C41: refused (returns false, logs an error) when called from the
+     * event-processing or monitoring thread. That teardown/replace of
+     * logger_/eventPool_/eventQueue_/timingController_ would run out from
+     * under the calling worker's own live stack. Use emergencyShutdown()
+     * for in-callback shutdown; reinitialize from outside the worker
+     * threads afterward.
      */
     bool initialize(const std::string& configPath = "");
 
@@ -720,12 +727,19 @@ class AxonVexSystem {
     mutable std::mutex statisticsMutex_;
     std::unique_ptr<std::thread> monitoringThread_;
     std::atomic<bool> monitoringEnabled_{false};
+    // C41: published by monitoringLoop() itself as its first act, cleared as
+    // its last (every exit path) — never read from the thread handle. Lets
+    // isOnWorkerThread() answer "am I this worker?" without touching
+    // monitoringThread_ (which lifecycle calls are busy tearing down).
+    std::atomic<std::thread::id> monitoringThreadId_{};
 
     // Event system
     std::unique_ptr<ThreadSafeQueue<SystemEvent*>> eventQueue_;
     std::unique_ptr<MemoryPool<SystemEvent>> eventPool_;
     std::unique_ptr<std::thread> eventProcessingThread_;
     std::atomic<bool> eventProcessingRunning_{false};
+    // C41: same discipline as monitoringThreadId_, for eventProcessingLoop().
+    std::atomic<std::thread::id> eventThreadId_{};
     std::vector<EventCallback> eventCallbacks_;
     std::vector<HealthCheckCallback> healthCheckCallbacks_;
     mutable std::mutex callbacksMutex_;
@@ -751,14 +765,25 @@ class AxonVexSystem {
      * INITIALIZED (catch path leaves threads running, ERROR permits retry)
      * and emergencyShutdown's deferred self-join.
      *
-     * Self-join guard, same discipline as emergencyShutdown's C33/C36
-     * teardown: if `handle` is this thread (initialize() invoked from a
-     * callback running on one of our own worker threads, e.g. a reinit
-     * triggered from an event callback after an e-stop), joining would
-     * deadlock and destroying the joinable handle would std::terminate.
-     * That case detaches instead of joining, then clears the handle.
+     * C41 tightened contract: callers must not run on the thread `handle`
+     * names. This used to have a self-join guard (detach instead of join
+     * when called from the named thread itself), reachable because
+     * initialize() could be invoked from a callback running on one of our
+     * own worker threads. initialize() now refuses on a worker thread
+     * (isOnWorkerThread()) before it ever reaches this helper, so that case
+     * cannot occur here anymore — the guard was removed rather than kept as
+     * unreachable defense-in-depth for a path that no longer exists.
      */
     void joinAndClearThreadHandle(std::unique_ptr<std::thread>& handle);
+
+    /**
+     * C41: true iff called from eventProcessingThread_ or monitoringThread_
+     * (the ids each loop publishes on entry and clears on exit). Lifecycle
+     * calls that tear down or replace components those threads' own stacks
+     * are using (initialize(), and stop()/reset() per Task 2) must refuse
+     * rather than run on a worker thread.
+     */
+    bool isOnWorkerThread() const noexcept;
 
     // =================================================================
     // INTERNAL METHODS
