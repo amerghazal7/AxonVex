@@ -1236,4 +1236,27 @@ TEST_F(AxonVexSystemTest, ConnectSystemToItselfDoesNotSelfDeadlock) {
     EXPECT_TRUE(connected->load());
 }
 
+// C38 regression: isShuttingDown_ (set by stop/emergencyShutdown) was never
+// cleared, so a system re-initialized after reset() had a dead event pipeline:
+// eventProcessingLoop's guard saw the stale flag and exited immediately, and
+// publishEvent dropped every event — with the state machine reporting healthy.
+TEST_F(AxonVexSystemTest, EventPipelineIsAliveAfterResetAndReinitialize) {
+    EXPECT_TRUE(system_->initialize());
+    EXPECT_TRUE(system_->start());
+    EXPECT_TRUE(system_->stop());
+    system_->reset();
+
+    EXPECT_TRUE(system_->initialize());
+    auto sawEvent = std::make_shared<std::atomic<bool>>(false);
+    system_->registerEventCallback([sawEvent](const SystemEvent&) { sawEvent->store(true); });
+    EXPECT_TRUE(system_->start()); // publishes STATE_CHANGE events
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!sawEvent->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(sawEvent->load()) << "re-initialized system's event pipeline is dead";
+    EXPECT_TRUE(system_->stop());
+}
+
 } // anonymous namespace
