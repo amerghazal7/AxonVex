@@ -217,7 +217,6 @@ class AxonVexSystem {
   public:
     using EventCallback = std::function<void(const SystemEvent&)>;
     using HealthCheckCallback = std::function<SystemHealth()>;
-    using RecoveryCallback = std::function<bool(const std::string&)>;
 
     /**
      * @brief Constructor with optional configuration
@@ -246,14 +245,6 @@ class AxonVexSystem {
      * @return true if initialization successful
      */
     bool initialize(const std::string& configPath = "");
-
-    /**
-     * @brief Initialize from existing configuration object
-     *
-     * @param config Configuration object
-     * @return true if initialization successful
-     */
-    bool initialize(const Configuration& config);
 
   protected:
     /**
@@ -477,14 +468,6 @@ class AxonVexSystem {
      */
     bool loadConfiguration(const Path& filePath);
 
-    /**
-     * @brief Save configuration to file
-     *
-     * @param filePath Configuration file path (optional)
-     * @return true if successful
-     */
-    bool saveConfiguration(const Path& filePath = Path{}) const;
-
     // =================================================================
     // EVENT AND CALLBACK MANAGEMENT
     // =================================================================
@@ -512,14 +495,6 @@ class AxonVexSystem {
      */
     uint32_t registerHealthCheckCallback(HealthCheckCallback callback);
 
-    /**
-     * @brief Register recovery callback
-     *
-     * @param callback Recovery callback
-     * @return Callback ID
-     */
-    uint32_t registerRecoveryCallback(RecoveryCallback callback);
-
     // =================================================================
     // RESOURCE MANAGEMENT
     // =================================================================
@@ -533,11 +508,6 @@ class AxonVexSystem {
      * @brief Get peak memory usage in bytes
      */
     size_t getPeakMemoryUsage() const noexcept;
-
-    /**
-     * @brief Trigger garbage collection
-     */
-    void collectGarbage();
 
     /**
      * @brief Get resource utilization report
@@ -568,11 +538,6 @@ class AxonVexSystem {
      * @brief Get comprehensive system report
      */
     std::string getSystemReport() const;
-
-    /**
-     * @brief Export system diagnostics to file
-     */
-    bool exportDiagnostics(const Path& filePath) const;
 
     // =================================================================
     // SYSTEM PORT MANAGEMENT
@@ -763,7 +728,6 @@ class AxonVexSystem {
     std::atomic<bool> eventProcessingRunning_{false};
     std::vector<EventCallback> eventCallbacks_;
     std::vector<HealthCheckCallback> healthCheckCallbacks_;
-    std::vector<RecoveryCallback> recoveryCallbacks_;
     mutable std::mutex callbacksMutex_;
     std::atomic<uint32_t> nextCallbackId_{1};
 

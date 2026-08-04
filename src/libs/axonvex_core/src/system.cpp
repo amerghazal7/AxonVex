@@ -275,23 +275,6 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
     }
 }
 
-bool AxonVexSystem::initialize(const Configuration& config) {
-    // Initialize configuration from default constructor, then update with provided values
-    if (!initialize("")) {
-        return false;
-    }
-
-    // Note: Cannot copy Configuration due to it being non-copyable
-    // Users should load configuration from file or set values individually
-    if (logger_) {
-        logger_->warning(
-            "System",
-            "Configuration copy not supported - please use file-based configuration loading");
-    }
-
-    return true;
-}
-
 bool AxonVexSystem::start() {
     if (!transitionState(SystemState::STARTING)) {
         return false;
@@ -585,7 +568,6 @@ void AxonVexSystem::reset() {
         std::lock_guard<std::mutex> lock(callbacksMutex_);
         eventCallbacks_.clear();
         healthCheckCallbacks_.clear();
-        recoveryCallbacks_.clear();
         nextCallbackId_.store(1);
     }
 
@@ -1500,7 +1482,6 @@ SystemConfiguration createDefaultSystemConfiguration() {
     return SystemConfiguration{};
 }
 
-// Additional methods would continue here...
 // (The implementation is quite extensive - this shows the core structure and key methods)
 
 // =================================================================
