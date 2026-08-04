@@ -1154,4 +1154,86 @@ TEST_F(AxonVexSystemTest, SystemPortThreadSafety) {
     EXPECT_EQ(system_->getSystemOutputPortNames().size(), 5);
 }
 
+namespace {
+// Registers a MockProcessingUnit on `sys` and exposes its ports as system
+// ports "out"/"in". Returns false on any setup failure.
+bool exposeSystemPorts(AxonVexSystem& sys) {
+    auto unit = std::make_unique<MockProcessingUnit>("PortUnit");
+    MockProcessingUnit* unitPtr = unit.get();
+    sys.registerProcessingUnit(std::move(unit));
+    return sys.assignSystemOutputPort("out", unitPtr, 1000) &&
+           sys.assignSystemInputPort("in", unitPtr, 1001);
+}
+} // namespace
+
+// C9 regression: connectToSystem/disconnectFromSystem locked the two systems'
+// systemPortsMutex_ in ARGUMENT order, so a→b concurrent with b→a acquired
+// them in opposite orders — AB/BA deadlock. Deadline-guarded: a regression
+// hangs rather than fails.
+TEST_F(AxonVexSystemTest, OpposingCrossSystemConnectsDoNotDeadlock) {
+    TestAxonVexSystem a, b;
+    ASSERT_TRUE(a.initialize());
+    ASSERT_TRUE(b.initialize());
+    ASSERT_TRUE(exposeSystemPorts(a));
+    ASSERT_TRUE(exposeSystemPorts(b));
+
+    auto doneA = std::make_shared<std::atomic<bool>>(false);
+    auto doneB = std::make_shared<std::atomic<bool>>(false);
+
+    std::thread ta([&a, &b, doneA]() {
+        for (int i = 0; i < 500; ++i) {
+            a.connectToSystem<double>("out", &b, "in");
+            a.disconnectFromSystem<double>("out", &b, "in");
+        }
+        doneA->store(true);
+    });
+    std::thread tb([&a, &b, doneB]() {
+        for (int i = 0; i < 500; ++i) {
+            b.connectToSystem<double>("out", &a, "in");
+            b.disconnectFromSystem<double>("out", &a, "in");
+        }
+        doneB->store(true);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!(doneA->load() && doneB->load()) && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!doneA->load() || !doneB->load()) {
+        ta.detach(); // wedged; leak them rather than hang the suite
+        tb.detach();
+        FAIL() << "opposing cross-system connects deadlocked";
+    }
+    ta.join();
+    tb.join();
+}
+
+// C9, second shape: targetSystem == this locked the same non-recursive mutex
+// twice (UB, hangs in practice). Self-connection is legitimate — an output
+// port looped back to an input port of the same system.
+TEST_F(AxonVexSystemTest, ConnectSystemToItselfDoesNotSelfDeadlock) {
+    TestAxonVexSystem a;
+    ASSERT_TRUE(a.initialize());
+    ASSERT_TRUE(exposeSystemPorts(a));
+
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    auto connected = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([&a, done, connected]() {
+        connected->store(a.connectToSystem<double>("out", &a, "in"));
+        a.disconnectFromSystem<double>("out", &a, "in");
+        done->store(true);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!done->load()) {
+        worker.detach();
+        FAIL() << "self-connection deadlocked on systemPortsMutex_";
+    }
+    worker.join();
+    EXPECT_TRUE(connected->load());
+}
+
 } // anonymous namespace
