@@ -704,3 +704,30 @@ TEST(SafetyManagerTest, PolicyMayStopTheManager) {
     mgr.stop();
     EXPECT_FALSE(mgr.isRunning());
 }
+
+// C36: same shape as WatchdogTest.ConcurrentStopIsSafe — two external stop()
+// calls must not both reach join() on the same std::thread.
+TEST(SafetyManagerTest, ConcurrentStopIsSafe) {
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        axonvex::safety::SafetyManager mgr(std::chrono::milliseconds(5));
+        auto policy = std::unique_ptr<CountingPolicy>(new CountingPolicy());
+        mgr.addPolicy(std::move(policy));
+        ASSERT_TRUE(mgr.start());
+
+        std::atomic<int> ready{0};
+        std::vector<std::thread> stoppers;
+        for (int t = 0; t < 4; ++t) {
+            stoppers.emplace_back([&mgr, &ready]() {
+                ready.fetch_add(1);
+                while (ready.load() < 4) {
+                    std::this_thread::yield();
+                }
+                mgr.stop();
+            });
+        }
+        for (auto& s : stoppers) {
+            s.join();
+        }
+        EXPECT_FALSE(mgr.isRunning());
+    }
+}

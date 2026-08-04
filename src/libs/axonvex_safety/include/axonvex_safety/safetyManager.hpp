@@ -44,7 +44,15 @@ class SafetyManager : public axonvex::core::SafetyHook {
         : evaluationPeriod_(evaluationPeriod) {}
 
     ~SafetyManager() {
-        stop();
+        SafetyManager::stop();
+        if (worker_.joinable()) {
+            // Only reachable when the destructor itself runs on the worker, i.e.
+            // the object is destroyed from a policy or handler — stop() then
+            // defers and ~std::thread would hit std::terminate on a joinable
+            // thread. Not a supported lifecycle; detaching is the least-bad
+            // option here.
+            worker_.detach();
+        }
     }
 
     SafetyManager(const SafetyManager&) = delete;
@@ -55,12 +63,18 @@ class SafetyManager : public axonvex::core::SafetyHook {
     // -----------------------------------------------------------------
 
     bool start() {
+        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
         if (running_.exchange(true))
             return true;
         emergencyStopped_.store(false);
         worker_ = std::thread([this]() {
             workerId_.store(std::this_thread::get_id(), std::memory_order_release);
             evaluationLoop();
+            // Cleared by the worker itself on the way out. A thread::id is
+            // reusable once its thread has exited, so leaving a stale id here
+            // would let an unrelated future thread match it and wrongly skip
+            // the join, stranding a joinable std::thread.
+            workerId_.store(std::thread::id(), std::memory_order_release);
         });
         return true;
     }
@@ -82,6 +96,12 @@ class SafetyManager : public axonvex::core::SafetyHook {
             return;
         }
 
+        // Serialises the join against another external stop(): both would clear
+        // the self-check and both could reach join() on the same std::thread,
+        // which is UB. Taken AFTER the self-check, never before — an external
+        // stop() holds this while waiting to join, so a worker blocking on it
+        // would deadlock both.
+        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
         if (worker_.joinable()) {
             worker_.join();
         }
@@ -401,6 +421,8 @@ class SafetyManager : public axonvex::core::SafetyHook {
     std::atomic<bool> running_{false};
     std::atomic<bool> emergencyStopped_{false};
     std::thread worker_;
+    /// Serialises start()/stop() so only one caller ever joins the worker.
+    mutable std::mutex lifecycleMutex_;
     /// Published by the worker itself; see stop().
     std::atomic<std::thread::id> workerId_{std::thread::id()};
 

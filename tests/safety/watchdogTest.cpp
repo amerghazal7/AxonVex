@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 using axonvex::safety::Watchdog;
 using axonvex::safety::WatchdogEvent;
@@ -104,4 +105,32 @@ TEST(WatchdogTest, HandlerMayStopTheWatchdog) {
 
     // The self-stop defers the join; an external stop() must still complete it.
     wd.stop();
+}
+
+// C36: removing the running_ check-then-act (needed to make a deferred
+// self-stop reachable) left nothing serialising two external stop() calls —
+// both clear the self-check and both can reach join() on the same std::thread,
+// which is UB. A lifecycle mutex now serialises the join path.
+TEST(WatchdogTest, ConcurrentStopIsSafe) {
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        Watchdog wd(std::chrono::milliseconds(20));
+        WDHandler h;
+        wd.registerHandler(&h);
+        ASSERT_TRUE(wd.start());
+
+        std::atomic<int> ready{0};
+        std::vector<std::thread> stoppers;
+        for (int t = 0; t < 4; ++t) {
+            stoppers.emplace_back([&wd, &ready]() {
+                ready.fetch_add(1);
+                while (ready.load() < 4) {
+                    std::this_thread::yield(); // widen the overlap
+                }
+                wd.stop();
+            });
+        }
+        for (auto& s : stoppers) {
+            s.join();
+        }
+    }
 }

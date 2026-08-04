@@ -59,6 +59,11 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         worker_ = std::thread([this]() {
             workerId_.store(std::this_thread::get_id(), std::memory_order_release);
             recvLoop();
+            // Cleared by the worker itself on the way out. A thread::id is
+            // reusable once its thread has exited, so leaving a stale id here
+            // would let an unrelated future thread match it and wrongly skip
+            // the join, stranding a joinable std::thread.
+            workerId_.store(std::thread::id(), std::memory_order_release);
         });
         return true;
 #else
