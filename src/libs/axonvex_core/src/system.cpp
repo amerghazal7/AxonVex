@@ -188,9 +188,6 @@ AxonVexSystem::~AxonVexSystem() {
     std::lock_guard<std::mutex> wait(shutdownMutex_);
 }
 
-// Move constructor - removed due to atomic members
-// Move assignment operator - removed due to atomic members
-
 // =================================================================
 // SYSTEM LIFECYCLE MANAGEMENT
 // =================================================================
@@ -230,9 +227,19 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
 
         // C38: initialize() is the single owner of clearing the shutdown
         // latch. stop()/emergencyShutdown() set it; nothing else may clear
-        // it. Cleared here, immediately before the threads that read it
-        // start, so a racing e-stop that re-sets it wins (its flags end the
-        // fresh threads' loops, which is the correct outcome).
+        // it. This does NOT decide a race against a concurrent e-stop:
+        // initialize() overwrites isShuttingDown_, monitoringEnabled_ and
+        // eventProcessingRunning_ unconditionally regardless of who wins.
+        // What actually guarantees the e-stop wins is transitionState():
+        // emergencyShutdown() sets currentState_ to FATAL_ERROR (legal from
+        // any state), which trips the `currentState_.load() >=
+        // SystemState::STOPPING` guards in monitoringLoop()/
+        // eventProcessingLoop() even for threads this call is about to
+        // start, while this call's own transitionState(INITIALIZED) is
+        // refused (FATAL_ERROR only accepts a transition to UNINITIALIZED),
+        // so initialize() itself returns false. Those >= STOPPING guards
+        // are load-bearing for this invariant — do not remove or weaken
+        // them.
         isShuttingDown_.store(false);
 
         // Start monitoring if enabled
