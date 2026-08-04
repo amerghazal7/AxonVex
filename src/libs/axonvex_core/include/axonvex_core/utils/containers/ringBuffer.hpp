@@ -124,7 +124,17 @@ class RingBufferStatistics : public axonvex::core::PerformanceStatisticsBase<Rin
 };
 
 /**
- * @brief High-performance lock-free ring buffer for real-time applications
+ * @brief High-performance lock-free **single-producer/single-consumer** ring
+ * buffer for real-time applications.
+ *
+ * Exactly one thread may call the write overloads / writeMany, and exactly
+ * one thread (which may differ from the writer) may call read / peek /
+ * readMany, concurrently with the writer. Multiple concurrent producers or
+ * multiple concurrent consumers are NOT supported: two writers can both load
+ * the same `write_index_`, both pass the full check, and both store to
+ * `buffer_[current_write]` -- one write is silently lost and the index is
+ * only advanced once instead of twice. The symmetric corruption happens with
+ * two readers on `read_index_`.
  */
 template <typename T>
 class RingBuffer {
@@ -166,6 +176,18 @@ class RingBuffer {
     const size_t capacity_;
     const size_t capacity_mask_;
     std::unique_ptr<T[]> buffer_;
+    // Memory-ordering argument (SPSC only -- see the class doc): each index
+    // is released by its own thread after touching the slot, and acquired by
+    // the *other* thread before touching that same slot, so the release
+    // establishes happens-before with the acquire that reads it. write()
+    // stores buffer_[current_write] then release-stores write_index_; read()
+    // acquire-loads write_index_ before it is allowed to see that slot, so
+    // the write is visible. Symmetrically, read() release-stores
+    // read_index_ after it moves the slot out, and write() acquire-loads
+    // read_index_ before reusing that slot, so the prior read cannot be
+    // clobbered by a wrapped-around write. Same argument as
+    // ThreadSafeQueue's per-slot `sequence`, specialized to two indices
+    // instead of one per-slot counter.
     alignas(64) std::atomic<size_t> write_index_{0};
     alignas(64) std::atomic<size_t> read_index_{0};
     mutable RingBufferStatistics stats_;
@@ -179,9 +201,10 @@ RingBuffer<T>::RingBuffer(size_t capacity)
     : capacity_(axonvex::core::CapacityUtils::validateCapacity(capacity, MIN_CAPACITY, MAX_CAPACITY,
                                                                true)),
       capacity_mask_(capacity_ - 1), buffer_(std::make_unique<T[]>(capacity_)) {
-    for (size_t i = 0; i < capacity_; ++i) {
-        new (&buffer_[i]) T{};
-    }
+    // make_unique<T[]> already value-initializes every element; a
+    // placement-new loop here would end each element's lifetime without
+    // running its destructor (C21) -- leaking the original element's
+    // resources for any non-trivial T and unbalancing ctor/dtor counts.
 }
 
 template <typename T>
