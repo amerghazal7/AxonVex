@@ -22,8 +22,9 @@ namespace axonvex::core {
 PrecisionTimer::PrecisionTimer(size_t max_samples)
     : start_time_(ClockType::now()), stop_time_(ClockType::now()), running_(false),
       statistics_enabled_(false), total_measurements_(0), last_measurement_(DurationType::zero()),
-      max_samples_(max_samples) {
-    samples_.reserve(max_samples);
+      // Clamped to >= 1: the ring-write path does `% max_samples_`, so 0 would SIGFPE.
+      max_samples_(std::max<size_t>(1, max_samples)) {
+    samples_.reserve(max_samples_);
 }
 
 void PrecisionTimer::start() noexcept {

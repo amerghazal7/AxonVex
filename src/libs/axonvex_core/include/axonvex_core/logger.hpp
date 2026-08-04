@@ -175,14 +175,15 @@ class FileOutput : public LogOutput {
  * - NOT RT-safe: logging allocates (see note above); a convenience API, not a hot-path one
  * - Thread-safe multi-producer design
  * - Comprehensive statistics and monitoring
- * - High-performance formatting with minimal overhead
+ * - {}-placeholder formatting via ostringstream (see formatImpl); no benchmark
+ *   in tree, see the performance note below
  *
  * Performance characteristics:
  * - Logging overhead: dominated by the per-call std::string allocations in
  *   LogMessage/formatString; not a fixed-latency guarantee, see the note above
  * - Queue capacity: Configurable (default 16K messages)
  * - Memory usage: message slots are pool-allocated; the strings they carry are not
- * - Throughput: 1M+ messages per second
+ * - Throughput: not benchmarked; do not cite a number until docs/benchmarks.md has one
  * - Thread safety: Lock-free multi-producer, single consumer
  *
  * @example Basic usage:
@@ -193,7 +194,7 @@ class FileOutput : public LogOutput {
  * logger.start();
  *
  * LOG_INFO(logger, "System", "Application started successfully");
- * LOG_ERROR(logger, "Network", "Connection failed: {}", error_msg);
+ * LOGF_ERROR(logger, "Network", "Connection failed: {}", error_msg);
  * @endcode
  */
 class Logger {
@@ -395,7 +396,10 @@ class Logger {
     // C14: {} placeholders substituted in order via operator<<. Extra
     // placeholders stay literal; extra arguments are ignored. Deliberately
     // hand-rolled (no fmt dependency) and NOT RT-safe: allocates — logf is
-    // a convenience API, not a hot-path one.
+    // a convenience API, not a hot-path one. Values stream via
+    // ostringstream's default formatting, not fmt-style precision: double
+    // prints at the default ~6 significant digits, bool as 1/0 (not
+    // true/false).
     static void formatImpl(std::ostringstream& stream, const std::string& format, size_t pos);
 
     template <typename T, typename... Rest>
@@ -1103,7 +1107,9 @@ inline void initializeFileLogging(const std::string& filename) {
 #define LOG_CRITICAL(logger, category, message)                                                    \
     (logger).critical(category, message, __FILE__, __LINE__, __FUNCTION__)
 
-// Formatted logging macros
+// Formatted logging macros. C++14 has no __VA_OPT__, so the trailing
+// __VA_ARGS__ requires at least one argument after `format` — LOGF_*(logger,
+// category, "literal, no placeholders") will not compile; use LOG_* instead.
 #define LOGF_DEBUG(logger, category, format, ...)                                                  \
     (logger).logf(axonvex::core::LogLevel::Debug, category, format, __VA_ARGS__)
 
