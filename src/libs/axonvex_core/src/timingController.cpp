@@ -141,6 +141,30 @@ void RealTimeScheduler::start() {
         return; // Already running
     }
 
+    // C42 follow-up: read the published id before touching schedulerThread_
+    // at all -- same discipline as stop(). Two hazards share this guard:
+    //  1. Restart from the scheduler thread itself (a task, still inside
+    //     this very call stack, calling start() again after its own
+    //     deferred stop()): that thread has not unwound out of
+    //     schedulerLoop() yet, so starting a second thread here would run
+    //     two schedulerLoop()s over the same tasks_/schedulerThreadId_
+    //     concurrently. Refuse outright -- mirrors the system-layer
+    //     refusals (initialize()/stop()/reset() on isOnWorkerThread());
+    //     detaching the old (still-live) loop instead would recreate the
+    //     C41 hazard (its own stack racing what start() hands to a new
+    //     thread).
+    //  2. Restart from a different, external thread after another thread's
+    //     deferred self-stop left schedulerThread_ joinable (running_
+    //     already false, see stop()): assigning a new std::thread over a
+    //     still-joinable one below is std::terminate -- the C39 shape one
+    //     layer down. Join it first.
+    if (isOnSchedulerThread()) {
+        return;
+    }
+    if (schedulerThread_ && schedulerThread_->joinable()) {
+        schedulerThread_->join();
+    }
+
     running_.store(true);
     paused_.store(false);
 

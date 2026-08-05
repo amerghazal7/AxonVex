@@ -351,6 +351,49 @@ TEST_F(TimingControllerTest, StopFromTaskBodyDefersJoinInsteadOfSelfJoining) {
     controller->stop();
 }
 
+// C42 follow-up (review finding): after a deferred self-stop, running_ is
+// false but schedulerThread_ is still joinable (see the test above). start()
+// used to assign a fresh std::thread straight over that handle with no
+// joinable check -- unique_ptr::operator= destroying a joinable std::thread
+// is std::terminate, uncatchable, no log. The exact C39 shape one layer
+// down. start() now joins the leftover handle (external-thread restart) or
+// refuses outright (restart called from the scheduler thread itself, still
+// inside the deferring call's own stack).
+TEST_F(TimingControllerTest, StartAfterDeferredSelfStopReclaimsHandleAndRunsAgain) {
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    TimingController* ctrl = controller.get();
+
+    auto selfStopper = std::make_unique<SelfStoppingUnit>("SelfStopper", ctrl, attempted, finished);
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    controller->scheduleProcessingUnit(selfStopper.get(), constraints);
+    controller->scheduleProcessingUnit(unit2.get(), constraints);
+    controller->start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(finished->load());
+    EXPECT_FALSE(controller->isRunning());
+
+    // Restart from this external (test) thread while schedulerThread_ is
+    // still the joinable handle the deferred self-stop left behind.
+    // Pre-fix: std::terminate here, uncaught, no log.
+    controller->start();
+    EXPECT_TRUE(controller->isRunning());
+
+    // The scheduler must actually be running again, not just report it.
+    uint32_t countAfterRestart = unit2->getProcessCallCount();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_GT(unit2->getProcessCallCount(), countAfterRestart)
+        << "scheduler must actually execute tasks again after the restart";
+
+    controller->stop();
+}
+
 // Scheduling Policy Tests
 TEST_F(TimingControllerTest, PriorityBasedScheduling) {
     controller->setSchedulingPolicy(SchedulingPolicy::PRIORITY_BASED);
