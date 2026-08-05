@@ -225,6 +225,24 @@ class AxonVexSystem {
 
     /**
      * @brief Destructor - ensures clean shutdown
+     *
+     * @warning Never let this object be destroyed from a system worker
+     * thread — event-processing, monitoring, or the scheduler thread
+     * (anywhere isOnWorkerThread() would return true). initialize(),
+     * stop(), and reset() can refuse a worker-thread call because they are
+     * ordinary member functions with a return value to refuse through; a
+     * destructor has no such escape. If the last owning reference (a
+     * unique_ptr going out of scope, the last shared_ptr dropped, a stack
+     * object unwinding) is released from inside a worker-thread callback —
+     * a ProcessingUnit task, an event callback, a health-check callback —
+     * ~AxonVexSystem runs ON that worker thread and reaches
+     * joinAndClearThreadHandle()'s join on itself: undefined behavior (the
+     * same self-join shape guarded everywhere else in this class with a
+     * refusal or a deferred join — C33/C36/C40/C42 — none of which a
+     * destructor can use). Keep the owning AxonVexSystem alive for its
+     * entire lifetime on a thread outside the system's own workers; call
+     * emergencyShutdown() from a callback if the system must stop itself,
+     * and destroy the object afterward from an external thread.
      */
     ~AxonVexSystem();
 
@@ -251,11 +269,11 @@ class AxonVexSystem {
      * for in-callback shutdown; reinitialize from outside the worker
      * threads afterward.
      *
-     * @warning This refusal does NOT cover the scheduler thread. A
-     * ProcessingUnit task body (or any callback invoked by
-     * RealTimeScheduler on its own worker thread) is not detected by
-     * isOnWorkerThread() and must NEVER call initialize()/stop()/reset()
-     * (open defect C42 — see docs/v1_release_plan.md §3).
+     * @note C42 (fixed): the scheduler thread is covered too. A
+     * ProcessingUnit task body (or any callback RealTimeScheduler invokes
+     * on its own worker thread, e.g. the error callback) is detected by
+     * isOnWorkerThread() via TimingController::isOnSchedulerThread() and
+     * refused exactly like the event/monitoring threads.
      */
     bool initialize(const std::string& configPath = "");
 
@@ -317,11 +335,11 @@ class AxonVexSystem {
      * untouched. Use emergencyShutdown() from an event/health callback
      * instead.
      *
-     * @warning This refusal does NOT cover the scheduler thread. A
-     * ProcessingUnit task body (or any callback invoked by
-     * RealTimeScheduler on its own worker thread) is not detected by
-     * isOnWorkerThread() and must NEVER call initialize()/stop()/reset()
-     * (open defect C42 — see docs/v1_release_plan.md §3).
+     * @note C42 (fixed): the scheduler thread is covered too. A
+     * ProcessingUnit task body (or any callback RealTimeScheduler invokes
+     * on its own worker thread, e.g. the error callback) is detected by
+     * isOnWorkerThread() via TimingController::isOnSchedulerThread() and
+     * refused exactly like the event/monitoring threads.
      */
     bool stop(std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(5000));
 
@@ -339,11 +357,11 @@ class AxonVexSystem {
      * worker's own call stack may still be using (C40). Use
      * emergencyShutdown() from an event/health callback instead.
      *
-     * @warning This refusal does NOT cover the scheduler thread. A
-     * ProcessingUnit task body (or any callback invoked by
-     * RealTimeScheduler on its own worker thread) is not detected by
-     * isOnWorkerThread() and must NEVER call initialize()/stop()/reset()
-     * (open defect C42 — see docs/v1_release_plan.md §3).
+     * @note C42 (fixed): the scheduler thread is covered too. A
+     * ProcessingUnit task body (or any callback RealTimeScheduler invokes
+     * on its own worker thread, e.g. the error callback) is detected by
+     * isOnWorkerThread() via TimingController::isOnSchedulerThread() and
+     * refused exactly like the event/monitoring threads.
      *
      * @note Not safe against concurrent lifecycle calls otherwise. reset()
      * forces an emergencyShutdown() (which unconditionally reaches
@@ -808,11 +826,13 @@ class AxonVexSystem {
     void joinAndClearThreadHandle(std::unique_ptr<std::thread>& handle);
 
     /**
-     * C41: true iff called from eventProcessingThread_ or monitoringThread_
-     * (the ids each loop publishes on entry and clears on exit). Lifecycle
-     * calls that tear down or replace components those threads' own stacks
-     * are using (initialize(), and stop()/reset() per Task 2) must refuse
-     * rather than run on a worker thread.
+     * C41/C42: true iff called from eventProcessingThread_,
+     * monitoringThread_, or RealTimeScheduler's own scheduler thread (via
+     * timingController_->isOnSchedulerThread()) — the ids/atomics each loop
+     * publishes on entry and clears on exit. Lifecycle calls that tear down
+     * or replace components those threads' own stacks are using
+     * (initialize(), stop(), reset()) must refuse rather than run on a
+     * worker thread.
      */
     bool isOnWorkerThread() const noexcept;
 

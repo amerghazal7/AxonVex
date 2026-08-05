@@ -203,6 +203,13 @@ class RealTimeScheduler {
     bool isPaused() const {
         return paused_.load();
     }
+    // C42: true iff called from this scheduler's own thread — the id is
+    // published by schedulerLoop() itself (first act) and cleared on every
+    // exit path (last act). Lets stop() detect a self-call (a ProcessingUnit
+    // task body, or the error callback, calling stop() from inside
+    // executeTask()) without joining schedulerThread_, which would be a
+    // self-join.
+    bool isOnSchedulerThread() const noexcept;
 
     // Configuration
     void setSchedulingPolicy(SchedulingPolicy policy);
@@ -267,6 +274,11 @@ class RealTimeScheduler {
     std::unique_ptr<std::thread> schedulerThread_;
     std::condition_variable schedulerCondition_;
     std::mutex schedulerMutex_;
+    // C42: published by schedulerLoop() itself as its first act, cleared as
+    // its last (every exit path) — never read from schedulerThread_ (which
+    // stop() is busy tearing down). Same discipline as system.cpp's
+    // monitoringThreadId_/eventThreadId_ (C41).
+    std::atomic<std::thread::id> schedulerThreadId_{};
 
     // Thread affinity
     uint32_t cpuCore_{0};
@@ -344,6 +356,11 @@ class TimingController {
     double getExecutionFrequency() const {
         return executionFrequency_;
     }
+    // C42: forwards to the scheduler; null-safe (false if no scheduler —
+    // cannot happen in practice since scheduler_ is constructed in the
+    // TimingController constructor and never reset, but the check costs
+    // nothing and avoids relying on that invariant here).
+    bool isOnSchedulerThread() const noexcept;
 
     // Advanced features
     void setCustomScheduler(RealTimeScheduler::CustomSchedulerCallback callback);

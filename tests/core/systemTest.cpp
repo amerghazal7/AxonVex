@@ -409,6 +409,65 @@ TEST_F(AxonVexSystemTest, ResetFromEventCallbackIsRefused) {
     EXPECT_TRUE(system_->stop());
 }
 
+// C42 regression: a ProcessingUnit task body runs on RealTimeScheduler's own
+// thread, which batch-4's refusal predicate (isOnWorkerThread(), C41) did not
+// know about. Pre-fix: stop() from a task self-joined the scheduler thread
+// inside TimingController::stop() -> RealTimeScheduler::stop(), the
+// system_error was swallowed by stop()'s catch, and the graceful stop
+// silently escalated to FATAL_ERROR (C40's exact symptom, on a thread C40
+// never covered). isOnWorkerThread() now also covers the scheduler thread.
+class SelfStoppingProcessingUnit : public MockProcessingUnit {
+  public:
+    SelfStoppingProcessingUnit(const std::string& name, AxonVexSystem* sys,
+                               std::shared_ptr<std::atomic<bool>> attempted,
+                               std::shared_ptr<std::atomic<bool>> stopResult,
+                               std::shared_ptr<std::atomic<bool>> finished)
+        : MockProcessingUnit(name), sys_(sys), attempted_(std::move(attempted)),
+          stopResult_(std::move(stopResult)), finished_(std::move(finished)) {}
+
+    void processSync() override {
+        if (!attempted_->exchange(true)) {
+            stopResult_->store(sys_->stop()); // must be refused, not honored
+            // Set only after stop() returns: see
+            // InitializeFromEventCallbackIsRefused for why the gate flag and
+            // the finished flag must not be the same store (batch-4 lesson).
+            finished_->store(true);
+        }
+    }
+
+  private:
+    AxonVexSystem* sys_;
+    std::shared_ptr<std::atomic<bool>> attempted_;
+    std::shared_ptr<std::atomic<bool>> stopResult_;
+    std::shared_ptr<std::atomic<bool>> finished_;
+};
+
+TEST_F(AxonVexSystemTest, StopFromProcessingUnitTaskIsRefusedWithoutEscalation) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    auto stopResult = std::make_shared<std::atomic<bool>>(true);
+    AxonVexSystem* sys = system_.get();
+
+    auto unit = std::make_unique<SelfStoppingProcessingUnit>("SelfStopper", sys, attempted,
+                                                             stopResult, finished);
+    system_->registerProcessingUnit(std::move(unit));
+
+    EXPECT_TRUE(system_->start()); // schedules the unit onto the scheduler thread
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(finished->load());
+    EXPECT_FALSE(stopResult->load()) << "stop() on the scheduler thread must refuse";
+    // Pre-fix the swallowed self-join escalated to FATAL_ERROR; post-fix the
+    // refusal happens before the STOPPING transition, so state stays RUNNING.
+    EXPECT_EQ(system_->getState(), SystemState::RUNNING);
+    EXPECT_TRUE(system_->stop()); // a real stop from outside still works
+}
+
 // C7 regression: emergencyShutdown/reset used to write currentState_ directly,
 // bypassing transitionState — no validation, no statistics, no STATE_CHANGE
 // event. The transition counter is the observable: a bypassed store leaves it

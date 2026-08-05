@@ -1511,7 +1511,20 @@ void AxonVexSystem::joinAndClearThreadHandle(std::unique_ptr<std::thread>& handl
 
 bool AxonVexSystem::isOnWorkerThread() const noexcept {
     const std::thread::id self = std::this_thread::get_id();
-    return self == eventThreadId_.load() || self == monitoringThreadId_.load();
+    // C42: extends coverage to the scheduler thread. Reading timingController_
+    // (a unique_ptr the lifecycle methods replace/reset) without a lock is
+    // safe here: every caller of isOnWorkerThread() is either a lifecycle
+    // method checking this on entry, before it has mutated any component
+    // (so timingController_ is exactly whatever the last successful
+    // initialize()/reset() left it — there is no concurrent writer to race
+    // on THIS thread's own read), or a call arriving from inside a
+    // scheduler-thread task/error-callback, where timingController_ being
+    // alive is implied by the call itself: the task is running inside
+    // executeTask(), which is running inside the very TimingController this
+    // thread belongs to, so it cannot have been reset out from under its own
+    // live call stack.
+    return self == eventThreadId_.load() || self == monitoringThreadId_.load() ||
+           (timingController_ && timingController_->isOnSchedulerThread());
 }
 
 void AxonVexSystem::publishEvent(const SystemEvent& event) {
