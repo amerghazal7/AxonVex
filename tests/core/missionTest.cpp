@@ -182,7 +182,11 @@ TEST(MissionPipelineTest, AbortMidExecution) {
     pipeline.processSync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Executing);
 
+    // Finding 1 (whole-branch review): abort() now only enqueues — it takes
+    // effect at the next drain (processAsync()), on the scheduler thread,
+    // not synchronously on this call.
     pipeline.abort();
+    pipeline.processAsync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Aborted);
 }
 
@@ -204,7 +208,11 @@ TEST(MissionPipelineTest, RestartResetsAndRestartsFromBeginning) {
     EXPECT_EQ(pipeline.currentElementName(), "B");
     EXPECT_EQ(a.execCount(), 1);
 
+    // Finding 1: restart() now only enqueues — drained on the next
+    // processAsync(), which is where the reset()/onEnter() hooks it
+    // triggers actually run.
     pipeline.restart();
+    pipeline.processAsync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Executing);
     EXPECT_EQ(pipeline.currentElementName(), "A");
     EXPECT_EQ(a.execCount(), 0);
@@ -233,7 +241,10 @@ TEST(MissionPipelineTest, PauseAndResume) {
     EXPECT_EQ(pipeline.status(), PipelineStatus::Executing);
     int ticksBefore = wait.ticks();
 
+    // Finding 1: pause()/resume() now only enqueue — drained on the next
+    // processAsync().
     pipeline.pause();
+    pipeline.processAsync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Paused);
 
     pipeline.processSync();
@@ -241,6 +252,7 @@ TEST(MissionPipelineTest, PauseAndResume) {
     EXPECT_EQ(wait.ticks(), ticksBefore);
 
     pipeline.resume();
+    pipeline.processAsync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Executing);
 
     pipeline.processSync();
@@ -279,6 +291,9 @@ TEST(MissionPipelineTest, LifecycleHooksCalledCorrectly) {
 
     EXPECT_EQ(a.enterCount(), 0);
     pipeline.startPipeline();
+    // Finding 1: startPipeline()'s onEnter() dispatch is deferred — drained
+    // on the next processAsync(), on the scheduler thread.
+    pipeline.processAsync();
     EXPECT_EQ(a.enterCount(), 1);
 
     pipeline.processSync();
@@ -387,11 +402,23 @@ TEST(MissionPipelineTest, TypeDescription) {
 // =========================================================================
 // C22: status_/currentElement_ were mutated from the scheduler thread
 // (processSync) and the user control API with no synchronization.
+//
+// Finding 1 (whole-branch review) went further: even with stateMutex_
+// guarding the members, abort()/restart()/reset() were still dispatching
+// MissionElement hooks (onExit/reset/onEnter) from the CALLING thread,
+// which could race an in-flight, unlocked execute() on the scheduler
+// thread — same object, unsynchronized. Fix: the direct control API only
+// enqueues; every hook now runs from processAsync()'s drain, on whichever
+// thread calls it (the "scheduler thread" in production).
 // =========================================================================
 
 // TSan is the real assertion here: the loop just gives it interleavings to
-// catch. A cyclic graph keeps processSync() ticking (never Finished) for
-// the whole deadline window so thread A stays busy racing thread B.
+// catch. A cyclic graph keeps ticking (never Finished) for the whole
+// deadline window so thread A stays busy racing thread B. The ticker now
+// drains (processAsync()) before it ticks (processSync()) each iteration,
+// mirroring executeTask()'s real order, so the controller thread's
+// pause()/resume() commands actually get applied during the stress run
+// instead of sitting unread in controlPort_ for the whole test.
 TEST(MissionPipelineTest, ConcurrentControlAndTickAreRaceFree) {
     ImmediateElement a("A"), b("B"), c("C");
 
@@ -409,6 +436,8 @@ TEST(MissionPipelineTest, ConcurrentControlAndTickAreRaceFree) {
 
     std::thread ticker([&pipeline, deadline]() {
         while (std::chrono::steady_clock::now() < deadline) {
+            pipeline.processAsync(); // drain: the only thread that ever
+                                     // calls a MissionElement hook.
             pipeline.processSync();
         }
     });
@@ -425,7 +454,68 @@ TEST(MissionPipelineTest, ConcurrentControlAndTickAreRaceFree) {
     ticker.join();
     controller.join();
     pipeline.abort();
+    pipeline.processAsync();
     SUCCEED();
+}
+
+// Finding 1's reviewer-provided TSan repro: a MissionElement whose
+// execute() and onExit() write the same plain (non-atomic) field. Pre-fix,
+// abort()/restart() dispatched onExit() directly on the calling thread
+// while a concurrent ticker thread's unlocked execute() call could still
+// be in flight on the SAME object — a genuine data race, reliably caught
+// by TSan (see the fix commit message for the captured pre-fix report).
+// Post-fix, abort()/restart() only enqueue; the drain (processAsync())
+// only ever runs from the ticker thread here, so onExit() and execute()
+// are always sequenced relative to each other, never concurrent.
+class RacyWriteElement : public MissionElement {
+  public:
+    explicit RacyWriteElement(const std::string& name) : MissionElement(name) {}
+
+    TransitionResult execute() override {
+        field_ = 1;                        // plain write — the race target
+        return TransitionResult::Awaiting; // keep ticking for the whole window
+    }
+    void onExit() override {
+        field_ = 2; // plain write — races execute() pre-fix
+    }
+    void reset() override {
+        field_ = 0;
+    }
+
+  private:
+    int field_{0};
+};
+
+TEST(MissionPipelineTest, DirectAbortDoesNotRaceConcurrentTick) {
+    RacyWriteElement racy("Racy");
+
+    MissionPipeline pipeline("TsanRegressionPipeline");
+    pipeline.addElement(&racy);
+    pipeline.initialize();
+    pipeline.startPipeline();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+
+    std::thread ticker([&pipeline, deadline]() {
+        while (std::chrono::steady_clock::now() < deadline) {
+            pipeline.processAsync();
+            pipeline.processSync();
+        }
+    });
+
+    // abort() forces Aborted; restart() puts it back to Executing so the
+    // ticker keeps calling execute() for the whole deadline window instead
+    // of idling after the first abort().
+    std::thread controller([&pipeline, deadline]() {
+        while (std::chrono::steady_clock::now() < deadline) {
+            pipeline.abort();
+            pipeline.restart();
+        }
+    });
+
+    ticker.join();
+    controller.join();
+    SUCCEED(); // TSan is the real assertion.
 }
 
 // C22: transitions referencing unknown elements were only discovered as a
@@ -463,9 +553,15 @@ class PauseOnEnterElement : public MissionElement {
     MissionPipeline& pipeline_;
 };
 
-// C22: a hook that re-enters the control API must not deadlock — stateMutex_
-// is never held across a MissionElement hook call. Deadline-guarded: a
-// regression hangs rather than fails outright.
+// C22 / Finding 1: a hook that re-enters the control API must not
+// deadlock. Post-Finding-1, startPipeline()'s onEnter() dispatch and the
+// pause() it re-enters are BOTH deferred — neither runs synchronously
+// inside a hook call, and neither is dispatched while stateMutex_ is held.
+// startPipeline() itself (on the worker thread below) now does no hook
+// dispatch at all, so it returns immediately; the onEnter()->pause() chain
+// only runs once something drains it (processAsync()), which stands in
+// for the scheduler thread here. Deadline-guarded throughout: a regression
+// hangs or never reaches Paused rather than failing outright.
 TEST(MissionPipelineTest, HookReenteringControlApiDoesNotDeadlock) {
     MissionPipeline pipeline("ReentrantPipeline");
     PauseOnEnterElement a("A", pipeline);
@@ -479,17 +575,35 @@ TEST(MissionPipelineTest, HookReenteringControlApiDoesNotDeadlock) {
         done->store(true);
     });
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+    const auto startDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done->load() && std::chrono::steady_clock::now() < startDeadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     if (!done->load()) {
         worker.detach(); // wedged; leak it rather than hang the suite
-        FAIL() << "onEnter() re-entering pause() deadlocked startPipeline()";
+        FAIL() << "startPipeline() hung";
         return;
     }
     worker.join();
 
+    // Drain from a third thread (standing in for the scheduler): each
+    // processAsync() call may itself dispatch onEnter(), which calls
+    // pause() (re-enters the control API), enqueuing another command that
+    // a later iteration of this same loop drains. Bounded, not
+    // synchronous-in-one-call, by design — see the class comment above
+    // "Execution control" in missionPipeline.hpp.
+    bool reachedPaused = false;
+    const auto tickDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < tickDeadline) {
+        pipeline.processAsync();
+        if (pipeline.status() == PipelineStatus::Paused) {
+            reachedPaused = true;
+            break;
+        }
+    }
+
+    EXPECT_TRUE(reachedPaused)
+        << "onEnter() re-entering pause() never materialized (deadlock or lost command)";
     EXPECT_EQ(pipeline.status(), PipelineStatus::Paused);
 }
 

@@ -113,8 +113,9 @@ if(BUILD_TESTING)
         enable_testing()
 
         # Plugin test fixtures for PluginManagerTest: one TU (see
-        # tests/plugins/fixture/testPlugin.cpp), built three ways, to exercise
-        # the ABI handshake and missing-symbol refusal paths (C13).
+        # tests/plugins/fixture/testPlugin.cpp), built four ways, to exercise
+        # the ABI handshake, missing-symbol refusal (C13), and throwing-
+        # initialize() exception-safety (whole-branch-review finding 3) paths.
         add_library(axonvex_test_plugin MODULE tests/plugins/fixture/testPlugin.cpp)
         target_link_libraries(axonvex_test_plugin PRIVATE axonvex_plugins)
 
@@ -125,6 +126,10 @@ if(BUILD_TESTING)
         add_library(axonvex_test_plugin_nosymbols MODULE tests/plugins/fixture/testPlugin.cpp)
         target_link_libraries(axonvex_test_plugin_nosymbols PRIVATE axonvex_plugins)
         target_compile_definitions(axonvex_test_plugin_nosymbols PRIVATE AXONVEX_TEST_PLUGIN_NO_SYMBOLS)
+
+        add_library(axonvex_test_plugin_throwinit MODULE tests/plugins/fixture/testPlugin.cpp)
+        target_link_libraries(axonvex_test_plugin_throwinit PRIVATE axonvex_plugins)
+        target_compile_definitions(axonvex_test_plugin_throwinit PRIVATE AXONVEX_TEST_PLUGIN_THROW_INIT)
 
         add_executable(test_core
             tests/core/precisionTimerTest.cpp
@@ -175,11 +180,13 @@ if(BUILD_TESTING)
             AXONVEX_TEST_PLUGIN_PATH="$<TARGET_FILE:axonvex_test_plugin>"
             AXONVEX_TEST_PLUGIN_OLDABI_PATH="$<TARGET_FILE:axonvex_test_plugin_oldabi>"
             AXONVEX_TEST_PLUGIN_NOSYMBOLS_PATH="$<TARGET_FILE:axonvex_test_plugin_nosymbols>"
+            AXONVEX_TEST_PLUGIN_THROWINIT_PATH="$<TARGET_FILE:axonvex_test_plugin_throwinit>"
         )
         add_dependencies(test_core
             axonvex_test_plugin
             axonvex_test_plugin_oldabi
             axonvex_test_plugin_nosymbols
+            axonvex_test_plugin_throwinit
         )
         # Register a single aggregated test plus per-test discovery for better reporting.
         add_test(NAME core_tests COMMAND test_core)
