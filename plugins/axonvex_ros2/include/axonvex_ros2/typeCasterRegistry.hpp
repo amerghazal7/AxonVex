@@ -8,7 +8,8 @@
 #include <unordered_map>
 #include <utility>
 
-namespace axonvex::ros2 {
+namespace axonvex {
+namespace ros2 {
 
 /**
  * @brief Type-erased base for subscription/publisher wiring functions.
@@ -139,4 +140,5 @@ class TypeCasterRegistry {
         casters_;
 };
 
-} // namespace axonvex::ros2
+} // namespace ros2
+} // namespace axonvex

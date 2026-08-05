@@ -9,6 +9,8 @@
 #include <vector>
 
 #if defined(AXONVEX_PLATFORM_LINUX)
+#include <cerrno>
+#include <cstring>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
@@ -185,11 +187,15 @@ class PluginManager {
     bool loadPluginsFromDirectory(const std::string& directory) {
         lastError_.clear();
 #if defined(AXONVEX_PLATFORM_LINUX)
-        if (!loader_)
+        if (!loader_) {
+            lastError_ = "no loader configured";
             return false;
+        }
         DIR* dir = opendir(directory.c_str());
-        if (!dir)
+        if (!dir) {
+            lastError_ = "opendir(" + directory + ") failed: " + std::strerror(errno);
             return false;
+        }
         struct dirent* entry;
         bool any = false;
         std::vector<std::string> failures;
@@ -220,6 +226,7 @@ class PluginManager {
         return any;
 #else
         (void)directory;
+        lastError_ = "directory scanning not implemented on this platform";
         return false;
 #endif
     }
