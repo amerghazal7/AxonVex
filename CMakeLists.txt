@@ -23,6 +23,7 @@ set(CMAKE_INSTALL_RPATH
     "${AXONVEX_INSTALL_PREFIX}/axonvex_safety/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_io/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_visualization/libs"
+    "${AXONVEX_INSTALL_PREFIX}/axonvex_ros2/libs"
 )
 
 project("${PROJECT_NAME}"
@@ -110,6 +111,21 @@ if(BUILD_TESTING)
     if(GTest_FOUND)
         add_compile_definitions(BUILD_TESTING)
         enable_testing()
+
+        # Plugin test fixtures for PluginManagerTest: one TU (see
+        # tests/plugins/fixture/testPlugin.cpp), built three ways, to exercise
+        # the ABI handshake and missing-symbol refusal paths (C13).
+        add_library(axonvex_test_plugin MODULE tests/plugins/fixture/testPlugin.cpp)
+        target_link_libraries(axonvex_test_plugin PRIVATE axonvex_plugins)
+
+        add_library(axonvex_test_plugin_oldabi MODULE tests/plugins/fixture/testPlugin.cpp)
+        target_link_libraries(axonvex_test_plugin_oldabi PRIVATE axonvex_plugins)
+        target_compile_definitions(axonvex_test_plugin_oldabi PRIVATE AXONVEX_TEST_PLUGIN_BAD_ABI)
+
+        add_library(axonvex_test_plugin_nosymbols MODULE tests/plugins/fixture/testPlugin.cpp)
+        target_link_libraries(axonvex_test_plugin_nosymbols PRIVATE axonvex_plugins)
+        target_compile_definitions(axonvex_test_plugin_nosymbols PRIVATE AXONVEX_TEST_PLUGIN_NO_SYMBOLS)
+
         add_executable(test_core
             tests/core/precisionTimerTest.cpp
             tests/core/circularBufferTest.cpp
@@ -132,6 +148,7 @@ if(BUILD_TESTING)
             tests/utils/jsonSerializerTest.cpp
             tests/io/fileManagerTest.cpp
             tests/plugins/pluginSample.cpp
+            tests/plugins/pluginManagerTest.cpp
             tests/safety/watchdogTest.cpp
             tests/safety/safetyManagerTest.cpp
             tests/safety/systemSafetyTest.cpp
@@ -153,6 +170,16 @@ if(BUILD_TESTING)
                 axonvex_adapters
                 GTest::GTest
                 GTest::Main
+        )
+        target_compile_definitions(test_core PRIVATE
+            AXONVEX_TEST_PLUGIN_PATH="$<TARGET_FILE:axonvex_test_plugin>"
+            AXONVEX_TEST_PLUGIN_OLDABI_PATH="$<TARGET_FILE:axonvex_test_plugin_oldabi>"
+            AXONVEX_TEST_PLUGIN_NOSYMBOLS_PATH="$<TARGET_FILE:axonvex_test_plugin_nosymbols>"
+        )
+        add_dependencies(test_core
+            axonvex_test_plugin
+            axonvex_test_plugin_oldabi
+            axonvex_test_plugin_nosymbols
         )
         # Register a single aggregated test plus per-test discovery for better reporting.
         add_test(NAME core_tests COMMAND test_core)
