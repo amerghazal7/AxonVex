@@ -33,7 +33,19 @@ class PluginManager {
     PluginManager(const PluginManager&) = delete;
     PluginManager& operator=(const PluginManager&) = delete;
     PluginManager(PluginManager&&) = default;
-    PluginManager& operator=(PluginManager&&) = default;
+
+    // Not = default: a defaulted move-assign would replace plugins_ without
+    // running any cleanup on the entries it overwrites (LoadedPlugin has no
+    // destructor of its own), leaking whatever *this already owned.
+    PluginManager& operator=(PluginManager&& other) {
+        if (this != &other) {
+            unloadAllPlugins();
+            plugins_ = std::move(other.plugins_);
+            loader_ = std::move(other.loader_);
+            lastError_ = std::move(other.lastError_);
+        }
+        return *this;
+    }
 
     ~PluginManager() {
         unloadAllPlugins();
