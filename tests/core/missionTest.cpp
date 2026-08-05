@@ -1,7 +1,11 @@
+#include <atomic>
 #include <axonvex_core/missionElement.hpp>
 #include <axonvex_core/missionPipeline.hpp>
+#include <chrono>
 #include <gtest/gtest.h>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -378,6 +382,115 @@ TEST(MissionPipelineTest, FirstAddedElementIsDefaultStart) {
 TEST(MissionPipelineTest, TypeDescription) {
     MissionPipeline pipeline("Desc");
     EXPECT_EQ(pipeline.getTypeDescription(), "MissionPipeline");
+}
+
+// =========================================================================
+// C22: status_/currentElement_ were mutated from the scheduler thread
+// (processSync) and the user control API with no synchronization.
+// =========================================================================
+
+// TSan is the real assertion here: the loop just gives it interleavings to
+// catch. A cyclic graph keeps processSync() ticking (never Finished) for
+// the whole deadline window so thread A stays busy racing thread B.
+TEST(MissionPipelineTest, ConcurrentControlAndTickAreRaceFree) {
+    ImmediateElement a("A"), b("B"), c("C");
+
+    MissionPipeline pipeline("ConcurrentPipeline");
+    pipeline.addElement(&a);
+    pipeline.addElement(&b);
+    pipeline.addElement(&c);
+    pipeline.addSequentialTransition("A", "B");
+    pipeline.addSequentialTransition("B", "C");
+    pipeline.addSequentialTransition("C", "A");
+    pipeline.initialize();
+    pipeline.startPipeline();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+
+    std::thread ticker([&pipeline, deadline]() {
+        while (std::chrono::steady_clock::now() < deadline) {
+            pipeline.processSync();
+        }
+    });
+
+    std::thread controller([&pipeline, deadline]() {
+        while (std::chrono::steady_clock::now() < deadline) {
+            pipeline.pause();
+            pipeline.resume();
+            (void)pipeline.status();
+            (void)pipeline.currentElementName();
+        }
+    });
+
+    ticker.join();
+    controller.join();
+    pipeline.abort();
+    SUCCEED();
+}
+
+// C22: transitions referencing unknown elements were only discovered as a
+// wedged pipeline at runtime (silent early return, status stuck Idle).
+// startPipeline() now validates the graph first and surfaces the dangling
+// reference through ProcessingUnit's setError()/getLastError().
+TEST(MissionPipelineTest, StartPipelineRejectsDanglingTransition) {
+    ImmediateElement a("A");
+
+    MissionPipeline pipeline("DanglingTransition");
+    pipeline.addElement(&a);
+    pipeline.addSequentialTransition("A", "Typo");
+    pipeline.initialize();
+
+    pipeline.startPipeline();
+
+    EXPECT_EQ(pipeline.status(), PipelineStatus::Failed);
+    EXPECT_TRUE(pipeline.hasError());
+    EXPECT_NE(pipeline.getLastError().find("Typo"), std::string::npos);
+}
+
+class PauseOnEnterElement : public MissionElement {
+  public:
+    PauseOnEnterElement(const std::string& name, MissionPipeline& pipeline)
+        : MissionElement(name), pipeline_(pipeline) {}
+
+    TransitionResult execute() override {
+        return TransitionResult::Default;
+    }
+    void onEnter() override {
+        pipeline_.pause();
+    }
+
+  private:
+    MissionPipeline& pipeline_;
+};
+
+// C22: a hook that re-enters the control API must not deadlock — stateMutex_
+// is never held across a MissionElement hook call. Deadline-guarded: a
+// regression hangs rather than fails outright.
+TEST(MissionPipelineTest, HookReenteringControlApiDoesNotDeadlock) {
+    MissionPipeline pipeline("ReentrantPipeline");
+    PauseOnEnterElement a("A", pipeline);
+    pipeline.addElement(&a);
+    pipeline.initialize();
+
+    auto done = std::make_shared<std::atomic<bool>>(false);
+
+    std::thread worker([&pipeline, done]() {
+        pipeline.startPipeline();
+        done->store(true);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!done->load()) {
+        worker.detach(); // wedged; leak it rather than hang the suite
+        FAIL() << "onEnter() re-entering pause() deadlocked startPipeline()";
+        return;
+    }
+    worker.join();
+
+    EXPECT_EQ(pipeline.status(), PipelineStatus::Paused);
 }
 
 } // namespace
