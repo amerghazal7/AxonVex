@@ -47,7 +47,8 @@ class PathTest : public ::testing::Test {
   protected:
     void SetUp() override {
         // Create test directory structure
-        test_root = Path::getDefaultTempDir() / ("axonvex_path_test_" + std::to_string(testProcessId()));
+        test_root =
+            Path::getDefaultTempDir() / ("axonvex_path_test_" + std::to_string(testProcessId()));
         test_root.createDirectories();
 
         test_file = test_root / "test_file.txt";
@@ -290,6 +291,54 @@ TEST_F(PathTest, SecurityValidationTest) {
 
     Path::setDefaultSecurityLevel(Path::SecurityLevel::BASIC);
 }
+
+// C15(b): filename.length() - N underflowed size_t for names shorter than
+// the extension being checked for, so substr() threw std::out_of_range.
+TEST_F(PathTest, CreateConfigPathAcceptsShortNames) {
+    Path p = Path::createConfigPath("a");
+    EXPECT_NE(p.toString().find("a.json"), std::string::npos);
+
+    Path q = Path::createLogPath("ab");
+    EXPECT_NE(q.toString().find("ab.log"), std::string::npos);
+}
+
+// C15(c): hasDirectoryTraversal() used to substring-match ".."/"./"/".\\",
+// flagging legitimate names that merely contain those characters. It is now
+// component-based: traversal iff a path component is exactly "..". Asserted
+// through the public validation surface (isSecure/validateSecurity), since
+// hasDirectoryTraversal() itself is private.
+TEST_F(PathTest, TraversalCheckIsComponentBased) {
+    // False positives fixed: these must NOT be flagged.
+    EXPECT_TRUE(Path("my..file.json").isSecure(Path::SecurityLevel::BASIC));
+    EXPECT_TRUE(Path("./config/x.json").isSecure(Path::SecurityLevel::BASIC));
+
+    // True positives kept: every real ".." component must still be flagged,
+    // this is a trust boundary and must not regress.
+    EXPECT_FALSE(Path("../etc/passwd").isSecure(Path::SecurityLevel::BASIC));
+    EXPECT_FALSE(Path("a/../b").isSecure(Path::SecurityLevel::BASIC));
+    EXPECT_FALSE(Path("..").isSecure(Path::SecurityLevel::BASIC));
+    // Windows-separator form, must be caught even on a POSIX build.
+    EXPECT_FALSE(Path("a\\..\\b").isSecure(Path::SecurityLevel::BASIC));
+
+    auto false_positive_errors = Path("my..file.json").validateSecurity(Path::SecurityLevel::BASIC);
+    EXPECT_EQ(false_positive_errors.size(), 0u);
+
+    auto true_positive_errors = Path("a/../b").validateSecurity(Path::SecurityLevel::BASIC);
+    EXPECT_GT(true_positive_errors.size(), 0u);
+}
+
+// C15(a): the three ctors' double-checked locking on a plain bool
+// (`initialized_`) outside static_mutex_ is a first-touch initialization
+// race — a second thread could observe the bool as already true while
+// default_dirs_'s writes were not yet visible to it. That race is not
+// deterministically reproducible in-suite: by the time this test runs,
+// earlier tests have already forced the one-time initialization to
+// complete, so there is no "first touch" left to race. The fix
+// (ensureInitialized(), a C++11 magic static) is verified by inspection
+// plus the full suite — including this file's own ThreadSafetyTest, which
+// hits Path construction concurrently from 8 threads — run clean under
+// ThreadSanitizer. No test is added here that would only assert "no crash",
+// which would not exercise the specific race described in C15(a).
 
 //==============================================================================
 // Directory Operations Tests
