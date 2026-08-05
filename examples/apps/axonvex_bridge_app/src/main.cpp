@@ -8,12 +8,10 @@
 
 #include <axonvex_core/axonvex.hpp>
 #include <axonvex_ros2/ros2Adapter.hpp>
-
-#include <rclcpp/rclcpp.hpp>
-#include <std_msgs/msg/string.hpp>
-
 #include <iostream>
 #include <memory>
+#include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <string>
 
 using namespace axonvex::core;
@@ -27,19 +25,30 @@ class PrinterPU : public ProcessingUnit {
     explicit PrinterPU(const std::string& name) : ProcessingUnit(name) {
         in_ = createInputPort<std::string>(0, "input");
     }
-    void initialize() override { setState(ExecutionState::INITIALIZED); }
+    void initialize() override {
+        setState(ExecutionState::INITIALIZED);
+    }
     void processSync() override {
         setState(ExecutionState::RUNNING);
-        if (!in_->hasNewData()) return;
+        if (!in_->hasNewData())
+            return;
         auto msg = in_->read();
         in_->clearNewDataFlag();
         count_++;
         std::cout << "[PrinterPU] #" << count_ << ": " << msg << std::endl;
     }
     void processAsync() override {}
-    void reset() override { count_ = 0; setState(ExecutionState::INITIALIZED); }
-    std::string getTypeDescription() override { return "PrinterPU"; }
-    uint64_t getCount() const { return count_; }
+    void reset() override {
+        count_ = 0;
+        setState(ExecutionState::INITIALIZED);
+    }
+    std::string getTypeDescription() override {
+        return "PrinterPU";
+    }
+    uint64_t getCount() const {
+        return count_;
+    }
+
   private:
     InputPort<std::string>* in_;
     uint64_t count_{0};
@@ -52,23 +61,29 @@ class PrinterPU : public ProcessingUnit {
 class EchoSystem : public AxonVexSystem {
   public:
     explicit EchoSystem(const SystemConfiguration& cfg) : AxonVexSystem(cfg) {}
-    PrinterPU* getPrinter() const { return printer_; }
+    PrinterPU* getPrinter() const {
+        return printer_;
+    }
+
   protected:
     bool initializeBlocksLayout() override {
         auto* ros = static_cast<axonvex::ros2::ROS2Adapter*>(getAdapter("ros"));
-        if (!ros) return false;
+        if (!ros)
+            return false;
 
-        auto* sub = ros->createSubscriber<std::string, std_msgs::msg::String>("/chatter");
-        registerProcessingUnit(std::unique_ptr<ProcessingUnit>(sub));
+        auto sub = ros->createSubscriber<std::string, std_msgs::msg::String>("/chatter");
+        auto* subPtr = sub.get();
+        registerProcessingUnit(std::move(sub));
 
         auto printer = std::make_unique<PrinterPU>("Printer");
         printer_ = printer.get();
         registerProcessingUnit(std::move(printer));
 
-        sub->getOutput()->connect(printer_->getInputPort<std::string>(0));
+        subPtr->getOutput()->connect(printer_->getInputPort<std::string>(0));
         std::cout << "[System] /chatter -> PrinterPU" << std::endl;
         return true;
     }
+
   private:
     PrinterPU* printer_{nullptr};
 };
@@ -88,7 +103,9 @@ int main(int argc, char** argv) {
     adapter->registerTypeCaster<std::string, std_msgs::msg::String>(
         [](const std_msgs::msg::String& msg) -> std::string { return msg.data; },
         [](const std::string& s) -> std_msgs::msg::String {
-            std_msgs::msg::String m; m.data = s; return m;
+            std_msgs::msg::String m;
+            m.data = s;
+            return m;
         });
 
     adapter->initialize();
@@ -117,8 +134,7 @@ int main(int argc, char** argv) {
     adapter->stop();
 
     std::cout << "\nMessages received: "
-              << (system.getPrinter() ? system.getPrinter()->getCount() : 0)
-              << std::endl;
+              << (system.getPrinter() ? system.getPrinter()->getCount() : 0) << std::endl;
 
     rclcpp::shutdown();
     return 0;
