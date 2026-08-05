@@ -134,9 +134,15 @@ class PluginManager {
             lastError_ = lr.error.empty() ? "plugin load failed" : lr.error;
             return false;
         }
-        if (!lr.instance->initialize()) {
-            lastError_ = "plugin initialize() failed";
-            // Ensure cleanup on failed initialize
+        bool initialized = false;
+        bool initializeThrew = false;
+        try {
+            initialized = lr.instance->initialize();
+        } catch (...) { initializeThrew = true; }
+        if (!initialized) {
+            lastError_ =
+                initializeThrew ? "plugin initialize() threw" : "plugin initialize() failed";
+            // Ensure cleanup on failed/throwing initialize
             lr.destroy(lr.instance);
 #if defined(AXONVEX_PLATFORM_LINUX)
             if (lr.handle)
@@ -159,11 +165,21 @@ class PluginManager {
         return true;
     }
 
-    // Reason for the most recent loadPlugin() failure; empty after success.
+    // Reason for the most recent loadPlugin() call's failure; empty after
+    // a successful loadPlugin(). NOT meaningful after loadPluginsFromDirectory()
+    // for a single file's failure — see that method's doc comment.
     const std::string& lastError() const {
         return lastError_;
     }
 
+    // Loads every *.so in `directory`. Each file's loadPlugin() clears and
+    // resets lastError_ in turn (readdir order is unspecified), so a
+    // failure followed by a later success in the same scan would
+    // otherwise erase the failure entirely. Instead: on return, lastError_
+    // holds a "filename: reason" summary joined with "; " for every file
+    // that failed to load in THIS call (empty if all succeeded or none
+    // were found), regardless of what any individual loadPlugin() call
+    // left behind.
     bool loadPluginsFromDirectory(const std::string& directory) {
 #if defined(AXONVEX_PLATFORM_LINUX)
         if (!loader_)
@@ -173,17 +189,31 @@ class PluginManager {
             return false;
         struct dirent* entry;
         bool any = false;
+        std::vector<std::string> failures;
         while ((entry = readdir(dir)) != nullptr) {
             std::string fname = entry->d_name;
             if (fname.size() > 3 && fname.rfind(".so") == fname.size() - 3) {
                 std::string full = directory + "/" + fname;
                 struct stat st{};
                 if (stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
-                    any = loadPlugin(full) || any;
+                    if (loadPlugin(full)) {
+                        any = true;
+                    } else {
+                        failures.push_back(fname + ": " + lastError_);
+                    }
                 }
             }
         }
         closedir(dir);
+        if (!failures.empty()) {
+            std::string combined;
+            for (size_t i = 0; i < failures.size(); ++i) {
+                if (i > 0)
+                    combined += "; ";
+                combined += failures[i];
+            }
+            lastError_ = combined;
+        }
         return any;
 #else
         (void)directory;

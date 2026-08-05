@@ -3,12 +3,30 @@
 #include <gtest/gtest.h>
 #include <string>
 
+#if defined(AXONVEX_PLATFORM_LINUX)
+#include <fstream>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 // Paths to the fixture MODULE libraries, injected by CMake
 // (see root CMakeLists.txt / tests/plugins/fixture/testPlugin.cpp).
 namespace {
 const char* const kNormalPluginPath = AXONVEX_TEST_PLUGIN_PATH;
 const char* const kOldAbiPluginPath = AXONVEX_TEST_PLUGIN_OLDABI_PATH;
 const char* const kNoSymbolsPluginPath = AXONVEX_TEST_PLUGIN_NOSYMBOLS_PATH;
+const char* const kThrowInitPluginPath = AXONVEX_TEST_PLUGIN_THROWINIT_PATH;
+
+#if defined(AXONVEX_PLATFORM_LINUX)
+bool copyFile(const std::string& from, const std::string& to) {
+    std::ifstream in(from, std::ios::binary);
+    std::ofstream out(to, std::ios::binary);
+    if (!in || !out)
+        return false;
+    out << in.rdbuf();
+    return static_cast<bool>(out);
+}
+#endif
 } // namespace
 
 using axonvex::plugins::PluginManager;
@@ -46,3 +64,41 @@ TEST(PluginManagerTest, MissingSymbolsAreRefused) {
     EXPECT_FALSE(pm.lastError().empty());
     EXPECT_TRUE(pm.getLoadedPlugins().empty());
 }
+
+// Finding 3 (whole-branch review): initialize() wasn't try/catch-wrapped
+// like abiVersion()/create() are, so a throwing initialize() propagated
+// out of loadPlugin() (breaking its bool+lastError contract) and leaked
+// the instance and dlopen handle. ASan/LSan is the real assertion: a
+// pre-fix run of this test leaks both the TestPlugin instance and the
+// dlopen handle instead of returning false cleanly.
+TEST(PluginManagerTest, ThrowingInitializeIsCaughtWithoutLeak) {
+    PluginManager pm(PluginManager::makePosixLoader());
+    EXPECT_FALSE(pm.loadPlugin(kThrowInitPluginPath));
+    EXPECT_NE(pm.lastError().find("threw"), std::string::npos) << pm.lastError();
+    EXPECT_TRUE(pm.getLoadedPlugins().empty());
+}
+
+#if defined(AXONVEX_PLATFORM_LINUX)
+// Finding 2 (whole-branch review): loadPlugin() clears lastError_ on every
+// call, and readdir() order is unspecified — a scan with one failing and
+// one succeeding plugin could silently erase the failure's reason if the
+// successful load happened to be enumerated after it. loadPluginsFromDirectory()
+// now accumulates every failure from the scan and reports them all,
+// regardless of enumeration order.
+TEST(PluginManagerTest, ScanAggregatesFailureReasonsRegardlessOfOrder) {
+    std::string dir = "pm_scan_fixture_" + std::to_string(::getpid());
+    ASSERT_EQ(::mkdir(dir.c_str(), 0755), 0);
+    ASSERT_TRUE(copyFile(kNormalPluginPath, dir + "/a_good.so"));
+    ASSERT_TRUE(copyFile(kOldAbiPluginPath, dir + "/b_bad.so"));
+
+    PluginManager pm(PluginManager::makePosixLoader());
+    EXPECT_TRUE(pm.loadPluginsFromDirectory(dir));
+    EXPECT_NE(pm.lastError().find("b_bad.so"), std::string::npos) << pm.lastError();
+    EXPECT_NE(pm.lastError().find("ABI"), std::string::npos) << pm.lastError();
+    EXPECT_EQ(pm.getLoadedPlugins().size(), 1u);
+
+    ::remove((dir + "/a_good.so").c_str());
+    ::remove((dir + "/b_bad.so").c_str());
+    ::rmdir(dir.c_str());
+}
+#endif

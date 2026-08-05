@@ -3,6 +3,7 @@
 #include <axonvex_core/missionElement.hpp>
 #include <axonvex_core/processingUnit.hpp>
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -52,7 +53,14 @@ constexpr int RESUME  = 4;
 class MissionPipeline : public ProcessingUnit {
   public:
     explicit MissionPipeline(const std::string& name) : ProcessingUnit(name) {
-        controlPort_ = createAsyncInputPort<int>(0, "control");
+        // threadSafe=true: post-finding-1, abort()/restart()/pause()/resume()
+        // write to this port directly from whatever thread calls them, while
+        // processAsync() reads it from the scheduler thread — AsyncInputPort's
+        // data_/wasUpdated_ are only mutex-guarded when threadSafe is set
+        // (C31: fixed for the port's lifetime, chosen at construction).
+        // Without this, update()/read() race on the plain (non-threadSafe)
+        // path (TSan-confirmed while building this fix).
+        controlPort_ = createAsyncInputPort<int>(0, "control", /*threadSafe=*/true);
         statusPort_  = createOutputPort<int>(0, "status");
     }
 
@@ -99,17 +107,59 @@ class MissionPipeline : public ProcessingUnit {
     // Execution control (programmatic API)
     // -----------------------------------------------------------------
 
-    // All control methods below follow the same shape: lock -> decide and
-    // apply the state flip on a captured snapshot -> unlock -> invoke any
-    // MissionElement hook (onEnter/onExit/reset) on the snapshot, never
-    // under stateMutex_. Hooks are user code and may re-enter this API
-    // (e.g. an onEnter() calling pause()); stateMutex_ is non-recursive and
-    // is never held across a hook call, so re-entrancy cannot deadlock.
+    // C22 gave every one of these methods its own lock-decide-unlock-then-
+    // dispatch-the-hook shape, which kept `stateMutex_` safe but missed a
+    // second hazard: the *dispatch* still ran on the CALLER's thread. A
+    // MissionElement's execute() runs unlocked on the scheduler thread
+    // (see processSync()); abort()/restart()/reset() calling onExit()/
+    // reset() on that same element from an arbitrary caller thread races
+    // it — same object, unsynchronized writes, TSan-confirmed
+    // (MissionPipelineTsanRegressionTest below).
+    //
+    // Fix: abort()/restart()/pause()/resume()/reset() no longer touch
+    // MissionPipeline or MissionElement state at all when called directly.
+    // They only enqueue a command (the *existing* single-slot controlPort_
+    // for the four that already had a wire command, or the dedicated
+    // pendingReset_ flag for reset() — see its comment for why it can't
+    // share controlPort_) and return. The command is drained — and the
+    // state flip and every MissionElement hook it triggers actually run —
+    // on the scheduler thread only, at the top of the next processAsync()
+    // (called by processAsyncBase() immediately before processSyncBase()
+    // each tick — see timingController.cpp's executeTask()). This is true
+    // even if the caller IS the scheduler thread already (e.g. a hook
+    // re-entering pause()): every direct-call site funnels through the
+    // same drain, so there is exactly one thread that ever calls a
+    // MissionElement hook.
+    //
+    // Honest contract for every method below: it takes effect at the next
+    // tick, not synchronously. status()/currentElementName() reflect the
+    // state as of the most recently drained command, not the most
+    // recently issued one. Like controlPort_ already did, the underlying
+    // slot is single-entry / last-write-wins: issuing a second command
+    // before the first has been drained discards the first (documented
+    // pre-existing simplification, not new here).
+    //
+    // Also: a hook dispatched from the drain that calls
+    // AxonVexSystem::stop()/reset()/initialize() is refused by the
+    // worker-refusal mechanism (isOnWorkerThread(), C40/C41/C42) once this
+    // pipeline is ticked by a real scheduler thread — those calls would
+    // otherwise try to join/destroy the thread they're running on.
 
+    /**
+     * @brief Validate the graph and (if Idle) begin execution.
+     *
+     * The graph validation and the Idle->Executing bookkeeping happen
+     * synchronously on the calling thread and are fail-fast: a dangling
+     * transition reference sets status()==Failed and getLastError()
+     * immediately, no tick required (there is no MissionElement hook to
+     * race in the failure path). If validation succeeds, the start
+     * element's onEnter() is deferred like every other hook above — it
+     * runs on the scheduler thread at the next tick.
+     */
     void startPipeline() {
         std::string firstError;
         bool validationFailed = false;
-        MissionElement* toEnter = nullptr;
+        bool started = false;
         {
             std::lock_guard<std::mutex> lock(stateMutex_);
             if (status_ != PipelineStatus::Idle)
@@ -120,62 +170,41 @@ class MissionPipeline : public ProcessingUnit {
             } else {
                 currentElement_ = elements_.at(startElementName_);
                 status_ = PipelineStatus::Executing;
-                toEnter = currentElement_;
+                started = true;
             }
         }
         if (validationFailed) {
             setError(firstError);
             return;
         }
-        if (toEnter)
-            toEnter->onEnter();
+        if (started)
+            pendingStartEnter_.store(true);
     }
 
+    // Takes effect at the next tick; onExit() (if any) runs on the
+    // scheduler thread, not this call's thread.
     void abort() {
-        MissionElement* toExit = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(stateMutex_);
-            if (status_ == PipelineStatus::Executing || status_ == PipelineStatus::Paused) {
-                toExit = currentElement_;
-                status_ = PipelineStatus::Aborted;
-                currentElement_ = nullptr;
-            }
-        }
-        if (toExit)
-            toExit->onExit();
+        controlPort_->update(PipelineControl::ABORT);
     }
 
+    // Takes effect at the next tick; onExit()/reset()/onEnter() (if any)
+    // run on the scheduler thread, not this call's thread.
     void restart() {
-        MissionElement* toExit = nullptr;
-        std::vector<MissionElement*> toReset;
-        {
-            std::lock_guard<std::mutex> lock(stateMutex_);
-            toExit = currentElement_;
-            currentElement_ = nullptr;
-            toReset.reserve(elements_.size());
-            for (auto& kv : elements_)
-                toReset.push_back(kv.second);
-            status_ = PipelineStatus::Idle;
-        }
-        if (toExit)
-            toExit->onExit();
-        for (auto* e : toReset)
-            e->reset();
-        startPipeline(); // re-acquires stateMutex_ itself; not held here.
+        controlPort_->update(PipelineControl::RESTART);
     }
 
+    // Takes effect at the next tick. pause()/resume() dispatch no
+    // MissionElement hook themselves, but are still deferred for the same
+    // reason as the others: a caller re-entering pause() from a hook
+    // (HookReenteringControlApiDoesNotDeadlock) must not touch status_
+    // opportunistically from whatever thread that hook happens to run on.
     void pause() {
-        std::lock_guard<std::mutex> lock(stateMutex_);
-        if (status_ == PipelineStatus::Executing) {
-            status_ = PipelineStatus::Paused;
-        }
+        controlPort_->update(PipelineControl::PAUSE);
     }
 
+    // Takes effect at the next tick.
     void resume() {
-        std::lock_guard<std::mutex> lock(stateMutex_);
-        if (status_ == PipelineStatus::Paused) {
-            status_ = PipelineStatus::Executing;
-        }
+        controlPort_->update(PipelineControl::RESUME);
     }
 
     // -----------------------------------------------------------------
@@ -310,45 +339,51 @@ class MissionPipeline : public ProcessingUnit {
         statusPort_->write(static_cast<int>(statusSnapshot));
     }
 
+    // Drain point for every deferred command (see the "Execution control"
+    // comment above): called every tick, before processSync(), from the
+    // scheduler thread only (processAsyncBase() -> processAsync() ->
+    // processSyncBase(), see timingController.cpp's executeTask()). This
+    // is the ONE place MissionElement hooks triggered by the direct
+    // control API run.
     void processAsync() override {
+        if (pendingReset_.exchange(false)) {
+            resetImpl();
+        }
+        if (pendingStartEnter_.exchange(false)) {
+            dispatchDeferredEnter();
+        }
         if (!controlPort_->wasUpdated())
             return;
         int cmd = controlPort_->read();
         switch (cmd) {
             case PipelineControl::ABORT:
-                abort();
+                abortImpl();
                 break;
             case PipelineControl::RESTART:
-                restart();
+                restartImpl();
                 break;
             case PipelineControl::PAUSE:
-                pause();
+                pauseImpl();
                 break;
             case PipelineControl::RESUME:
-                resume();
+                resumeImpl();
                 break;
             default:
                 break;
         }
     }
 
+    // Takes effect at the next tick (see the "Execution control" comment
+    // above); onExit()/reset() (if any) run on the scheduler thread, not
+    // this call's thread. Can't reuse controlPort_ like abort/restart/
+    // pause/resume do: when this is invoked via the built-in resetPort_ ->
+    // ProcessingUnit::resetBlock() path, resetBlock() calls resetPorts()
+    // (which clears every AsyncInputPort's pending data, controlPort_
+    // included) right after this returns — a controlPort_-based signal
+    // would be wiped before processAsync() ever drained it. pendingReset_
+    // isn't a port, so resetPorts() doesn't touch it.
     void reset() override {
-        MissionElement* toExit = nullptr;
-        std::vector<MissionElement*> toReset;
-        {
-            std::lock_guard<std::mutex> lock(stateMutex_);
-            toExit = currentElement_;
-            currentElement_ = nullptr;
-            toReset.reserve(elements_.size());
-            for (auto& kv : elements_)
-                toReset.push_back(kv.second);
-            status_ = PipelineStatus::Idle;
-        }
-        if (toExit)
-            toExit->onExit();
-        for (auto* e : toReset)
-            e->reset();
-        setState(ExecutionState::INITIALIZED);
+        pendingReset_.store(true);
     }
 
     std::string getTypeDescription() override { return "MissionPipeline"; }
@@ -395,6 +430,125 @@ class MissionPipeline : public ProcessingUnit {
         return true;
     }
 
+    // -----------------------------------------------------------------
+    // Deferred-command implementations. Precondition for every method
+    // below: called only from the scheduler thread, from processAsync()'s
+    // drain (or, for startImmediate(), from restartImpl() which is itself
+    // only ever reached the same way). None of them may be called
+    // directly from a public entry point — that's exactly the bug this
+    // fix closes.
+    // -----------------------------------------------------------------
+
+    // Bookkeeping + onEnter() dispatch, both synchronous. Safe to run
+    // inline (no further deferral) because the caller is already
+    // guaranteed to be the scheduler thread.
+    void startImmediate() {
+        std::string firstError;
+        bool validationFailed = false;
+        MissionElement* toEnter = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            if (status_ != PipelineStatus::Idle)
+                return;
+            if (!validateGraph(firstError)) {
+                status_ = PipelineStatus::Failed;
+                validationFailed = true;
+            } else {
+                currentElement_ = elements_.at(startElementName_);
+                status_ = PipelineStatus::Executing;
+                toEnter = currentElement_;
+            }
+        }
+        if (validationFailed) {
+            setError(firstError);
+            return;
+        }
+        if (toEnter)
+            toEnter->onEnter();
+    }
+
+    // Drains startPipeline()'s deferred onEnter(). Re-reads currentElement_
+    // fresh (rather than trusting a snapshot taken back in startPipeline())
+    // since nothing guarantees it's still current by drain time (a queued
+    // abort()/restart() dispatched first in the same tick can already have
+    // moved it — see processAsync()'s drain order).
+    void dispatchDeferredEnter() {
+        MissionElement* toEnter = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            if (status_ == PipelineStatus::Executing)
+                toEnter = currentElement_;
+        }
+        if (toEnter)
+            toEnter->onEnter();
+    }
+
+    void abortImpl() {
+        MissionElement* toExit = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            if (status_ == PipelineStatus::Executing || status_ == PipelineStatus::Paused) {
+                toExit = currentElement_;
+                status_ = PipelineStatus::Aborted;
+                currentElement_ = nullptr;
+            }
+        }
+        if (toExit)
+            toExit->onExit();
+    }
+
+    void restartImpl() {
+        MissionElement* toExit = nullptr;
+        std::vector<MissionElement*> toReset;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            toExit = currentElement_;
+            currentElement_ = nullptr;
+            toReset.reserve(elements_.size());
+            for (auto& kv : elements_)
+                toReset.push_back(kv.second);
+            status_ = PipelineStatus::Idle;
+        }
+        if (toExit)
+            toExit->onExit();
+        for (auto* e : toReset)
+            e->reset();
+        startImmediate(); // already on the scheduler thread; no further defer.
+    }
+
+    void pauseImpl() {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (status_ == PipelineStatus::Executing) {
+            status_ = PipelineStatus::Paused;
+        }
+    }
+
+    void resumeImpl() {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (status_ == PipelineStatus::Paused) {
+            status_ = PipelineStatus::Executing;
+        }
+    }
+
+    void resetImpl() {
+        MissionElement* toExit = nullptr;
+        std::vector<MissionElement*> toReset;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            toExit = currentElement_;
+            currentElement_ = nullptr;
+            toReset.reserve(elements_.size());
+            for (auto& kv : elements_)
+                toReset.push_back(kv.second);
+            status_ = PipelineStatus::Idle;
+        }
+        if (toExit)
+            toExit->onExit();
+        for (auto* e : toReset)
+            e->reset();
+        setState(ExecutionState::INITIALIZED);
+    }
+
     // Guards status_, currentElement_, elements_, transitions_, and
     // startElementName_. Non-recursive: never held across a MissionElement
     // hook call (onEnter/onExit/execute/reset are user code).
@@ -409,6 +563,13 @@ class MissionPipeline : public ProcessingUnit {
 
     AsyncInputPort<int>* controlPort_;
     OutputPort<int>* statusPort_;
+
+    // Single-slot deferred commands that can't travel over controlPort_
+    // (see reset()'s comment for why) or that predate it (startPipeline()
+    // has no wire command of its own). Drained in processAsync(), on the
+    // scheduler thread only.
+    std::atomic<bool> pendingReset_{false};
+    std::atomic<bool> pendingStartEnter_{false};
 };
 
 } // namespace axonvex::core

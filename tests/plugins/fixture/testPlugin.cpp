@@ -1,10 +1,12 @@
-// Test-bed plugin for PluginManagerTest. Built as three separate MODULE
+// Test-bed plugin for PluginManagerTest. Built as four separate MODULE
 // targets from this one TU (see root CMakeLists.txt):
 //   axonvex_test_plugin           - conforming plugin, correct ABI
 //   axonvex_test_plugin_oldabi    - AXONVEX_TEST_PLUGIN_BAD_ABI: wrong ABI version
 //   axonvex_test_plugin_nosymbols - AXONVEX_TEST_PLUGIN_NO_SYMBOLS: exports nothing
+//   axonvex_test_plugin_throwinit - AXONVEX_TEST_PLUGIN_THROW_INIT: initialize() throws
 #include <axonvex_plugins/pluginInterface.hpp>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -18,7 +20,11 @@ class TestPlugin : public axonvex::plugins::PluginInterface {
         return "1.0.0";
     }
     bool initialize() override {
+#if defined(AXONVEX_TEST_PLUGIN_THROW_INIT)
+        throw std::runtime_error("boom");
+#else
         return true;
+#endif
     }
     void shutdown() override {}
 };
