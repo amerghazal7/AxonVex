@@ -610,7 +610,10 @@ TEST(MissionPipelineTest, StartPipelineDefersFlipSoExecuteNeverPrecedesEnter) {
 // before the pending start is ever drained must not exit an element that
 // was never entered. pendingReset_ drains before the pending start
 // (processAsync()'s documented order), so resetImpl() must see
-// currentElement_ == nullptr here — the flip hasn't happened yet.
+// currentElement_ == nullptr here — the flip hasn't happened yet. Reset
+// also cancels the pending start outright (resetImpl() clears
+// pendingStart_): a reset() issued after startPipeline() wins, and the
+// pipeline does not self-start on the next tick.
 TEST(MissionPipelineTest, ResetQueuedBeforeDrainDoesNotExitNeverEnteredElement) {
     OrderTrackingElement a("A");
 
@@ -623,7 +626,7 @@ TEST(MissionPipelineTest, ResetQueuedBeforeDrainDoesNotExitNeverEnteredElement) 
 
     pipeline.processAsync();
     EXPECT_EQ(a.exitCount(), 0) << "onExit() ran on an element that was never entered";
-    EXPECT_EQ(a.enterCount(), 1) << "the pending start still runs once reset() has drained";
+    EXPECT_EQ(a.enterCount(), 0) << "reset() cancels the not-yet-drained pending start";
 }
 
 // C22: transitions referencing unknown elements were only discovered as a
