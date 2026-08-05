@@ -32,8 +32,24 @@ RealTimeScheduler::RealTimeScheduler(SchedulingPolicy policy) : policy_(policy) 
 }
 
 RealTimeScheduler::~RealTimeScheduler() {
-    if (running_.load()) {
-        stop();
+    // C42: unconditional — stop() no longer early-returns on running_ (see
+    // its definition below), so calling it here also reclaims a handle left
+    // behind by an earlier deferred self-stop (running_ already false while
+    // schedulerThread_ is still joinable).
+    stop();
+
+    if (schedulerThread_ && schedulerThread_->joinable()) {
+        // Only reachable when ~RealTimeScheduler itself runs on the
+        // scheduler thread: stop() above just deferred its own join for the
+        // same reason (isOnSchedulerThread() true). That happens when the
+        // owning TimingController/AxonVexSystem is destroyed from inside a
+        // ProcessingUnit task's own call stack — the same contract
+        // violation documented on ~AxonVexSystem (a destructor cannot
+        // refuse), inherited here through TimingController's owning
+        // unique_ptr. Joining would still be a self-join (C33/C36 shape,
+        // std::terminate); detaching is the least-bad option, matching
+        // SafetyManager::~SafetyManager()'s precedent.
+        schedulerThread_->detach();
     }
 }
 
@@ -140,17 +156,42 @@ void RealTimeScheduler::start() {
 }
 
 void RealTimeScheduler::stop() {
-    if (!running_.load()) {
-        return; // Not running
-    }
-
+    // C42: no early return on running_ — after a deferred self-stop below,
+    // the flag is already false while schedulerThread_ still needs
+    // reclaiming, so every step here must be individually idempotent
+    // instead of gated by one flag (SafetyManager/Watchdog C33/C36
+    // precedent).
     running_.store(false);
     schedulerCondition_.notify_all();
+
+    // C42: checked before touching schedulerThread_, and before any lock —
+    // there are none in this function, but the check must still gate the
+    // join below. A ProcessingUnit task body (or the error callback) runs
+    // ON this thread via executeTask(), so self-detection must read only
+    // the published atomic id, never the std::thread object itself (start()
+    // move-assigns it with no happens-before edge to a concurrent reader).
+    if (isOnSchedulerThread()) {
+        // Self-stop: running_ is now false, so schedulerLoop() exits on its
+        // own once this call returns and control unwinds back out through
+        // executeTask()/processSync(). Joining here would be a self-join —
+        // std::thread::join throws system_error, unwinding out of the
+        // scheduler's own thread-entry lambda, i.e. std::terminate (C33's
+        // exact shape; this is that defect's scheduler-thread instance,
+        // C42). Defer the join and the handle reset: absorbed by the next
+        // stop() call from a real external thread (the joinable() check
+        // below runs there instead), or by ~RealTimeScheduler() if stop()
+        // is never called again.
+        return;
+    }
 
     if (schedulerThread_ && schedulerThread_->joinable()) {
         schedulerThread_->join();
     }
     schedulerThread_.reset();
+}
+
+bool RealTimeScheduler::isOnSchedulerThread() const noexcept {
+    return std::this_thread::get_id() == schedulerThreadId_.load();
 }
 
 void RealTimeScheduler::pause() {
@@ -243,7 +284,40 @@ void RealTimeScheduler::setErrorCallback(ErrorCallback callback) {
     errorCallback_ = callback;
 }
 
+namespace {
+/**
+ * C42: publishes the calling thread's id into `slot` on construction and
+ * clears it (back to std::thread::id{}, the "no scheduler thread" sentinel
+ * isOnSchedulerThread() checks against) on destruction — every exit path of
+ * the loop that owns the guard, including an exception escaping the loop
+ * body, runs the clear. Copied from system.cpp's WorkerThreadIdGuard shape
+ * (C41) rather than shared across translation units: same class name is
+ * fine since both are anonymous-namespace (internal linkage), no ODR
+ * conflict. Ids are reusable once a thread exits, so a stale id left behind
+ * after the loop ends could later alias an unrelated thread; the clear is
+ * not optional cleanup, it is the correctness condition.
+ */
+class WorkerThreadIdGuard {
+  public:
+    explicit WorkerThreadIdGuard(std::atomic<std::thread::id>& slot) : slot_(slot) {
+        slot_.store(std::this_thread::get_id());
+    }
+    ~WorkerThreadIdGuard() {
+        slot_.store(std::thread::id{});
+    }
+    WorkerThreadIdGuard(const WorkerThreadIdGuard&) = delete;
+    WorkerThreadIdGuard& operator=(const WorkerThreadIdGuard&) = delete;
+
+  private:
+    std::atomic<std::thread::id>& slot_;
+};
+} // namespace
+
 void RealTimeScheduler::schedulerLoop() {
+    // C42: published first, cleared last (by the guard's destructor, on
+    // every exit path) so isOnSchedulerThread() can identify this thread.
+    WorkerThreadIdGuard idGuard(schedulerThreadId_);
+
     auto nextWakeup = std::chrono::steady_clock::now() + timerResolution_;
     cycleTimer_.start(); // Start the cycle timer
 
@@ -836,6 +910,10 @@ void TimingController::start() {
 
 void TimingController::stop() {
     scheduler_->stop();
+}
+
+bool TimingController::isOnSchedulerThread() const noexcept {
+    return scheduler_ && scheduler_->isOnSchedulerThread();
 }
 
 void TimingController::pause() {

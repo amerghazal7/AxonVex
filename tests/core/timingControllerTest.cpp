@@ -77,6 +77,37 @@ class MockProcessingUnit : public ProcessingUnit {
     }
 };
 
+// C42 regression: a task body running on the scheduler thread itself (via
+// executeTask()) that calls RealTimeScheduler::stop()/TimingController::stop()
+// used to join the scheduler thread on itself -- std::thread::join throws
+// system_error("Resource deadlock avoided"), unwinding out of the thread
+// entry lambda into std::terminate (C33/C36's exact shape; this is that
+// defect's scheduler-thread instance). stop() must defer the join instead of
+// self-joining.
+class SelfStoppingUnit : public MockProcessingUnit {
+  public:
+    SelfStoppingUnit(const std::string& name, TimingController* controller,
+                     std::shared_ptr<std::atomic<bool>> attempted,
+                     std::shared_ptr<std::atomic<bool>> finished)
+        : MockProcessingUnit(name), controller_(controller), attempted_(std::move(attempted)),
+          finished_(std::move(finished)) {}
+
+    void processSync() override {
+        if (!attempted_->exchange(true)) {
+            controller_->stop(); // must defer the join, not self-join
+            // Set only after stop() returns: the poller below must never
+            // observe "done" before the deferred-stop side effects it checks
+            // for (isRunning() == false) are actually in place.
+            finished_->store(true);
+        }
+    }
+
+  private:
+    TimingController* controller_;
+    std::shared_ptr<std::atomic<bool>> attempted_;
+    std::shared_ptr<std::atomic<bool>> finished_;
+};
+
 class TimingControllerTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -292,6 +323,32 @@ TEST_F(TimingControllerTest, SchedulerReset) {
     EXPECT_EQ(stats.totalExecutions, 0);
     EXPECT_EQ(controller->getActiveTaskIds().size(), 0);
     EXPECT_FALSE(controller->isRunning());
+}
+
+TEST_F(TimingControllerTest, StopFromTaskBodyDefersJoinInsteadOfSelfJoining) {
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    TimingController* ctrl = controller.get();
+
+    auto selfStopper = std::make_unique<SelfStoppingUnit>("SelfStopper", ctrl, attempted, finished);
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    controller->scheduleProcessingUnit(selfStopper.get(), constraints);
+    controller->start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(finished->load());
+
+    // The self-stop must not have crashed the process to get here. It left
+    // running_ false (schedulerLoop() exits on its own) but deferred the
+    // join/handle reset; a stop() from this external thread must absorb it
+    // without hanging or throwing.
+    EXPECT_FALSE(controller->isRunning());
+    controller->stop();
 }
 
 // Scheduling Policy Tests
