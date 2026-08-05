@@ -389,7 +389,11 @@ class MissionPipeline : public ProcessingUnit {
     // (which clears every AsyncInputPort's pending data, controlPort_
     // included) right after this returns — a controlPort_-based signal
     // would be wiped before processAsync() ever drained it. pendingReset_
-    // isn't a port, so resetPorts() doesn't touch it.
+    // isn't a port, so resetPorts() doesn't touch it. Also cancels a
+    // not-yet-drained startPipeline(): resetImpl() clears pendingStart_ as
+    // part of the same drain pass (see its comment) — a reset() issued
+    // after startPipeline() but before either has drained wins, and the
+    // pipeline does not self-start on the next tick.
     void reset() override {
         pendingReset_.store(true);
     }
@@ -484,7 +488,11 @@ class MissionPipeline : public ProcessingUnit {
     // never be seen with execute()/onExit() run against it but onEnter()
     // never having run. Drain order within a tick (processAsync()):
     // pendingReset_ runs before this; controlPort_ commands (abort/
-    // restart/pause/resume) run after it, not before.
+    // restart/pause/resume) run after it, not before. Because pendingReset_
+    // drains first and resetImpl() clears pendingStart_, a reset() queued
+    // before this ever drains cancels the start outright — this becomes a
+    // no-op (status_ stays Idle, startImmediate() isn't reached at all
+    // since pendingStart_ already reads false below).
     void dispatchDeferredEnter() {
         startImmediate();
     }
@@ -548,6 +556,14 @@ class MissionPipeline : public ProcessingUnit {
                 toReset.push_back(kv.second);
             status_ = PipelineStatus::Idle;
         }
+        // Reset cancels a not-yet-drained pending start: a startPipeline()
+        // issued before this reset() must not self-start one tick later.
+        // Cleared here (not in reset()) because this runs on the tick
+        // thread, in the same processAsync() pass, strictly before the
+        // pendingStart_ check that follows it — reset() itself can be
+        // called from any thread and racing that check from there would
+        // leave a window where the drain already consumed pendingStart_.
+        pendingStart_.store(false);
         if (toExit)
             toExit->onExit();
         for (auto* e : toReset)
@@ -576,7 +592,9 @@ class MissionPipeline : public ProcessingUnit {
     // start, not just a pending onEnter(): the Idle->Executing flip AND
     // onEnter() both happen at the drain (dispatchDeferredEnter() ->
     // startImmediate()), never before it. Drained in processAsync(), on
-    // the scheduler thread only.
+    // the scheduler thread only. A reset() that drains first
+    // (resetImpl()) clears pendingStart_ before it would otherwise drain,
+    // so reset always cancels a not-yet-drained start.
     std::atomic<bool> pendingReset_{false};
     std::atomic<bool> pendingStart_{false};
 };
