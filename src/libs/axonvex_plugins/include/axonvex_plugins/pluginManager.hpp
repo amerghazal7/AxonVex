@@ -179,8 +179,11 @@ class PluginManager {
     // holds a "filename: reason" summary joined with "; " for every file
     // that failed to load in THIS call (empty if all succeeded or none
     // were found), regardless of what any individual loadPlugin() call
-    // left behind.
+    // left behind. Cleared at entry so the no-loader/opendir-fail/empty-
+    // directory early-return paths never leak a stale error from a
+    // previous call.
     bool loadPluginsFromDirectory(const std::string& directory) {
+        lastError_.clear();
 #if defined(AXONVEX_PLATFORM_LINUX)
         if (!loader_)
             return false;
