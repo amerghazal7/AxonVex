@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Path::setDefaultDir()` and `Path::resetDefaultDirs()` now call `ensureInitialized()` first, preventing initialization-order bugs where customizations made before the first Path object is constructed would be clobbered by the magic-static init.
 - C2: a `SafetyManager` emergency stop now actually halts the system — `setSafetyHook` registers an emergency callback that performs an emergency shutdown. Teardown is safe from any thread: hook dispatch synchronizes with clearing (so destroying the system with a live hook cannot dangle), `emergencyShutdown`/`stop` serialize thread-handle teardown via a shutdown mutex, and self-join guards let the e-stop fire from a system thread.
 - C25: `SystemEvent` string leaks eliminated (LSan-clean) — events are dropped once shutdown begins, the queue is drained back to the pool after the event thread joins, and `initialize()` drains before its component rebuild replaces the event pool (the pool destructor does not destruct live blocks).
 - C3: `MemoryPool`'s lock-free free list is no longer ABA-vulnerable — the head is a tagged `{tag:32, index:32}` 64-bit atomic and every pop/push increments the tag, so a stale CAS can never install a stale `next` (the double-handout mechanism).

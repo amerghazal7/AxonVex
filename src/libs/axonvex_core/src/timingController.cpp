@@ -47,8 +47,10 @@ RealTimeScheduler::~RealTimeScheduler() {
         // violation documented on ~AxonVexSystem (a destructor cannot
         // refuse), inherited here through TimingController's owning
         // unique_ptr. Joining would still be a self-join (C33/C36 shape,
-        // std::terminate); detaching is the least-bad option, matching
-        // SafetyManager::~SafetyManager()'s precedent.
+        // std::terminate); detaching avoids the crash, NOT the underlying
+        // use-after-free (a detached schedulerLoop can keep executing after
+        // we free the members it uses). The self-destruction scenario remains
+        // documented UB per the class @warning.
         schedulerThread_->detach();
     }
 }
