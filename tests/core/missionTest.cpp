@@ -84,6 +84,10 @@ TEST(MissionPipelineTest, SequentialPipeline) {
     EXPECT_EQ(pipeline.status(), PipelineStatus::Idle);
 
     pipeline.startPipeline();
+    // Batch-6 review, item 1: the Idle->Executing flip is deferred to the
+    // drain alongside onEnter() — status() still reads Idle right after a
+    // successful startPipeline() until processAsync() runs.
+    pipeline.processAsync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Executing);
     EXPECT_EQ(pipeline.currentElementName(), "A");
 
@@ -117,6 +121,7 @@ TEST(MissionPipelineTest, ConditionalTransitionDefault) {
     pipeline.addConditionalTransition("A", "C", TransitionResult::Option1);
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
 
     pipeline.processSync();
     EXPECT_EQ(pipeline.currentElementName(), "B");
@@ -134,6 +139,7 @@ TEST(MissionPipelineTest, ConditionalTransitionOption1) {
     pipeline.addConditionalTransition("A", "C", TransitionResult::Option1);
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
 
     pipeline.processSync();
     EXPECT_EQ(pipeline.currentElementName(), "C");
@@ -153,6 +159,7 @@ TEST(MissionPipelineTest, AwaitingThenAdvance) {
     pipeline.addSequentialTransition("Wait", "Done");
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
 
     pipeline.processSync();
     EXPECT_EQ(pipeline.currentElementName(), "Wait");
@@ -178,6 +185,7 @@ TEST(MissionPipelineTest, AbortMidExecution) {
     pipeline.addElement(&wait);
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
 
     pipeline.processSync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Executing);
@@ -203,6 +211,7 @@ TEST(MissionPipelineTest, RestartResetsAndRestartsFromBeginning) {
     pipeline.addSequentialTransition("A", "B");
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
 
     pipeline.processSync();
     EXPECT_EQ(pipeline.currentElementName(), "B");
@@ -236,6 +245,7 @@ TEST(MissionPipelineTest, PauseAndResume) {
     pipeline.addSequentialTransition("Wait", "Done");
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
 
     pipeline.processSync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Executing);
@@ -270,6 +280,7 @@ TEST(MissionPipelineTest, FailedElementTransitionsPipelineToFailed) {
     pipeline.addElement(&fail);
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
 
     pipeline.processSync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Failed);
@@ -315,6 +326,7 @@ TEST(MissionPipelineTest, ControlPortAbort) {
     pipeline.addElement(&wait);
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
     pipeline.processSync();
 
     pipeline.getControlPort()->update(PipelineControl::ABORT);
@@ -331,6 +343,7 @@ TEST(MissionPipelineTest, ControlPortRestart) {
     pipeline.addSequentialTransition("A", "B");
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
     pipeline.processSync();
     EXPECT_EQ(pipeline.currentElementName(), "B");
 
@@ -368,6 +381,7 @@ TEST(MissionPipelineTest, StatusPortWritesCurrentStatus) {
     pipeline.addElement(&a);
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
 
     pipeline.processSync();
     EXPECT_EQ(pipeline.status(), PipelineStatus::Finished);
@@ -386,6 +400,7 @@ TEST(MissionPipelineTest, FirstAddedElementIsDefaultStart) {
     pipeline.addSequentialTransition("First", "Second");
     pipeline.initialize();
     pipeline.startPipeline();
+    pipeline.processAsync(); // drain: Idle->Executing + onEnter
 
     EXPECT_EQ(pipeline.currentElementName(), "First");
 }
@@ -516,6 +531,99 @@ TEST(MissionPipelineTest, DirectAbortDoesNotRaceConcurrentTick) {
     ticker.join();
     controller.join();
     SUCCEED(); // TSan is the real assertion.
+}
+
+// =========================================================================
+// Batch-6 review, item 1: startPipeline()'s pairing wobble.
+//
+// Pre-fix, startPipeline() flipped status_/currentElement_ to Executing
+// synchronously but deferred onEnter() to the next drain (processAsync()).
+// Driving processSync() directly in the gap between those two — before any
+// processAsync() call ever ran — let an element receive execute() (and, via
+// a queued reset(), even onExit()) without onEnter() ever having run: a
+// pairing violation. Fix: the Idle->Executing flip is deferred into the
+// drain too, alongside onEnter(), both performed together by
+// startImmediate() (see dispatchDeferredEnter()) — so status() reads Idle
+// and processSync() is a no-op until a processAsync() call performs the
+// flip and onEnter() as one atomic (on-the-tick-thread) step.
+// =========================================================================
+
+class OrderTrackingElement : public MissionElement {
+  public:
+    explicit OrderTrackingElement(const std::string& name) : MissionElement(name) {}
+
+    TransitionResult execute() override {
+        if (enterCount_ == 0) executeBeforeEnter_ = true;
+        execCount_++;
+        return TransitionResult::Default;
+    }
+    void onEnter() override { enterCount_++; }
+    void onExit() override { exitCount_++; }
+
+    int execCount() const { return execCount_; }
+    int enterCount() const { return enterCount_; }
+    int exitCount() const { return exitCount_; }
+    bool executeRanBeforeEnter() const { return executeBeforeEnter_; }
+
+  private:
+    int execCount_{0};
+    int enterCount_{0};
+    int exitCount_{0};
+    bool executeBeforeEnter_{false};
+};
+
+TEST(MissionPipelineTest, StartPipelineDefersFlipSoExecuteNeverPrecedesEnter) {
+    OrderTrackingElement a("A");
+
+    MissionPipeline pipeline("OrderPipeline");
+    pipeline.addElement(&a);
+    pipeline.initialize();
+
+    pipeline.startPipeline();
+
+    // The old gap, reproduced deterministically: drive processSync()
+    // directly with no processAsync() drain in between. Pre-fix, this is
+    // exactly where status_/currentElement_ had already flipped
+    // synchronously inside startPipeline() above, so execute() ran here
+    // with onEnter() never having been called (RED: execCount() == 1,
+    // enterCount() == 0, executeRanBeforeEnter() == true).
+    pipeline.processSync();
+    EXPECT_EQ(pipeline.status(), PipelineStatus::Idle)
+        << "the Idle->Executing flip must not happen until the drain";
+    EXPECT_EQ(a.execCount(), 0) << "execute() ran before startPipeline() was ever drained";
+    EXPECT_EQ(a.enterCount(), 0);
+    EXPECT_FALSE(a.executeRanBeforeEnter());
+
+    // Drain: the flip and onEnter() happen together, on the tick thread.
+    pipeline.processAsync();
+    EXPECT_EQ(pipeline.status(), PipelineStatus::Executing);
+    EXPECT_EQ(a.enterCount(), 1);
+    EXPECT_EQ(a.execCount(), 0);
+
+    pipeline.processSync();
+    EXPECT_EQ(a.execCount(), 1);
+    EXPECT_EQ(a.enterCount(), 1) << "onEnter() must run exactly once";
+    EXPECT_FALSE(a.executeRanBeforeEnter());
+}
+
+// Same gap, from the angle the finding also called out: a reset() queued
+// before the pending start is ever drained must not exit an element that
+// was never entered. pendingReset_ drains before the pending start
+// (processAsync()'s documented order), so resetImpl() must see
+// currentElement_ == nullptr here — the flip hasn't happened yet.
+TEST(MissionPipelineTest, ResetQueuedBeforeDrainDoesNotExitNeverEnteredElement) {
+    OrderTrackingElement a("A");
+
+    MissionPipeline pipeline("ResetGapPipeline");
+    pipeline.addElement(&a);
+    pipeline.initialize();
+
+    pipeline.startPipeline();
+    pipeline.reset(); // queued: drains before the pending start in the same tick
+
+    pipeline.processAsync();
+    EXPECT_EQ(a.exitCount(), 0) << "onExit() ran on an element that was never entered";
+    EXPECT_EQ(a.enterCount(), 1) << "the pending start still runs once reset() has drained";
 }
 
 // C22: transitions referencing unknown elements were only discovered as a

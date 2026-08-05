@@ -49,6 +49,11 @@ constexpr int RESUME  = 4;
  * Ports:
  *   AsyncInputPort<int>  port 0 ("control") — send PipelineControl commands
  *   OutputPort<int>      port 0 ("status")  — current PipelineStatus each tick
+ *
+ * A command issued while the pipeline is not being ticked (no processAsync()
+ * calls arriving) is held, not dropped: the underlying slot is last-write-
+ * wins, and the held command takes effect only once ticking resumes and a
+ * processAsync() call drains it — never silently, and never without a tick.
  */
 class MissionPipeline : public ProcessingUnit {
   public:
@@ -146,20 +151,24 @@ class MissionPipeline : public ProcessingUnit {
     // otherwise try to join/destroy the thread they're running on.
 
     /**
-     * @brief Validate the graph and (if Idle) begin execution.
+     * @brief Validate the graph and (if Idle) request that execution begin.
      *
-     * The graph validation and the Idle->Executing bookkeeping happen
-     * synchronously on the calling thread and are fail-fast: a dangling
-     * transition reference sets status()==Failed and getLastError()
-     * immediately, no tick required (there is no MissionElement hook to
-     * race in the failure path). If validation succeeds, the start
-     * element's onEnter() is deferred like every other hook above — it
-     * runs on the scheduler thread at the next tick.
+     * Graph validation happens synchronously on the calling thread and is
+     * fail-fast: a dangling transition reference sets status()==Failed and
+     * getLastError() immediately, no tick required (there is no
+     * MissionElement hook to race in the failure path). On success, the
+     * Idle->Executing bookkeeping itself is deferred to the next tick's
+     * drain, together with the start element's onEnter() — batch-6 review
+     * found that flipping status_/currentElement_ here while onEnter() ran
+     * later let a processSync() (or a queued reset()) land in the gap and
+     * call execute()/onExit() on an element that had never been entered.
+     * Deferring both together means status() still reads Idle immediately
+     * after a successful call — it only reads Executing once a
+     * processAsync() has actually drained the start.
      */
     void startPipeline() {
         std::string firstError;
         bool validationFailed = false;
-        bool started = false;
         {
             std::lock_guard<std::mutex> lock(stateMutex_);
             if (status_ != PipelineStatus::Idle)
@@ -167,18 +176,13 @@ class MissionPipeline : public ProcessingUnit {
             if (!validateGraph(firstError)) {
                 status_ = PipelineStatus::Failed;
                 validationFailed = true;
-            } else {
-                currentElement_ = elements_.at(startElementName_);
-                status_ = PipelineStatus::Executing;
-                started = true;
             }
         }
         if (validationFailed) {
             setError(firstError);
             return;
         }
-        if (started)
-            pendingStartEnter_.store(true);
+        pendingStart_.store(true);
     }
 
     // Takes effect at the next tick; onExit() (if any) runs on the
@@ -211,6 +215,10 @@ class MissionPipeline : public ProcessingUnit {
     // State
     // -----------------------------------------------------------------
 
+    // Reflects the most recently *drained* command, not the most recently
+    // issued one (see the "Execution control" comment above): right after
+    // a successful startPipeline(), this still reads Idle until the next
+    // tick's processAsync() performs the Idle->Executing flip.
     PipelineStatus status() const {
         std::lock_guard<std::mutex> lock(stateMutex_);
         return status_;
@@ -349,7 +357,7 @@ class MissionPipeline : public ProcessingUnit {
         if (pendingReset_.exchange(false)) {
             resetImpl();
         }
-        if (pendingStartEnter_.exchange(false)) {
+        if (pendingStart_.exchange(false)) {
             dispatchDeferredEnter();
         }
         if (!controlPort_->wasUpdated())
@@ -433,15 +441,18 @@ class MissionPipeline : public ProcessingUnit {
     // -----------------------------------------------------------------
     // Deferred-command implementations. Precondition for every method
     // below: called only from the scheduler thread, from processAsync()'s
-    // drain (or, for startImmediate(), from restartImpl() which is itself
-    // only ever reached the same way). None of them may be called
-    // directly from a public entry point — that's exactly the bug this
-    // fix closes.
+    // drain (or, for startImmediate(), from dispatchDeferredEnter() or
+    // restartImpl(), both themselves only ever reached the same way).
+    // None of them may be called directly from a public entry point —
+    // that's exactly the bug this fix closes.
     // -----------------------------------------------------------------
 
-    // Bookkeeping + onEnter() dispatch, both synchronous. Safe to run
-    // inline (no further deferral) because the caller is already
-    // guaranteed to be the scheduler thread.
+    // Bookkeeping + onEnter() dispatch, both synchronous — the two happen
+    // together so an element can never be observed with one but not the
+    // other. Safe to run inline (no further deferral) because the caller
+    // is already guaranteed to be the scheduler thread. Shared by
+    // dispatchDeferredEnter() (startPipeline()'s deferred start) and
+    // restartImpl() (re-start after reset()).
     void startImmediate() {
         std::string firstError;
         bool validationFailed = false;
@@ -467,20 +478,15 @@ class MissionPipeline : public ProcessingUnit {
             toEnter->onEnter();
     }
 
-    // Drains startPipeline()'s deferred onEnter(). Re-reads currentElement_
-    // fresh (rather than trusting a snapshot taken back in startPipeline())
-    // since nothing guarantees it's still current by drain time (a queued
-    // abort()/restart() dispatched first in the same tick can already have
-    // moved it — see processAsync()'s drain order).
+    // Drains startPipeline()'s deferred start: performs the Idle->Executing
+    // flip and onEnter() together, via startImmediate() (the same routine
+    // restartImpl() uses to re-start after a reset), so an element can
+    // never be seen with execute()/onExit() run against it but onEnter()
+    // never having run. Drain order within a tick (processAsync()):
+    // pendingReset_ runs before this; controlPort_ commands (abort/
+    // restart/pause/resume) run after it, not before.
     void dispatchDeferredEnter() {
-        MissionElement* toEnter = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(stateMutex_);
-            if (status_ == PipelineStatus::Executing)
-                toEnter = currentElement_;
-        }
-        if (toEnter)
-            toEnter->onEnter();
+        startImmediate();
     }
 
     void abortImpl() {
@@ -566,10 +572,13 @@ class MissionPipeline : public ProcessingUnit {
 
     // Single-slot deferred commands that can't travel over controlPort_
     // (see reset()'s comment for why) or that predate it (startPipeline()
-    // has no wire command of its own). Drained in processAsync(), on the
-    // scheduler thread only.
+    // has no wire command of its own). pendingStart_ is a full pending
+    // start, not just a pending onEnter(): the Idle->Executing flip AND
+    // onEnter() both happen at the drain (dispatchDeferredEnter() ->
+    // startImmediate()), never before it. Drained in processAsync(), on
+    // the scheduler thread only.
     std::atomic<bool> pendingReset_{false};
-    std::atomic<bool> pendingStartEnter_{false};
+    std::atomic<bool> pendingStart_{false};
 };
 
 } // namespace axonvex::core
