@@ -94,11 +94,22 @@ class Path {
 
   private:
     axonvex_fs::path path_;
+    // C15(d): default_dirs_ is NOT immutable after init — setDefaultDir()
+    // and resetDefaultDirs() both mutate it post-init, under static_mutex_.
+    // Every reader (getDefaultDir, isInWhitelist) must take that same lock.
     static std::unordered_map<DefaultDir, axonvex_fs::path> default_dirs_;
     static SecurityLevel default_security_level_;
-    static bool initialized_;
 
     // Thread-safe initialization
+    // C15(a): the three ctors used to double-check a plain bool
+    // (`initialized_`) outside static_mutex_ before deciding whether to
+    // lock and run initializeDefaultDirs() — a racing thread could observe
+    // the bool as true while default_dirs_'s writes were not yet visible
+    // to it (classic broken DCLP; the bool has no happens-before edge to
+    // the writes on its own). ensureInitialized() replaces that with a
+    // C++11 magic static, which gives exactly-once execution with the
+    // required synchronization guarantee.
+    static void ensureInitialized();
     static void initializeDefaultDirs();
     static axonvex_fs::path getHomeDirectory();
     static axonvex_fs::path getSystemAppDataDirectory();

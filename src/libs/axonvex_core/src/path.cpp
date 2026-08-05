@@ -52,9 +52,7 @@ axonvex_fs::path pathRelativeCompat(const axonvex_fs::path& p, const axonvex_fs:
             result /= *it1;
         }
         return result;
-    } catch (...) {
-        return p;
-    }
+    } catch (...) { return p; }
 }
 
 } // namespace
@@ -64,7 +62,6 @@ namespace axonvex::core {
 // Static member definitions
 std::unordered_map<Path::DefaultDir, axonvex_fs::path> Path::default_dirs_;
 Path::SecurityLevel Path::default_security_level_ = Path::SecurityLevel::BASIC;
-bool Path::initialized_ = false;
 std::mutex Path::static_mutex_;
 std::unordered_map<std::string, std::function<bool(const Path&)>> Path::custom_validators_;
 
@@ -73,38 +70,39 @@ std::unordered_map<std::string, std::function<bool(const Path&)>> Path::custom_v
 //==============================================================================
 
 Path::Path(const std::string& path_str) : path_(path_str) {
-    if (!initialized_) {
-        std::lock_guard<std::mutex> lock(static_mutex_);
-        if (!initialized_) {
-            initializeDefaultDirs();
-            initialized_ = true;
-        }
-    }
+    ensureInitialized();
 }
 
 Path::Path(const char* path_str) : path_(path_str) {
-    if (!initialized_) {
-        std::lock_guard<std::mutex> lock(static_mutex_);
-        if (!initialized_) {
-            initializeDefaultDirs();
-            initialized_ = true;
-        }
-    }
+    ensureInitialized();
 }
 
 Path::Path(const axonvex_fs::path& fs_path) : path_(fs_path) {
-    if (!initialized_) {
-        std::lock_guard<std::mutex> lock(static_mutex_);
-        if (!initialized_) {
-            initializeDefaultDirs();
-            initialized_ = true;
-        }
-    }
+    ensureInitialized();
 }
 
 //==============================================================================
 // Static Initialization
 //==============================================================================
+
+void Path::ensureInitialized() {
+    // C15(a): C++11 magic static — the standard guarantees exactly-once
+    // execution of the lambda body and that every thread's return from
+    // this declaration synchronizes-with that execution, so a caller that
+    // returns from ensureInitialized() is guaranteed to see the writes
+    // initializeDefaultDirs() made, without needing initialized_'s broken
+    // outside-the-lock bool check. The lambda still takes static_mutex_
+    // around the write: default_dirs_ also has post-init writers
+    // (setDefaultDir, resetDefaultDirs, both under static_mutex_), and
+    // this is the only writer of the three that would otherwise run
+    // without that lock.
+    static const bool once = []() {
+        std::lock_guard<std::mutex> lock(static_mutex_);
+        initializeDefaultDirs();
+        return true;
+    }();
+    (void)once;
+}
 
 void Path::initializeDefaultDirs() {
     try {
@@ -235,12 +233,9 @@ Path Path::getDefaultTempDir() {
 }
 
 Path Path::getDefaultDir(DefaultDir dir_type) {
-    std::lock_guard<std::mutex> lock(static_mutex_);
-    if (!initialized_) {
-        initializeDefaultDirs();
-        initialized_ = true;
-    }
+    ensureInitialized();
 
+    std::lock_guard<std::mutex> lock(static_mutex_);
     auto it = default_dirs_.find(dir_type);
     if (it != default_dirs_.end()) {
         return Path(it->second);
@@ -258,9 +253,7 @@ void Path::setDefaultDir(DefaultDir dir_type, const Path& custom_path) {
 void Path::resetDefaultDirs() {
     std::lock_guard<std::mutex> lock(static_mutex_);
     default_dirs_.clear();
-    initialized_ = false;
     initializeDefaultDirs();
-    initialized_ = true;
 }
 
 //==============================================================================
@@ -591,8 +584,8 @@ bool Path::copyTo(const Path& destination, bool overwrite) const {
         destination.parent().createDirectories();
 
         axonvex_fs::copy_file(path_, destination.path_,
-                                   overwrite ? axonvex_fs::copy_options::overwrite_existing
-                                             : axonvex_fs::copy_options::none);
+                              overwrite ? axonvex_fs::copy_options::overwrite_existing
+                                        : axonvex_fs::copy_options::none);
         return true;
     } catch (const std::exception&) { return false; }
 }
@@ -744,8 +737,10 @@ Path Path::createConfigPath(const std::string& config_name, const std::string& s
     }
 
     // Ensure .json extension
+    // C15(b): filename.length() - 5 underflowed size_t for names shorter
+    // than the extension (e.g. "a"), so substr() threw std::out_of_range.
     std::string filename = config_name;
-    if (filename.substr(filename.length() - 5) != ".json") {
+    if (filename.length() < 5 || filename.substr(filename.length() - 5) != ".json") {
         filename += ".json";
     }
 
@@ -760,8 +755,9 @@ Path Path::createLogPath(const std::string& log_name, const std::string& subdir)
     }
 
     // Ensure .log extension
+    // C15(b): same underflow as createConfigPath, with the 4-char ".log".
     std::string filename = log_name;
-    if (filename.substr(filename.length() - 4) != ".log") {
+    if (filename.length() < 4 || filename.substr(filename.length() - 4) != ".log") {
         filename += ".log";
     }
 
@@ -791,14 +787,27 @@ Path Path::createTempPath(const std::string& prefix, const std::string& extensio
 //==============================================================================
 
 bool Path::hasDirectoryTraversal() const {
-    std::string path_str = toString();
-
-    // Check for common directory traversal patterns
-    if (path_str.find("..") != std::string::npos || path_str.find("./") != std::string::npos ||
-        path_str.find(".\\") != std::string::npos) {
-        return true;
+    // C15(c): component-based check, not substring. The old
+    // find("..")/find("./")/find(".\\") scan flagged legitimate names that
+    // merely contain those characters ("my..file.json", "./config/x.json")
+    // while being no harder to construct around. Traversal iff a path
+    // component is exactly "..". Split manually on both '/' and '\\'
+    // (rather than relying on axonvex_fs::path's own iteration, which is
+    // native-separator-only and would miss a Windows-separator escape
+    // attempt on a POSIX build) so this is a trust boundary that holds
+    // regardless of platform or which separator the caller used.
+    const std::string path_str = toString();
+    std::string component;
+    for (std::size_t i = 0; i <= path_str.size(); ++i) {
+        if (i == path_str.size() || path_str[i] == '/' || path_str[i] == '\\') {
+            if (component == "..") {
+                return true;
+            }
+            component.clear();
+        } else {
+            component += path_str[i];
+        }
     }
-
     return false;
 }
 
@@ -806,6 +815,12 @@ bool Path::isInWhitelist() const {
     // For strict security, check if path is within allowed directories
     try {
         auto canonical_path = canonical();
+
+        // C15(d): default_dirs_ has post-init writers (setDefaultDir(),
+        // resetDefaultDirs()), both under static_mutex_ — grep confirms
+        // they are the only ones — so this read must take the same lock;
+        // iterating unlocked raced their mutation of the map.
+        std::lock_guard<std::mutex> lock(static_mutex_);
 
         // Check if path is within any of the default directories
         for (const auto& kv : default_dirs_) {
