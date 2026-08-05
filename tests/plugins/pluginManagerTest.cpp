@@ -101,4 +101,22 @@ TEST(PluginManagerTest, ScanAggregatesFailureReasonsRegardlessOfOrder) {
     ::remove((dir + "/b_bad.so").c_str());
     ::rmdir(dir.c_str());
 }
+
+// Finding 4 (final review): the no-loader/opendir-fail/no-scan-support
+// `return false` paths carried an empty lastError_ — a caller had no way
+// to tell "nothing to load" apart from "couldn't even look". Each path now
+// sets a reason before returning.
+TEST(PluginManagerTest, OpendirFailureSetsLastError) {
+    std::string dir = "pm_scan_nonexistent_" + std::to_string(::getpid());
+    PluginManager pm(PluginManager::makePosixLoader());
+    EXPECT_FALSE(pm.loadPluginsFromDirectory(dir));
+    EXPECT_FALSE(pm.lastError().empty());
+    EXPECT_NE(pm.lastError().find("opendir"), std::string::npos) << pm.lastError();
+}
+
+TEST(PluginManagerTest, NoLoaderConfiguredSetsLastError) {
+    PluginManager pm; // default-constructed: no loader
+    EXPECT_FALSE(pm.loadPluginsFromDirectory("."));
+    EXPECT_EQ(pm.lastError(), "no loader configured");
+}
 #endif

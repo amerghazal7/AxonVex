@@ -548,6 +548,15 @@ TEST(MissionPipelineTest, DirectAbortDoesNotRaceConcurrentTick) {
 // flip and onEnter() as one atomic (on-the-tick-thread) step.
 // =========================================================================
 
+// Deliberately has no reset() override (unlike ImmediateElement, whose
+// reset() zeroes its counters) — this is load-bearing, not an oversight.
+// resetImpl() calls e->reset(), and
+// ResetQueuedBeforeDrainDoesNotExitNeverEnteredElement's assertions
+// (enterCount() == 0 / exitCount() == 0) are only non-vacuous because the
+// counters survive the reset() call that test issues; deduplicating this
+// class against ImmediateElement (adding a counter-clearing reset()) would
+// gut that test back into passing trivially regardless of the pairing bug
+// it's guarding against.
 class OrderTrackingElement : public MissionElement {
   public:
     explicit OrderTrackingElement(const std::string& name) : MissionElement(name) {}

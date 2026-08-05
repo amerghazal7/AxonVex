@@ -29,17 +29,15 @@ namespace axonvex::ros2 {
  *   AxonVex domain types — the caller never sees ROS message types
  *
  * Type casters for the four std_msgs primitives (float/double/bool/string)
- * are pre-registered when the plugin was built with std_msgs available
- * (AXONVEX_ROS2_HAS_STD_MSGS) — see registerDefaultCasters(). All other
- * types are registered via registerTypeCaster() before system.initialize().
+ * are available via registerDefaultCasters() when the plugin was built
+ * with std_msgs available (AXONVEX_ROS2_HAS_STD_MSGS) — opt-in: the
+ * constructor does not call it for you, so call it yourself before
+ * createSubscriber()/createPublisher() if you want them. All other types
+ * are registered via registerTypeCaster() before system.initialize().
  */
 class ROS2Adapter final : public axonvex::adapters::AdapterBase {
   public:
-    explicit ROS2Adapter(rclcpp::Node::SharedPtr node) : node_(std::move(node)) {
-#ifdef AXONVEX_ROS2_HAS_STD_MSGS
-        registerDefaultCasters();
-#endif
-    }
+    explicit ROS2Adapter(rclcpp::Node::SharedPtr node) : node_(std::move(node)) {}
 
     // ----- AdapterInterface identity -----
 
@@ -75,6 +73,27 @@ class ROS2Adapter final : public axonvex::adapters::AdapterBase {
                             std::function<RosMsg(const InternalType&)> toRos) {
         casters_.registerCaster<InternalType, RosMsg>(std::move(fromRos), std::move(toRos));
     }
+
+#ifdef AXONVEX_ROS2_HAS_STD_MSGS
+    /**
+     * @brief Opt-in: register the four std_msgs primitive casters
+     *   (float<->Float32, double<->Float64, bool<->Bool,
+     *   std::string<->String).
+     *
+     * Not called automatically — the constructor never calls this. Call
+     * it yourself, before wiring any unit against one of these pairs.
+     * Only exists when the plugin was built with std_msgs found (see
+     * axonvex_ros2/CMakeLists.txt); without std_msgs, this method does
+     * not exist at all rather than compiling to an empty body.
+     *
+     * @throws std::logic_error if you've already registered a caster for
+     *   one of these four pairs yourself (registerTypeCaster()) or called
+     *   this twice — see TypeCasterRegistry::registerCaster's doc.
+     */
+    void registerDefaultCasters() {
+        axonvex::ros2::registerDefaultCasters(casters_);
+    }
+#endif
 
     // ----- Typed unit creation -----
 
@@ -122,10 +141,12 @@ class ROS2Adapter final : public axonvex::adapters::AdapterBase {
     /**
      * @brief Create a PublisherUnit<T> wired to an rclcpp publisher.
      *
-     * @return Owning pointer — the publish callback only captures the
-     *         rclcpp publisher handle (kept alive by the shared_ptr), not
-     *         the unit itself, so unlike createSubscriber() there is no
-     *         lifetime coupling back to this adapter.
+     * @return Owning pointer. The publish callback captures the raw
+     *         TypeCaster* looked up from this adapter's registry (not
+     *         just the rclcpp publisher handle) — so, like
+     *         createSubscriber(), the returned unit must not outlive
+     *         this ROS2Adapter: register it with the system for the
+     *         adapter's lifetime.
      *
      * @warning The publish callback holds the raw TypeCaster* this looked
      *   up — same registration-before-wiring contract as
@@ -191,14 +212,42 @@ class ROS2Adapter final : public axonvex::adapters::AdapterBase {
 
     /**
      * @brief Create a ClientUnit<T> wired to an rclcpp service client.
+     *
+     * @param requestMapper  Required. Converts the outgoing T into the
+     *   RosSrv::Request actually sent over the wire — without it the
+     *   request payload would be silently discarded (the original
+     *   defect: a default-constructed Request went out regardless of
+     *   what the pipeline pushed in). Mirrors createServer()'s
+     *   requestMapper. Must not be null.
+     *
+     * Completion honesty: axonvex::core::ClientUnit<T>::processAsync()
+     * (see interfaceUnits.hpp) calls this unit's request callback and
+     * then unconditionally writes true to its "finished" async output —
+     * that happens as soon as async_send_request() is issued, not when a
+     * response arrives. The future async_send_request() returns is not
+     * awaited here, so "finished" means only "the mapped request was
+     * handed to rclcpp", never "the service replied" or even "the send
+     * succeeded". Making it mean more than that would require
+     * ClientUnit itself to grow a response/error port to carry the
+     * future's outcome back through — out of this adapter's scope; the
+     * pre-fix behavior was identically unconditional, only silent about
+     * the payload on top of it.
+     *
+     * @throws std::invalid_argument if requestMapper is null.
      */
     template <typename T, typename RosSrv>
-    std::unique_ptr<axonvex::core::ClientUnit<T>> createClient(const std::string& service) {
+    std::unique_ptr<axonvex::core::ClientUnit<T>> createClient(
+        const std::string& service,
+        std::function<typename RosSrv::Request(const T&)> requestMapper) {
+        if (!requestMapper) {
+            throw std::invalid_argument(
+                "ROS2Adapter::createClient: requestMapper must not be null for service " + service);
+        }
         auto unit = std::make_unique<axonvex::core::ClientUnit<T>>(service);
         auto client = node_->create_client<RosSrv>(service);
 
-        unit->setRequestCallback([client](const T& /*data*/) {
-            auto req = std::make_shared<typename RosSrv::Request>();
+        unit->setRequestCallback([client, requestMapper](const T& data) {
+            auto req = std::make_shared<typename RosSrv::Request>(requestMapper(data));
             client->async_send_request(req);
         });
 
@@ -220,17 +269,6 @@ class ROS2Adapter final : public axonvex::adapters::AdapterBase {
     }
 
   private:
-#ifdef AXONVEX_ROS2_HAS_STD_MSGS
-    // Only exists when the plugin was built with std_msgs found — see
-    // axonvex_ros2/CMakeLists.txt. Without std_msgs there is nothing to
-    // register, so the method itself does not exist rather than compiling
-    // to an empty body that claims to have registered casters it didn't
-    // (the original C20 defect).
-    void registerDefaultCasters() {
-        axonvex::ros2::registerDefaultCasters(casters_);
-    }
-#endif
-
     rclcpp::Node::SharedPtr node_;
     TypeCasterRegistry casters_;
 
