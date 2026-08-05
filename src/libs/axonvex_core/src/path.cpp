@@ -246,11 +246,13 @@ Path Path::getDefaultDir(DefaultDir dir_type) {
 }
 
 void Path::setDefaultDir(DefaultDir dir_type, const Path& custom_path) {
+    ensureInitialized();
     std::lock_guard<std::mutex> lock(static_mutex_);
     default_dirs_[dir_type] = custom_path.path_;
 }
 
 void Path::resetDefaultDirs() {
+    ensureInitialized();
     std::lock_guard<std::mutex> lock(static_mutex_);
     default_dirs_.clear();
     initializeDefaultDirs();
@@ -816,6 +818,10 @@ bool Path::isInWhitelist() const {
     try {
         auto canonical_path = canonical();
 
+        // ponytail: canonical() falls back to absolute() when the target doesn't
+        // exist yet (common case for createConfigPath/createLogPath outputs), so
+        // at STRICT level the prefix check is not symlink-resolved for to-be-created
+        // files — a symlinked component inside a whitelisted dir can escape it.
         // C15(d): default_dirs_ has post-init writers (setDefaultDir(),
         // resetDefaultDirs()), both under static_mutex_ — grep confirms
         // they are the only ones — so this read must take the same lock;

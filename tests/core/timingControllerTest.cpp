@@ -387,7 +387,11 @@ TEST_F(TimingControllerTest, StartAfterDeferredSelfStopReclaimsHandleAndRunsAgai
 
     // The scheduler must actually be running again, not just report it.
     uint32_t countAfterRestart = unit2->getProcessCallCount();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto pollDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (unit2->getProcessCallCount() <= countAfterRestart &&
+           std::chrono::steady_clock::now() < pollDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     EXPECT_GT(unit2->getProcessCallCount(), countAfterRestart)
         << "scheduler must actually execute tasks again after the restart";
 
