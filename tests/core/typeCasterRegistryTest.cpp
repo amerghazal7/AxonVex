@@ -74,3 +74,45 @@ TEST(TypeCasterRegistryTest, UnregisteredPairReturnsNull) {
     EXPECT_EQ((registry.getCaster<float, FakeMsgB>()), nullptr);
     EXPECT_EQ((registry.getCaster<int, FakeMsgA>()), nullptr);
 }
+
+// Review finding 1: registerCaster overwriting an existing pair would free
+// the old TypeCaster while createSubscriber/createPublisher's rclcpp
+// callbacks still hold its raw address — a dangling pointer / use-after-free
+// once a message arrives. Refused rather than allowed: re-registration
+// throws instead of silently invalidating any unit already wired against
+// the old caster.
+TEST(TypeCasterRegistryTest, ReregisteringAnExistingPairThrows) {
+    TypeCasterRegistry registry;
+
+    registry.registerCaster<float, FakeMsgA>([](const FakeMsgA& msg) { return msg.value; },
+                                             [](const float& v) {
+                                                 FakeMsgA msg;
+                                                 msg.value = v;
+                                                 return msg;
+                                             });
+
+    EXPECT_THROW(
+        (registry.registerCaster<float, FakeMsgA>([](const FakeMsgA& msg) { return msg.value; },
+                                                  [](const float& v) {
+                                                      FakeMsgA msg;
+                                                      msg.value = v;
+                                                      return msg;
+                                                  })),
+        std::logic_error);
+
+    // The original caster is untouched by the refused attempt.
+    const auto* caster = registry.getCaster<float, FakeMsgA>();
+    ASSERT_NE(caster, nullptr);
+    FakeMsgA msg;
+    msg.value = 5.0F;
+    EXPECT_FLOAT_EQ(caster->fromRos(msg), 5.0F);
+
+    // A different pair is unaffected — refusal is per-key, not global.
+    EXPECT_NO_THROW(
+        (registry.registerCaster<float, FakeMsgB>([](const FakeMsgB& msg) { return msg.value; },
+                                                  [](const float& v) {
+                                                      FakeMsgB msg;
+                                                      msg.value = v;
+                                                      return msg;
+                                                  })));
+}

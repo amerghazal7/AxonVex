@@ -56,6 +56,20 @@ class ROS2Adapter final : public axonvex::adapters::AdapterBase {
 
     // ----- Type caster registration -----
 
+    /**
+     * @brief Register a caster for an (InternalType, RosMsg) pair.
+     *
+     * Lifetime contract: register every caster before calling
+     * createSubscriber()/createPublisher() for that pair — those two
+     * capture the TypeCasterRegistry's raw TypeCaster* into a long-lived
+     * rclcpp callback. Calling this again for a pair already registered
+     * throws std::logic_error rather than replacing (and freeing) the
+     * caster a live subscription/publisher callback still points at —
+     * see TypeCasterRegistry::registerCaster's doc comment.
+     *
+     * @throws std::logic_error if this (InternalType, RosMsg) pair is
+     *   already registered.
+     */
     template <typename InternalType, typename RosMsg>
     void registerTypeCaster(std::function<InternalType(const RosMsg&)> fromRos,
                             std::function<RosMsg(const InternalType&)> toRos) {
@@ -78,6 +92,12 @@ class ROS2Adapter final : public axonvex::adapters::AdapterBase {
      *         ROS2Adapter (register it with the system for the adapter's
      *         lifetime, same contract as before this returned a raw
      *         pointer — just explicit now instead of leaking on discard).
+     *
+     * @warning The subscription callback also holds the raw TypeCaster*
+     *   this looked up. registerTypeCaster()/registerCaster() must be
+     *   called for a pair before wiring a unit against it — calling it
+     *   again afterward for the same pair now throws std::logic_error
+     *   instead of freeing the caster this callback still points at.
      */
     template <typename T, typename RosMsg>
     std::unique_ptr<axonvex::core::SubscriberUnit<T>> createSubscriber(const std::string& topic) {
@@ -106,6 +126,10 @@ class ROS2Adapter final : public axonvex::adapters::AdapterBase {
      *         rclcpp publisher handle (kept alive by the shared_ptr), not
      *         the unit itself, so unlike createSubscriber() there is no
      *         lifetime coupling back to this adapter.
+     *
+     * @warning The publish callback holds the raw TypeCaster* this looked
+     *   up — same registration-before-wiring contract as
+     *   createSubscriber(); see its @warning above.
      */
     template <typename T, typename RosMsg>
     std::unique_ptr<axonvex::core::PublisherUnit<T>> createPublisher(const std::string& topic) {

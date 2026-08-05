@@ -11,8 +11,10 @@
  */
 
 #include <axonvex_ros2/ros2Adapter.hpp>
+#include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
+#include <rclcpp/executors/single_threaded_executor.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
@@ -75,18 +77,54 @@ TEST_F(Ros2AdapterSmokeTest, MissingCasterThrowsInsteadOfSilentlyFailing) {
         std::runtime_error);
 }
 
-// C20: createServer requires a request mapper — the request payload used
-// to be silently discarded (`T data{}`). ServerUnit has no response path
-// (see ros2Adapter.hpp's createServer doc comment), so this only checks
-// the request side.
+// C20 / review finding 3: createServer requires a request mapper — the
+// request payload used to be silently discarded (`T data{}`), so a test
+// that only constructs the server and never sends a request would still
+// pass against that regression. This sends a REAL service request through
+// a real rclcpp::Client, with a payload (`true`) that differs from a
+// default-constructed T (`false`), and asserts the ServerUnit's sync
+// output port received the MAPPED value — proving
+// pushRequest(requestMapper(*request)) actually ran against the request
+// that came off the wire, not a stand-in. ServerUnit has no response path
+// (see ros2Adapter.hpp's createServer doc comment), so the client's
+// response is a default-constructed SetBool::Response regardless; this
+// test only asserts the request side, which is what C20 fixed.
 TEST_F(Ros2AdapterSmokeTest, ServerMapsRequestThroughToServerUnit) {
-    auto node = std::make_shared<rclcpp::Node>("axonvex_ros2_smoke_server");
+    auto node = std::make_shared<rclcpp::Node>("axonvex_ros2_smoke_server_roundtrip");
     ROS2Adapter adapter(node);
 
     auto server = adapter.createServer<bool, std_srvs::srv::SetBool>(
-        "/axonvex_smoke/set_bool",
+        "/axonvex_smoke/set_bool_roundtrip",
         [](const std_srvs::srv::SetBool::Request& req) { return req.data; });
     ASSERT_NE(server, nullptr);
+
+    bool callbackFired = false;
+    bool receivedValue = false;
+    server->getOutput()->setOutputCallback([&](const bool& value) {
+        callbackFired = true;
+        receivedValue = value;
+    });
+
+    auto client = node->create_client<std_srvs::srv::SetBool>("/axonvex_smoke/set_bool_roundtrip");
+    ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+
+    auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+    request->data = true; // distinctive: default-constructed bool is false
+
+    auto future = client->async_send_request(request);
+
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(node);
+    ASSERT_EQ(executor.spin_until_future_complete(future, std::chrono::seconds(5)),
+              rclcpp::FutureReturnCode::SUCCESS);
+
+    EXPECT_TRUE(callbackFired);
+    EXPECT_TRUE(receivedValue);
+}
+
+TEST_F(Ros2AdapterSmokeTest, CreateServerRejectsNullRequestMapper) {
+    auto node = std::make_shared<rclcpp::Node>("axonvex_ros2_smoke_server_nullmapper");
+    ROS2Adapter adapter(node);
 
     EXPECT_THROW(
         (adapter.createServer<bool, std_srvs::srv::SetBool>("/axonvex_smoke/set_bool_2", nullptr)),

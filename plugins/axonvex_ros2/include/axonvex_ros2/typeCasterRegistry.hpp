@@ -76,17 +76,38 @@ struct TypeIndexPairHash {
  * std_msgs::msg::Float32 and a custom message) without one overwriting the
  * other. Lookups are exact-pair: getCaster<T, Msg>() only ever returns the
  * caster registered for that exact (T, Msg) combination, or nullptr.
+ *
+ * @warning Lifetime contract: casters must be registered before any unit
+ * that uses them is wired (createSubscriber/createPublisher/createServer
+ * capture the raw TypeCaster* returned by getCaster() into long-lived
+ * rclcpp callbacks). registerCaster() therefore refuses — throws
+ * std::logic_error — a second registration for a pair already present,
+ * rather than silently replacing (and freeing) the caster a live callback
+ * still points at. There is no legitimate in-place-swap use case once a
+ * unit is wired; build a fresh registry/adapter instead.
  */
 class TypeCasterRegistry {
   public:
     using CasterKey = std::pair<std::type_index, std::type_index>;
 
+    /**
+     * @throws std::logic_error if a caster is already registered for this
+     * exact (InternalType, RosMsg) pair — see the class doc's lifetime
+     * contract: overwriting would dangle any callback already holding the
+     * old caster's address.
+     */
     template <typename InternalType, typename RosMsg>
     void registerCaster(typename TypeCaster<InternalType, RosMsg>::FromRosFn fromRos,
                         typename TypeCaster<InternalType, RosMsg>::ToRosFn toRos) {
-        casters_[keyFor<InternalType, RosMsg>()] =
-            std::make_unique<TypeCaster<InternalType, RosMsg>>(std::move(fromRos),
-                                                               std::move(toRos));
+        auto key = keyFor<InternalType, RosMsg>();
+        if (casters_.count(key) > 0) {
+            throw std::logic_error(
+                "TypeCasterRegistry::registerCaster: a caster for this (InternalType, RosMsg) "
+                "pair is already registered — re-registering would dangle any unit already "
+                "wired against the old caster");
+        }
+        casters_[key] = std::make_unique<TypeCaster<InternalType, RosMsg>>(std::move(fromRos),
+                                                                           std::move(toRos));
     }
 
     template <typename InternalType, typename RosMsg>
