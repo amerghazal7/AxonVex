@@ -8,17 +8,19 @@ endif()
 
 message(STATUS "rclcpp found — building axonvex_ros2 plugin")
 
-add_library(axonvex_ros2 INTERFACE)
+add_library(axonvex_ros2 SHARED
+    src/ros2Plugin.cpp
+)
 set_target_properties(axonvex_ros2 PROPERTIES EXPORT_NAME ros2)
 
 target_include_directories(axonvex_ros2
-    INTERFACE
+    PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:axonvex_ros2/include>
 )
 
 target_link_libraries(axonvex_ros2
-    INTERFACE
+    PUBLIC
         axonvex_core
         axonvex_adapters
         axonvex_plugins
@@ -26,7 +28,8 @@ target_link_libraries(axonvex_ros2
 )
 
 install(TARGETS axonvex_ros2
-        EXPORT axonvexTargets)
+        EXPORT axonvexTargets
+        LIBRARY DESTINATION axonvex_ros2/libs)
 
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
         DESTINATION axonvex_ros2/include)
