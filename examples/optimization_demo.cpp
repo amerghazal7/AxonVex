@@ -28,12 +28,11 @@ using axonvex::utils::containers::MemoryPool;
 /**
  * @brief Example component demonstrating unified statistics collection
  */
-class OptimizedProcessor : public PerformanceStatisticsBase<OptimizedProcessor> {
+class OptimizedProcessor : public PerformanceStatisticsBase {
   private:
     std::string name_;
     ErrorHandler error_handler_;
     ThroughputStatistics throughput_stats_;
-    MemoryStatistics memory_stats_;
 
   public:
     explicit OptimizedProcessor(const std::string& name) : name_(name), error_handler_(name) {
@@ -89,34 +88,15 @@ class OptimizedProcessor : public PerformanceStatisticsBase<OptimizedProcessor> 
         }
     }
 
-    void allocateMemory(size_t bytes) {
-        auto start_time = TimingUtils::now();
-
-        // Simulate memory allocation
-        memory_stats_.recordAllocation(bytes);
-
-        auto duration = TimingUtils::elapsed(start_time);
-        if (duration > std::chrono::microseconds(100)) {
-            AXONVEX_REPORT_WARNING(error_handler_, "Slow memory allocation: " +
-                                                       std::to_string(duration.count()) + " ns");
-        }
-    }
-
-    void deallocateMemory(size_t bytes) {
-        memory_stats_.recordDeallocation(bytes);
-    }
-
     // Implement IPerformanceStatistics interface
     void reset() noexcept override {
         throughput_stats_.reset();
-        memory_stats_.reset();
         error_handler_.clearErrors();
     }
 
     std::string getReport() const override {
         std::string report = "=== " + getComponentName() + " Report ===\n";
         report += throughput_stats_.getReport() + "\n";
-        report += memory_stats_.getReport() + "\n";
         report += error_handler_.getErrorReport();
         return report;
     }
@@ -130,9 +110,6 @@ class OptimizedProcessor : public PerformanceStatisticsBase<OptimizedProcessor> 
     }
     const ThroughputStatistics& getThroughputStats() const {
         return throughput_stats_;
-    }
-    const MemoryStatistics& getMemoryStats() const {
-        return memory_stats_;
     }
 };
 
@@ -231,14 +208,10 @@ void demonstrateUnifiedStatistics() {
     std::vector<int> test_data = {1, 2, 3, 4, 5};
     processor1.processData(test_data);
     processor1.processData({}); // Empty data (warning)
-    processor1.allocateMemory(1024);
-    processor1.deallocateMemory(1024);
 
     // Test processor2 with different data
     std::vector<int> batch_data = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
     processor2.processData(batch_data);
-    processor2.allocateMemory(2048);
-    processor2.deallocateMemory(2048);
 
     // Display unified statistics
     std::cout << "Processor 1 Statistics:\n" << processor1.getReport() << "\n";

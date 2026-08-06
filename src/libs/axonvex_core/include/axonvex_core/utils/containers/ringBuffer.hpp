@@ -15,7 +15,7 @@ namespace axonvex::utils::containers {
 /**
  * @brief Enhanced statistics for ring buffer with common interface
  */
-class RingBufferStatistics : public axonvex::core::PerformanceStatisticsBase<RingBufferStatistics> {
+class RingBufferStatistics : public axonvex::core::PerformanceStatisticsBase {
   public:
     std::atomic<uint64_t> write_count{0};
     std::atomic<uint64_t> read_count{0};
