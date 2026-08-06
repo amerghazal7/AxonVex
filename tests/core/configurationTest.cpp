@@ -322,99 +322,6 @@ TEST_F(ConfigurationTest, ApplyUpdatesTest) {
 }
 
 //==============================================================================
-// Template Tests
-//==============================================================================
-
-TEST_F(ConfigurationTest, TemplateTest) {
-    EXPECT_TRUE(config->loadFromString(test_config_json));
-
-    // Save current config as template
-    EXPECT_TRUE(config->saveTemplate("test_template", "Test template description"));
-
-    // Verify template was saved
-    auto templates = config->getAvailableTemplates();
-    EXPECT_GT(templates.size(), 0);
-
-    bool found_template = false;
-    for (const auto& name : templates) {
-        if (name == "test_template") {
-            found_template = true;
-            break;
-        }
-    }
-    EXPECT_TRUE(found_template);
-
-    // Get template information
-    auto template_info = config->getTemplate("test_template");
-    EXPECT_TRUE(template_info.has_value());
-    EXPECT_EQ(template_info->name, "test_template");
-    EXPECT_EQ(template_info->description, "Test template description");
-
-    // Clear config and load template
-    config->clear();
-    EXPECT_TRUE(config->isEmpty());
-
-    EXPECT_TRUE(config->loadTemplate("test_template"));
-    EXPECT_FALSE(config->isEmpty());
-
-    // Verify values were restored
-    EXPECT_EQ(config->get<std::string>("system.name"), "TestSystem");
-    EXPECT_EQ(config->get<double>("system.execution.frequency"), 1000.0);
-}
-
-//==============================================================================
-// Snapshot and Rollback Tests
-//==============================================================================
-
-TEST_F(ConfigurationTest, SnapshotRollbackTest) {
-    EXPECT_TRUE(config->loadFromString(test_config_json));
-
-    // Create snapshot
-    std::string snapshot_id = config->createSnapshot("initial_state");
-    EXPECT_FALSE(snapshot_id.empty());
-
-    // Verify snapshot exists
-    auto snapshots = config->getAvailableSnapshots();
-    EXPECT_GT(snapshots.size(), 0);
-
-    bool found_snapshot = false;
-    for (const auto& id : snapshots) {
-        if (id == snapshot_id) {
-            found_snapshot = true;
-            break;
-        }
-    }
-    EXPECT_TRUE(found_snapshot);
-
-    // Modify configuration
-    EXPECT_TRUE(config->set("system.execution.frequency", 2000.0));
-    EXPECT_TRUE(config->set("new.key", std::string("new_value")));
-
-    // Verify changes
-    EXPECT_EQ(config->get<double>("system.execution.frequency"), 2000.0);
-    EXPECT_EQ(config->get<std::string>("new.key"), "new_value");
-
-    // Rollback to snapshot
-    EXPECT_TRUE(config->rollbackToSnapshot(snapshot_id));
-
-    // Verify rollback
-    EXPECT_EQ(config->get<double>("system.execution.frequency"), 1000.0);
-    EXPECT_FALSE(config->has("new.key"));
-
-    // Clean up snapshot
-    config->removeSnapshot(snapshot_id);
-    snapshots = config->getAvailableSnapshots();
-    found_snapshot = false;
-    for (const auto& id : snapshots) {
-        if (id == snapshot_id) {
-            found_snapshot = true;
-            break;
-        }
-    }
-    EXPECT_FALSE(found_snapshot);
-}
-
-//==============================================================================
 // Statistics and Performance Tests
 //==============================================================================
 
@@ -440,33 +347,20 @@ TEST_F(ConfigurationTest, StatisticsTest) {
     // Save to file
     EXPECT_TRUE(config->saveToFile(test_config_file));
     EXPECT_EQ(stats.getTotalSaves(), 1);
-
-    // Get performance metrics
-    std::string metrics = config->getPerformanceMetrics();
-    EXPECT_FALSE(metrics.empty());
-    EXPECT_NE(metrics.find("Total loads:"), std::string::npos);
-    EXPECT_NE(metrics.find("Total saves:"), std::string::npos);
 }
 
-TEST_F(ConfigurationTest, MemoryUsageTest) {
+TEST_F(ConfigurationTest, KeyCountTest) {
     EXPECT_TRUE(config->loadFromString(test_config_json));
-
-    size_t memory_usage = config->getMemoryUsage();
-    EXPECT_GT(memory_usage, 0);
 
     size_t key_count = config->getKeyCount();
     EXPECT_GT(key_count, 0);
 
-    // Add more data and verify memory usage increases
+    // Add more data and verify key count increases
     for (int i = 0; i < 100; ++i) {
         config->set("bulk.key" + std::to_string(i), i);
     }
 
-    size_t new_memory_usage = config->getMemoryUsage();
-    size_t new_key_count = config->getKeyCount();
-
-    EXPECT_GT(new_memory_usage, memory_usage);
-    EXPECT_GT(new_key_count, key_count);
+    EXPECT_GT(config->getKeyCount(), key_count);
 }
 
 //==============================================================================
@@ -593,10 +487,6 @@ TEST_F(ConfigurationTest, ErrorHandlingTest) {
 
     // Test invalid schema
     EXPECT_FALSE(config->loadSchema("nonexistent_schema.json"));
-
-    // Test invalid operations
-    EXPECT_FALSE(config->rollbackToSnapshot("nonexistent_snapshot"));
-    EXPECT_FALSE(config->loadTemplate("nonexistent_template"));
 
     // Verify configuration remains stable
     EXPECT_TRUE(config->isEmpty());

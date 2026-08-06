@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <axonvex_core/detail/filesystem_compat.hpp>
 #include <axonvex_core/utils/optional.hpp>
 #include <fstream>
 #include <functional>
@@ -15,11 +14,6 @@
 #include <vector>
 
 namespace axonvex::core {
-
-// Forward declarations
-class ConfigurationValidator;
-class ConfigurationMonitor;
-class TemplateManager;
 
 /**
  * @brief Configuration value variant type supporting common types
@@ -101,33 +95,15 @@ struct ConfigurationSchema {
 };
 
 /**
- * @brief Configuration template for presets
- */
-struct ConfigurationTemplate {
-    std::string name;
-    std::string description;
-    nlohmann::json config;
-    std::vector<std::string> tags;
-
-    ConfigurationTemplate() = default;
-    ConfigurationTemplate(const std::string& n, const nlohmann::json& c,
-                          const std::string& desc = "")
-        : name(n), description(desc), config(c) {}
-};
-
-/**
  * @brief High-performance configuration management system for AxonVex Framework
  *
  * Features:
- * - JSON/YAML parsing with schema validation
+ * - JSON parsing with schema validation
  * - Runtime configuration updates with change notifications
- * - Configuration templates and presets
  * - Environment variable integration
  * - Hierarchical configuration merging
  * - Thread-safe operations with minimal locking
  * - Comprehensive validation and error reporting
- * - Configuration versioning and rollback
- * - File watching for automatic reloading
  *
  * Performance characteristics:
  * - Configuration lookup: O(1) average case
@@ -384,83 +360,6 @@ class Configuration {
      */
     bool applyUpdates(const nlohmann::json& updates, bool validate = true);
 
-    /**
-     * @brief Enable file watching for automatic reloading
-     *
-     * @param enable If true, watch config file for changes
-     */
-    void enableFileWatching(bool enable);
-
-    //==========================================================================
-    // Configuration Templates
-    //==========================================================================
-
-    /**
-     * @brief Load configuration template
-     *
-     * @param template_name Name of template to load
-     * @return true if loaded successfully
-     */
-    bool loadTemplate(const std::string& template_name);
-
-    /**
-     * @brief Save current configuration as template
-     *
-     * @param template_name Name for the template
-     * @param description Optional description
-     * @return true if saved successfully
-     */
-    bool saveTemplate(const std::string& template_name, const std::string& description = "");
-
-    /**
-     * @brief Get available template names
-     *
-     * @return Vector of available template names
-     */
-    std::vector<std::string> getAvailableTemplates() const;
-
-    /**
-     * @brief Get template information
-     *
-     * @param template_name Name of template
-     * @return Optional template object
-     */
-    axonvex::optional<ConfigurationTemplate> getTemplate(const std::string& template_name) const;
-
-    //==========================================================================
-    // Versioning and Rollback
-    //==========================================================================
-
-    /**
-     * @brief Create configuration snapshot
-     *
-     * @param name Optional name for snapshot
-     * @return Snapshot ID
-     */
-    std::string createSnapshot(const std::string& name = "");
-
-    /**
-     * @brief Rollback to configuration snapshot
-     *
-     * @param snapshot_id ID of snapshot to rollback to
-     * @return true if rollback successful
-     */
-    bool rollbackToSnapshot(const std::string& snapshot_id);
-
-    /**
-     * @brief Get available snapshots
-     *
-     * @return Vector of snapshot IDs
-     */
-    std::vector<std::string> getAvailableSnapshots() const;
-
-    /**
-     * @brief Remove configuration snapshot
-     *
-     * @param snapshot_id ID of snapshot to remove
-     */
-    void removeSnapshot(const std::string& snapshot_id);
-
     //==========================================================================
     // Status and Statistics
     //==========================================================================
@@ -476,13 +375,6 @@ class Configuration {
      * @brief Reset configuration statistics
      */
     void resetStatistics() noexcept;
-
-    /**
-     * @brief Get configuration size in bytes
-     *
-     * @return Approximate memory usage
-     */
-    size_t getMemoryUsage() const;
 
     /**
      * @brief Get number of configuration keys
@@ -503,13 +395,6 @@ class Configuration {
      */
     void clear();
 
-    /**
-     * @brief Get configuration performance metrics
-     *
-     * @return Performance metrics string
-     */
-    std::string getPerformanceMetrics() const;
-
   private:
     // Core configuration data
     nlohmann::json config_data_;
@@ -525,17 +410,6 @@ class Configuration {
     std::atomic<size_t> next_callback_id_;
     std::atomic<bool> monitoring_enabled_;
 
-    // Templates and snapshots
-    std::unordered_map<std::string, ConfigurationTemplate> templates_;
-    std::unordered_map<std::string, nlohmann::json> snapshots_;
-    std::mutex templates_mutex_;
-    std::mutex snapshots_mutex_;
-
-    // File watching
-    std::atomic<bool> file_watching_enabled_;
-    std::string watched_file_;
-    axonvex_fs::file_time_type last_write_time_;
-
     // Statistics
     mutable ConfigurationStatistics stats_;
 
@@ -548,13 +422,10 @@ class Configuration {
     std::vector<ValidationError> validateInternal(const nlohmann::json& data) const;
     void notifyCallbacks(const std::string& key, const ConfigValue& old_value,
                          const ConfigValue& new_value);
-    std::vector<std::string> expandKeyPattern(const std::string& pattern) const;
     bool matchesPattern(const std::string& key, const std::string& pattern) const;
-    std::string generateSnapshotId() const;
     nlohmann::json* getJsonPointer(const std::string& key, bool create_if_missing = false);
     const nlohmann::json* getJsonPointer(const std::string& key) const;
     std::vector<std::string> splitKey(const std::string& key) const;
-    void updateFileWatcher();
 };
 
 //==============================================================================

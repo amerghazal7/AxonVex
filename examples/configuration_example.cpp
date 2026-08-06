@@ -11,10 +11,7 @@
  * - JSON configuration loading and saving
  * - Schema validation and type safety
  * - Runtime configuration updates with callbacks
- * - Configuration templates and presets
  * - Environment variable integration
- * - Snapshots and rollback functionality
- * - Performance monitoring and optimization
  * - Thread-safe operations
  *
  * Compile and run:
@@ -200,7 +197,6 @@ void demonstrateBasicUsage() {
     std::cout << "\nConfiguration Statistics:" << std::endl;
     std::cout << "  Total loads: " << stats.getTotalLoads() << std::endl;
     std::cout << "  Total updates: " << stats.getTotalUpdates() << std::endl;
-    std::cout << "  Memory usage: " << config.getMemoryUsage() << " bytes" << std::endl;
     std::cout << "  Key count: " << config.getKeyCount() << std::endl;
 }
 
@@ -353,155 +349,6 @@ void demonstrateCallbacks() {
     }
 }
 
-void demonstrateTemplates() {
-    printHeader("Configuration Templates");
-
-    Configuration config(true, true);
-
-    if (!config.loadFromString(SAMPLE_CONFIG)) {
-        printError("Failed to load configuration");
-        return;
-    }
-
-    // Save current configuration as template
-    if (config.saveTemplate("production_template", "Production-ready AxonVex configuration")) {
-        printSuccess("Configuration saved as 'production_template'");
-    }
-
-    // Create a development configuration
-    config.set("system.logging.level", std::string("debug"));
-    config.set("system.execution.frequency", 500.0);
-    config.set("performance.monitoring.update_rate", 10);
-
-    if (config.saveTemplate("development_template",
-                            "Development configuration with debug logging")) {
-        printSuccess("Configuration saved as 'development_template'");
-    }
-
-    // Create a high-performance configuration
-    config.set("system.execution.frequency", 5000.0);
-    config.set("system.execution.priority", std::string("realtime"));
-    config.set("performance.optimization.zero_copy", true);
-    config.set("performance.optimization.lock_free", true);
-
-    if (config.saveTemplate("high_performance_template",
-                            "High-performance real-time configuration")) {
-        printSuccess("Configuration saved as 'high_performance_template'");
-    }
-
-    // List available templates
-    auto templates = config.getAvailableTemplates();
-    std::cout << "\nAvailable Templates:" << std::endl;
-    for (const auto& name : templates) {
-        auto template_info = config.getTemplate(name);
-        if (template_info) {
-            std::cout << "  📄 " << name << ": " << template_info->description << std::endl;
-        }
-    }
-
-    // Demonstrate template loading
-    printInfo("Switching to development template...");
-    config.clear();
-
-    if (config.loadTemplate("development_template")) {
-        printSuccess("Development template loaded");
-        std::cout << "  Logging level: " << config.get<std::string>("system.logging.level")
-                  << std::endl;
-        std::cout << "  Execution frequency: " << config.get<double>("system.execution.frequency")
-                  << " Hz" << std::endl;
-    }
-
-    printInfo("Switching to production template...");
-    if (config.loadTemplate("production_template")) {
-        printSuccess("Production template loaded");
-        std::cout << "  Logging level: " << config.get<std::string>("system.logging.level")
-                  << std::endl;
-        std::cout << "  Execution frequency: " << config.get<double>("system.execution.frequency")
-                  << " Hz" << std::endl;
-    }
-}
-
-void demonstrateSnapshotsAndRollback() {
-    printHeader("Snapshots and Rollback");
-
-    Configuration config(true, true);
-
-    if (!config.loadFromString(SAMPLE_CONFIG)) {
-        printError("Failed to load configuration");
-        return;
-    }
-
-    // Create initial snapshot
-    std::string initial_snapshot = config.createSnapshot("initial_state");
-    printSuccess("Created snapshot: " + initial_snapshot);
-
-    // Make some changes
-    config.set("system.execution.frequency", 2000.0);
-    config.set("system.logging.level", std::string("debug"));
-    config.set("experimental.feature.enabled", true);
-
-    std::cout << "\nAfter modifications:" << std::endl;
-    std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz"
-              << std::endl;
-    std::cout << "  Log level: " << config.get<std::string>("system.logging.level") << std::endl;
-    std::cout << "  Experimental feature: " << config.get<bool>("experimental.feature.enabled")
-              << std::endl;
-
-    // Create snapshot after changes
-    std::string modified_snapshot = config.createSnapshot("modified_state");
-    printSuccess("Created snapshot: " + modified_snapshot);
-
-    // Make more changes
-    config.set("system.execution.frequency", 5000.0);
-    config.set("system.name", std::string("Modified System"));
-
-    std::cout << "\nAfter more modifications:" << std::endl;
-    std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz"
-              << std::endl;
-    std::cout << "  System name: " << config.get<std::string>("system.name") << std::endl;
-
-    // List available snapshots
-    auto snapshots = config.getAvailableSnapshots();
-    std::cout << "\nAvailable snapshots:" << std::endl;
-    for (const auto& snapshot_id : snapshots) {
-        std::cout << "  📸 " << snapshot_id << std::endl;
-    }
-
-    // Rollback to initial state
-    printInfo("Rolling back to initial state...");
-    if (config.rollbackToSnapshot(initial_snapshot)) {
-        printSuccess("Rollback successful");
-
-        std::cout << "\nAfter rollback to initial state:" << std::endl;
-        std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz"
-                  << std::endl;
-        std::cout << "  Log level: " << config.get<std::string>("system.logging.level")
-                  << std::endl;
-        std::cout << "  System name: " << config.get<std::string>("system.name") << std::endl;
-        std::cout << "  Experimental feature exists: "
-                  << (config.has("experimental.feature.enabled") ? "Yes" : "No") << std::endl;
-    }
-
-    // Rollback to modified state
-    printInfo("Rolling back to modified state...");
-    if (config.rollbackToSnapshot(modified_snapshot)) {
-        printSuccess("Rollback to modified state successful");
-
-        std::cout << "\nAfter rollback to modified state:" << std::endl;
-        std::cout << "  Frequency: " << config.get<double>("system.execution.frequency") << " Hz"
-                  << std::endl;
-        std::cout << "  Log level: " << config.get<std::string>("system.logging.level")
-                  << std::endl;
-        std::cout << "  Experimental feature: " << config.get<bool>("experimental.feature.enabled")
-                  << std::endl;
-    }
-
-    // Clean up snapshots
-    config.removeSnapshot(initial_snapshot);
-    config.removeSnapshot(modified_snapshot);
-    printInfo("Snapshots cleaned up");
-}
-
 void demonstratePerformance() {
     printHeader("Performance Benchmarking");
 
@@ -576,9 +423,6 @@ void demonstratePerformance() {
         printWarning("Write performance above target (" + std::to_string(avg_write_time_ns) +
                      "ns > " + std::to_string((int)write_target_ns) + "ns)");
     }
-
-    // Display comprehensive statistics
-    std::cout << "\n" << config.getPerformanceMetrics() << std::endl;
 }
 
 void demonstrateFileOperations() {
@@ -816,8 +660,6 @@ int main() {
         demonstrateBasicUsage();
         demonstrateSchemaValidation();
         demonstrateCallbacks();
-        demonstrateTemplates();
-        demonstrateSnapshotsAndRollback();
         demonstrateFileOperations();
         demonstrateEnvironmentVariables();
         demonstratePerformance();
@@ -832,8 +674,6 @@ int main() {
         std::cout << "  ✅ Schema validation and type checking" << std::endl;
         std::cout << "  ✅ Runtime configuration updates" << std::endl;
         std::cout << "  ✅ Change notification callbacks" << std::endl;
-        std::cout << "  ✅ Configuration templates and presets" << std::endl;
-        std::cout << "  ✅ Snapshots and rollback functionality" << std::endl;
         std::cout << "  ✅ Environment variable integration" << std::endl;
         std::cout << "  ✅ High-performance operations" << std::endl;
         std::cout << "  ✅ Thread-safe concurrent access" << std::endl;
