@@ -81,6 +81,11 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
     /// the message as sent (C11).
     bool sendAll(const uint8_t* bytes, size_t length, ssize_t& sentOut);
 
+    /// Requires sockMutex_ held. Marks the stream dead after a failed frame
+    /// write (no resync point on TCP) and shutdown()s the socket so recvLoop
+    /// wakes, exits, and becomes reapable by the next start().
+    void poisonConnectionLocked();
+
     void recvLoop();
 #endif
 
@@ -97,6 +102,16 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
     std::string host_;
     uint16_t port_;
     std::atomic<bool> running_{false};
+    /// Liveness of the current connection, distinct from running_ on purpose:
+    /// running_ is the caller's intent (set by start(), cleared by stop()),
+    /// connectionAlive_ is the stream's actual state — cleared by recvLoop on
+    /// any terminal exit (framing violation, peer EOF, recv error) and by a
+    /// failed frame write in send(). It cannot be folded into running_:
+    /// clearing running_ from inside recvLoop would let a concurrent start()
+    /// see "not running" while this worker's handle is still joinable and
+    /// move-assign over it, which is std::terminate. start() keys off this
+    /// flag instead and joins the dead worker before reassigning.
+    std::atomic<bool> connectionAlive_{false};
     std::thread worker_;
     /// Serialises start()/stop() so only one caller ever tears the thread down.
     mutable std::mutex lifecycleMutex_;
