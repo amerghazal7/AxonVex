@@ -122,7 +122,7 @@ struct ConfigurationSchema {
  * config.set("logging.level", "info");
  *
  * config.registerCallback("execution.*", [](const auto& key, const auto& old, const auto& new_val)
- * { Log::Info() << "Execution config changed: " << key;
+ * { std::cout << "Execution config changed: " << key << std::endl;
  * });
  * @endcode
  */

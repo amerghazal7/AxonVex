@@ -8,7 +8,11 @@
 
 using namespace axonvex;
 using namespace axonvex::core;
-using namespace axonvex::Log; // Use framework's Logger
+#include "exampleLog.hpp"
+
+using examplelog::Error;
+using examplelog::Info;
+using examplelog::Warn;
 
 // Example Processing Units for demonstration
 class SineWaveGenerator : public ProcessingUnit {
@@ -402,9 +406,6 @@ void demonstrateCustomScheduler() {
 }
 
 int main() {
-    // Initialize framework logger
-    Log::setLevel(LogLevel::Info);
-
     printWelcome();
 
     Info() << "\n🚀 AxonVex TimingController Real-Time Scheduling Demo";
