@@ -356,6 +356,11 @@ bool TcpClient::connectSocket() {
         ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
         if (::connect(fd, candidate.addr(), candidate.length) == 0) {
+            // Under sockMutex_: a send() that loaded connectionAlive_ == true
+            // just before the previous connection died can still be heading
+            // for its sockMutex_ block while start() is already in here
+            // reconnecting; without the lock this write would race that read.
+            std::lock_guard<std::mutex> lock(sockMutex_);
             sock_ = fd;
             return true;
         }
