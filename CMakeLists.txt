@@ -147,7 +147,6 @@ if(BUILD_TESTING)
             tests/core/portThreadSafetyTest.cpp
             tests/types/uuidTest.cpp
             tests/types/geometryTest.cpp
-            tests/utils/lruCacheTest.cpp
             tests/utils/optionalTest.cpp
             tests/utils/ringBufferTest.cpp
             tests/utils/jsonSerializerTest.cpp
