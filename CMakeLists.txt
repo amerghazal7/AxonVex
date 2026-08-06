@@ -185,6 +185,8 @@ if(BUILD_TESTING)
         # target only exists when rclcpp is found.
         target_include_directories(test_core PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/plugins/axonvex_ros2/include
+            # Shared test fixtures (e.g. tests/net/transportTestUtils.hpp)
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
         )
         target_compile_definitions(test_core PRIVATE
             AXONVEX_TEST_PLUGIN_PATH="$<TARGET_FILE:axonvex_test_plugin>"

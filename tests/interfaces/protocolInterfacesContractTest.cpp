@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 #include <memory>
 #include <mutex>
+#include <net/transportTestUtils.hpp>
 #include <string>
 #include <thread>
 #include <vector>
@@ -313,23 +314,7 @@ TEST(ProtocolInterfacesContractTest, StopFromCallbackDoesNotSelfJoin) {
 // condition-variable based because GCC 11's libtsan does not intercept
 // pthread_cond_clockwait and reports bogus races for wait_for.
 namespace {
-bool finishesWithin(std::function<void()> fn, std::chrono::milliseconds limit) {
-    auto done = std::make_shared<std::atomic<bool>>(false);
-    std::thread worker([fn, done]() {
-        fn();
-        done->store(true);
-    });
-    const auto deadline = std::chrono::steady_clock::now() + limit;
-    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    if (!done->load()) {
-        worker.detach(); // wedged; leak it rather than block the suite
-        return false;
-    }
-    worker.join();
-    return true;
-}
+using testnet::finishesWithin;
 
 class ReentrantRegistrationCallback final : public axonvex::core::Callback<std::vector<uint8_t>> {
   public:
@@ -488,82 +473,13 @@ TEST(ProtocolInterfacesContractTest, ConcurrentDispatchFromTwoThreadsDoesNotDead
 
 #if defined(AXONVEX_PLATFORM_LINUX)
 namespace {
-// Minimal blocking loopback TCP server for framing tests: bind/listen on
-// 127.0.0.1, accept exactly one client, then let the test read/write raw
-// bytes on the accepted fd. Blocking is fine — every use sits inside a
-// finishesWithin() deadline.
-class LoopbackTcpServer {
-  public:
-    explicit LoopbackTcpServer(uint16_t port) {
-        listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (listenFd_ < 0)
-            return;
-        int yes = 1;
-        ::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
-            ::listen(listenFd_, 1) != 0) {
-            ::close(listenFd_);
-            listenFd_ = -1;
-        }
-    }
-    ~LoopbackTcpServer() {
-        if (connFd_ >= 0)
-            ::close(connFd_);
-        if (listenFd_ >= 0)
-            ::close(listenFd_);
-    }
-    bool valid() const {
-        return listenFd_ >= 0;
-    }
-    bool acceptOne() {
-        connFd_ = ::accept(listenFd_, nullptr, nullptr);
-        return connFd_ >= 0;
-    }
-    bool writeRaw(const std::vector<uint8_t>& bytes) {
-        size_t off = 0;
-        while (off < bytes.size()) {
-            ssize_t n = ::send(connFd_, bytes.data() + off, bytes.size() - off, MSG_NOSIGNAL);
-            if (n <= 0)
-                return false;
-            off += static_cast<size_t>(n);
-        }
-        return true;
-    }
-    // Reads exactly n bytes or gives up on EOF/error.
-    bool readExactly(size_t n, std::vector<uint8_t>& out) {
-        out.clear();
-        out.reserve(n);
-        std::array<uint8_t, 512> tmp{};
-        while (out.size() < n) {
-            ssize_t got = ::recv(connFd_, tmp.data(), std::min(tmp.size(), n - out.size()), 0);
-            if (got <= 0)
-                return false;
-            out.insert(out.end(), tmp.begin(), tmp.begin() + got);
-        }
-        return true;
-    }
-
-  private:
-    int listenFd_{-1};
-    int connFd_{-1};
-};
-
-// Frame a payload the way the C11 wire format specifies.
-std::vector<uint8_t> framed(const std::vector<uint8_t>& payload) {
-    const uint32_t len = static_cast<uint32_t>(payload.size());
-    std::vector<uint8_t> out{0xAF,
-                             0x01,
-                             static_cast<uint8_t>((len >> 24) & 0xFF),
-                             static_cast<uint8_t>((len >> 16) & 0xFF),
-                             static_cast<uint8_t>((len >> 8) & 0xFF),
-                             static_cast<uint8_t>(len & 0xFF)};
-    out.insert(out.end(), payload.begin(), payload.end());
-    return out;
-}
+// Loopback server, C11 framing, and deadline polling live in the shared
+// transport fixture (tests/net/transportTestUtils.hpp); the server binds an
+// ephemeral port (port 0 + getsockname), so no test can lose its port to
+// another process and no skip path is needed.
+using testnet::framed;
+using testnet::LoopbackTcpServer;
+using testnet::waitForCount;
 
 // Collects every dispatched message; poll `count` against a deadline.
 class CollectingCallback final : public axonvex::core::Callback<std::vector<uint8_t>> {
@@ -580,14 +496,6 @@ class CollectingCallback final : public axonvex::core::Callback<std::vector<uint
         ++count;
     }
 };
-
-bool waitForCount(std::atomic<int>& counter, int target, std::chrono::milliseconds limit) {
-    const auto deadline = std::chrono::steady_clock::now() + limit;
-    while (counter.load() < target && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::yield();
-    }
-    return counter.load() >= target;
-}
 } // namespace
 
 // C11 regression: newline framing corrupted binary payloads — a 0x0A byte
@@ -597,17 +505,14 @@ bool waitForCount(std::atomic<int>& counter, int target, std::chrono::millisecon
 // the exact bytes send() puts on the wire, and that a framed payload
 // containing 0x0A dispatches intact.
 TEST(ProtocolInterfacesContractTest, TcpBinaryPayloadWithNewlineRoundTripsIntact) {
-    const uint16_t kPort = 39420;
-    LoopbackTcpServer server(kPort);
-    if (!server.valid()) {
-        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
-    }
+    LoopbackTcpServer server;
+    ASSERT_TRUE(server.valid());
 
     const std::vector<uint8_t> payload{0x01, 0x0A, 0x02, 0x0A, 0x0A, 0x03};
 
     const bool finished = finishesWithin(
         [&]() {
-            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", server.port());
             CollectingCallback rx;
             client.setMessageCallback(&rx);
             ASSERT_TRUE(client.start());
@@ -649,11 +554,8 @@ TEST(ProtocolInterfacesContractTest, TcpBinaryPayloadWithNewlineRoundTripsIntact
 // Frames survive arbitrary TCP segmentation: header and payload dribbled
 // byte-wise, then several complete frames in one write, incl. an empty frame.
 TEST(ProtocolInterfacesContractTest, TcpFramesSurviveSplitAndCoalescedDelivery) {
-    const uint16_t kPort = 39421;
-    LoopbackTcpServer server(kPort);
-    if (!server.valid()) {
-        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
-    }
+    LoopbackTcpServer server;
+    ASSERT_TRUE(server.valid());
 
     const std::vector<uint8_t> a{0xDE, 0xAD};
     const std::vector<uint8_t> b{}; // zero-length frame is legal
@@ -661,7 +563,7 @@ TEST(ProtocolInterfacesContractTest, TcpFramesSurviveSplitAndCoalescedDelivery) 
 
     const bool finished = finishesWithin(
         [&]() {
-            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", server.port());
             CollectingCallback rx;
             client.setMessageCallback(&rx);
             ASSERT_TRUE(client.start());
@@ -694,15 +596,12 @@ TEST(ProtocolInterfacesContractTest, TcpFramesSurviveSplitAndCoalescedDelivery) 
 // A non-AxonVex peer (wrong magic — e.g. an old newline-framing peer) is a
 // precise loud error, not a garbage dispatch and not a silent drop.
 TEST(ProtocolInterfacesContractTest, TcpBadMagicIsLoudErrorAndNothingDispatches) {
-    const uint16_t kPort = 39422;
-    LoopbackTcpServer server(kPort);
-    if (!server.valid()) {
-        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
-    }
+    LoopbackTcpServer server;
+    ASSERT_TRUE(server.valid());
 
     const bool finished = finishesWithin(
         [&]() {
-            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", server.port());
             CollectingCallback rx;
             StringCallback err; // existing helper in this file: collects error strings
             client.setMessageCallback(&rx);
@@ -723,15 +622,12 @@ TEST(ProtocolInterfacesContractTest, TcpBadMagicIsLoudErrorAndNothingDispatches)
 // A hostile/corrupt length field must not drive a giant allocation: valid
 // magic + a length above kMaxFrameLength is a precise loud error.
 TEST(ProtocolInterfacesContractTest, TcpOversizeLengthIsLoudErrorAndNothingDispatches) {
-    const uint16_t kPort = 39423;
-    LoopbackTcpServer server(kPort);
-    if (!server.valid()) {
-        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
-    }
+    LoopbackTcpServer server;
+    ASSERT_TRUE(server.valid());
 
     const bool finished = finishesWithin(
         [&]() {
-            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", server.port());
             CollectingCallback rx;
             StringCallback err;
             client.setMessageCallback(&rx);
@@ -752,11 +648,8 @@ TEST(ProtocolInterfacesContractTest, TcpOversizeLengthIsLoudErrorAndNothingDispa
 
 // send() refuses an over-limit payload before touching the socket.
 TEST(ProtocolInterfacesContractTest, TcpSendRefusesOverLimitPayload) {
-    const uint16_t kPort = 39424;
-    LoopbackTcpServer server(kPort);
-    if (!server.valid()) {
-        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
-    }
+    LoopbackTcpServer server;
+    ASSERT_TRUE(server.valid());
 
     // If the size guard ever regresses, client.send(tooBig) below would try
     // to actually write 16 MiB+1 to a peer that never reads it: the kernel
@@ -765,7 +658,7 @@ TEST(ProtocolInterfacesContractTest, TcpSendRefusesOverLimitPayload) {
     // regression is a fast failure, not a wedged ctest run.
     const bool finished = finishesWithin(
         [&]() {
-            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", server.port());
             StringCallback err;
             client.registerErrorHandler("default", &err);
             ASSERT_TRUE(client.start());
