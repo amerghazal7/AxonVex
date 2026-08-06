@@ -1,5 +1,13 @@
 #pragma once
 
+// Plan §7: this placeholder must never silently satisfy ProtocolInterface. It fakes
+// send() by echoing into its own callbacks and never touches a socket. WS-VIZ replaces
+// it with the real Boost.Beast implementation; until then any include is a hard error.
+#ifndef AXONVEX_ALLOW_PLACEHOLDER_WS
+#error                                                                                             \
+    "websocketServer.hpp is a non-functional placeholder (no real WebSocket I/O). It is compile-gated until the real implementation lands (WS-VIZ). Define AXONVEX_ALLOW_PLACEHOLDER_WS only if you explicitly want the fake echo behavior."
+#endif
+
 #include <atomic>
 #include <axonvex_interfaces/protocolInterface.hpp>
 #include <functional>
