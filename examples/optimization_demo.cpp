@@ -18,8 +18,8 @@
 // Include our optimized headers
 #include <axonvex_core/coreUtilities.hpp>
 #include <axonvex_core/errorHandler.hpp>
-#include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <axonvex_core/performanceStatistics.hpp>
+#include <axonvex_core/utils/containers/memoryPool.hpp>
 // Note: CircularBuffer and ThreadSafeQueue updates are in progress
 
 using namespace axonvex::core;
@@ -142,11 +142,11 @@ class OptimizedProcessor : public PerformanceStatisticsBase<OptimizedProcessor> 
 void demonstrateSharedUtilities() {
     std::cout << "\n=== Shared Utilities Demo ===\n";
 
-    // Demonstrate MathUtils
+    // Demonstrate nextPowerOf2
     std::cout << "Power of 2 calculations:\n";
     for (size_t value : {100, 500, 1000, 1023, 1024, 2000}) {
-        size_t next_pow2 = MathUtils::nextPowerOf2(value);
-        bool is_pow2 = MathUtils::isPowerOf2(value);
+        size_t next_pow2 = nextPowerOf2(value);
+        bool is_pow2 = value > 0 && (value & (value - 1)) == 0;
         std::cout << "  " << value << " -> " << next_pow2
                   << " (is power of 2: " << (is_pow2 ? "yes" : "no") << ")\n";
     }
