@@ -24,6 +24,8 @@
 
 namespace axonvex::interfaces::udp {
 
+/// UDP needs no framing header: each datagram is exactly one message frame
+/// (contrast TcpClient's magic+length wire format, C11).
 class UdpSocket : public axonvex::interfaces::ProtocolInterface {
   public:
     UdpSocket(std::string bindAddress = "0.0.0.0", uint16_t port = 9001)

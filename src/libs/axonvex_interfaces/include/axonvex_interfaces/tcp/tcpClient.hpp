@@ -25,6 +25,20 @@
 
 namespace axonvex::interfaces::tcp {
 
+/// C11 wire format: every frame on a TCP connection is a 6-byte header —
+/// magic bytes 0xAF 0x01, then the payload length as a big-endian uint32 —
+/// followed by exactly that many payload bytes. Zero-length payloads are
+/// legal frames. The magic makes a protocol mismatch (old newline peer,
+/// non-AxonVex peer) a precise error instead of a misleading giant-length
+/// error; a future format revision changes the magic.
+constexpr uint8_t kFrameMagic0 = 0xAF;
+constexpr uint8_t kFrameMagic1 = 0x01;
+constexpr size_t kFrameHeaderSize = 6;
+/// Trust-boundary guard: a corrupt or hostile length field must not drive a
+/// multi-gigabyte allocation. Ceiling: 16 MiB per frame; upgrade path is a
+/// ProtocolConfiguration field if a real consumer ever needs bigger.
+constexpr uint32_t kMaxFrameLength = 16u * 1024u * 1024u;
+
 class TcpClient : public axonvex::interfaces::ProtocolInterface {
   public:
     TcpClient(std::string host = "127.0.0.1", uint16_t port = 9000)
@@ -133,36 +147,44 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
 
     bool send(const std::vector<uint8_t>& data) override {
 #if defined(AXONVEX_PLATFORM_LINUX)
-        // Held across both sends so the fd cannot be closed mid-frame and so two
-        // concurrent senders cannot interleave a payload with another's
-        // delimiter. Ceiling: a send that blocks on a full socket buffer blocks
+        if (data.size() > kMaxFrameLength) {
+            reportError("tcp: refusing to send " + std::to_string(data.size()) +
+                        "-byte frame (max " + std::to_string(kMaxFrameLength) + ")");
+            return false;
+        }
+        // Held across the whole frame so the fd cannot be closed mid-frame and
+        // so two concurrent senders cannot interleave header and payload
+        // bytes. Ceiling: a send that blocks on a full socket buffer blocks
         // every other sender and delays stop()'s close.
         std::lock_guard<std::mutex> lock(sockMutex_);
         if (sock_ < 0)
             return false;
-        // Send data plus a newline as frame delimiter.
-        //
-        // The newline framing itself is still wrong for binary payloads: a 0x0A
-        // byte inside `data` is indistinguishable from a frame boundary, so the
-        // receiver splits the message. That is the open half of C11 and needs a
-        // wire-format change (length prefix), not a local fix.
-        ssize_t total = 0;
+        const uint32_t len = static_cast<uint32_t>(data.size());
+        const uint8_t header[kFrameHeaderSize] = {
+            kFrameMagic0,
+            kFrameMagic1,
+            static_cast<uint8_t>((len >> 24) & 0xFFu),
+            static_cast<uint8_t>((len >> 16) & 0xFFu),
+            static_cast<uint8_t>((len >> 8) & 0xFFu),
+            static_cast<uint8_t>(len & 0xFFu)};
         ssize_t sent = 0;
+        ssize_t total = 0;
+        if (!sendAll(header, sizeof(header), sent)) {
+            reportError("tcp: send failed after " + std::to_string(sent) + " of " +
+                        std::to_string(sizeof(header)) +
+                        " header bytes: " + std::string(strerror(errno)));
+            return false;
+        }
+        total += sent;
         if (!data.empty()) {
             if (!sendAll(data.data(), data.size(), sent)) {
                 reportError("tcp: send failed after " + std::to_string(sent) + " of " +
                             std::to_string(data.size()) +
-                            " bytes: " + std::string(strerror(errno)));
+                            " payload bytes: " + std::string(strerror(errno)));
                 return false;
             }
             total += sent;
         }
-        const uint8_t nl = static_cast<uint8_t>('\n');
-        if (!sendAll(&nl, 1, sent)) {
-            reportError("tcp: send delimiter failed: " + std::string(strerror(errno)));
-            return false;
-        }
-        total += sent;
         stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
         stats_.bytesSent.fetch_add(static_cast<uint64_t>(total), std::memory_order_relaxed);
         return true;
@@ -355,23 +377,58 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
                     reportError(std::string("tcp: recv error: ") + strerror(errno));
                 break;
             }
-            // Append and scan for newline-delimited frames
+            // Append, then extract complete frames: 6-byte header (magic +
+            // u32 BE payload length) followed by the payload. A framing
+            // violation is fatal for the connection — after bad bytes there
+            // is no resync point on a TCP stream, and carrying on would
+            // dispatch garbage.
             buffer.insert(buffer.end(), tmp.begin(), tmp.begin() + n);
             stats_.bytesReceived.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
-            // Extract frames
             size_t start = 0;
-            for (size_t i = 0; i < buffer.size(); ++i) {
-                if (buffer[i] == '\n') {
-                    std::vector<uint8_t> frame(buffer.begin() + start, buffer.begin() + i);
-                    stats_.messagesReceived.fetch_add(1, std::memory_order_relaxed);
-                    dispatchMessage(frame);
-                    start = i + 1;
+            bool framingViolation = false;
+            while (buffer.size() - start >= kFrameHeaderSize) {
+                if (buffer[start] != kFrameMagic0 || buffer[start + 1] != kFrameMagic1) {
+                    reportError("tcp: not an AxonVex frame (magic " +
+                                toHexByte(buffer[start]) + " " + toHexByte(buffer[start + 1]) +
+                                ") — peer speaks a different protocol");
+                    framingViolation = true;
+                    break;
                 }
+                const uint32_t len = (static_cast<uint32_t>(buffer[start + 2]) << 24) |
+                                     (static_cast<uint32_t>(buffer[start + 3]) << 16) |
+                                     (static_cast<uint32_t>(buffer[start + 4]) << 8) |
+                                     static_cast<uint32_t>(buffer[start + 5]);
+                if (len > kMaxFrameLength) {
+                    reportError("tcp: frame length " + std::to_string(len) + " exceeds max " +
+                                std::to_string(kMaxFrameLength));
+                    framingViolation = true;
+                    break;
+                }
+                if (buffer.size() - start < kFrameHeaderSize + len) {
+                    break; // incomplete frame — wait for more bytes
+                }
+                std::vector<uint8_t> frame(buffer.begin() + start + kFrameHeaderSize,
+                                           buffer.begin() + start + kFrameHeaderSize + len);
+                stats_.messagesReceived.fetch_add(1, std::memory_order_relaxed);
+                dispatchMessage(frame);
+                start += kFrameHeaderSize + len;
             }
             if (start > 0) {
                 buffer.erase(buffer.begin(), buffer.begin() + start);
             }
+            if (framingViolation) {
+                break; // connection is unusable; terminate the receive loop
+            }
         }
+    }
+
+    /// Error-path only: format one byte as "0xNN" for framing diagnostics.
+    static std::string toHexByte(uint8_t b) {
+        static const char* digits = "0123456789ABCDEF";
+        std::string s = "0x??";
+        s[2] = digits[(b >> 4) & 0xF];
+        s[3] = digits[b & 0xF];
+        return s;
     }
 
 #endif
