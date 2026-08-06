@@ -199,6 +199,53 @@ TEST(TcpConnectionLifecycleTest, HardSendErrorPoisonsConnectionUntilRestart) {
     EXPECT_TRUE(finished) << "send-poison lifecycle wedged";
 }
 
+// Race coverage for the death/restart window (run under TSan): senders that
+// loaded connectionAlive_ just before the connection died can reach the socket
+// while start() is reconnecting — sock_ handoff must be properly synchronized
+// (connectSocket() assigns it under sockMutex_).
+TEST(TcpConnectionLifecycleTest, ConcurrentSendersSurviveDeathAndRestart) {
+    LoopbackTcpServer server;
+    ASSERT_TRUE(server.valid());
+
+    const bool finished = finishesWithin(
+        [&]() {
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", server.port());
+            CountingMessageCallback rx;
+            client.setMessageCallback(&rx);
+            ASSERT_TRUE(client.start());
+            ASSERT_TRUE(server.acceptOne());
+
+            std::atomic<bool> stopSenders{false};
+            std::vector<std::thread> senders;
+            for (int t = 0; t < 2; ++t) {
+                senders.emplace_back([&client, &stopSenders]() {
+                    const std::vector<uint8_t> payload{1, 2, 3};
+                    while (!stopSenders.load(std::memory_order_acquire)) {
+                        client.send(payload); // expected to fail across kill/restart
+                        std::this_thread::yield();
+                    }
+                });
+            }
+
+            for (int round = 0; round < 3; ++round) {
+                server.abortConnection(); // RST while senders hammer
+                ASSERT_TRUE(
+                    waitUntil([&client]() { return !client.isRunning(); }, std::chrono::seconds(5)))
+                    << "round " << round << ": client never noticed the dead connection";
+                ASSERT_TRUE(client.start()) << "round " << round << ": restart failed";
+                ASSERT_TRUE(server.acceptOne());
+            }
+
+            stopSenders.store(true, std::memory_order_release);
+            for (auto& s : senders) {
+                s.join();
+            }
+            client.stop();
+        },
+        std::chrono::milliseconds(20000));
+    EXPECT_TRUE(finished) << "concurrent senders across death/restart wedged";
+}
+
 // A wrong-protocol peer that sends fewer than kFrameHeaderSize bytes and then
 // waits used to go undiagnosed until EOF (the magic was only checked once a
 // full 6-byte header was buffered). The magic must be checked as soon as its
