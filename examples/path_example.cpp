@@ -24,7 +24,12 @@
 #include <axonvex_core/axonvex.hpp>
 
 using namespace axonvex;
-using namespace axonvex::Log; // Use framework's Logger
+using namespace axonvex::core;
+#include "exampleLog.hpp"
+
+using examplelog::Error;
+using examplelog::Info;
+using examplelog::Warn;
 
 void printHeader(const std::string& title) {
     Info() << "\n=== " << title << " ===";
