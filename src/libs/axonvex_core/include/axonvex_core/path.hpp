@@ -516,21 +516,6 @@ class Path {
      */
     bool moveTo(const Path& destination) const;
 
-    /**
-     * @brief Create atomic backup of file
-     *
-     * @param backup_suffix Suffix for backup file (default: ".bak")
-     * @return Path to backup file
-     */
-    Path createBackup(const std::string& backup_suffix = ".bak") const;
-
-    /**
-     * @brief Get unique filename (append number if file exists)
-     *
-     * @return Path with unique filename
-     */
-    Path getUniqueFilename() const;
-
     //==========================================================================
     // String Conversion and Comparison
     //==========================================================================
@@ -601,30 +586,6 @@ class Path {
      */
     static SecurityLevel getDefaultSecurityLevel();
 
-    /**
-     * @brief Register custom path validator
-     *
-     * @param name Validator name
-     * @param validator Validation function
-     */
-    static void registerValidator(const std::string& name,
-                                  std::function<bool(const Path&)> validator);
-
-    /**
-     * @brief Validate path using custom validator
-     *
-     * @param validator_name Name of registered validator
-     * @return true if validation passes
-     */
-    bool validateWith(const std::string& validator_name) const;
-
-    /**
-     * @brief Get system information about path limits
-     *
-     * @return Map of system path limits and capabilities
-     */
-    static std::unordered_map<std::string, std::string> getSystemInfo();
-
     //==========================================================================
     // Integration with AxonVex Components
     //==========================================================================
@@ -670,7 +631,6 @@ class Path {
 
     // Thread-safe static data
     static std::mutex static_mutex_;
-    static std::unordered_map<std::string, std::function<bool(const Path&)>> custom_validators_;
 };
 
 //==============================================================================
