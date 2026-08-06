@@ -6,6 +6,7 @@
 #include <axonvex_interfaces/detail/dispatchBarrier.hpp>
 #include <axonvex_interfaces/protocolInterface.hpp>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -177,6 +178,19 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
         }
         total += sent;
         if (!data.empty()) {
+            // Ceiling: if the header above went out whole but this payload
+            // write then fails partway, the peer is left waiting for the
+            // rest of a frame that will never arrive — there is no resync
+            // point on a TCP stream, so a later send() on this connection
+            // writes its next header right into that gap. Reachable today
+            // only via a hard socket error mid-payload, which means the
+            // connection is already broken: the peer's own recvLoop sees
+            // that as EOF/error and drops the incomplete trailing frame
+            // without dispatching it (no garbage delivered), but the desync
+            // itself is not resolved here. Full fix (e.g. closing this
+            // socket outright on partial-payload failure) is deferred to
+            // the §6 axonvex_net transport work; the receive side documents
+            // its equivalent case at the framing-violation break below.
             if (!sendAll(data.data(), data.size(), sent)) {
                 reportError("tcp: send failed after " + std::to_string(sent) + " of " +
                             std::to_string(data.size()) +
@@ -387,6 +401,14 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
             size_t start = 0;
             bool framingViolation = false;
             while (buffer.size() - start >= kFrameHeaderSize) {
+                if (!running_.load()) {
+                    // A callback invoked by dispatchMessage() below (e.g. the
+                    // frame just before this one) may have called stop() on
+                    // this thread (C33's supported reentrant-stop case). Do
+                    // not drain every remaining buffered frame after that —
+                    // stop() means stop, not "finish the batch".
+                    break;
+                }
                 if (buffer[start] != kFrameMagic0 || buffer[start + 1] != kFrameMagic1) {
                     reportError("tcp: not an AxonVex frame (magic " +
                                 toHexByte(buffer[start]) + " " + toHexByte(buffer[start + 1]) +
@@ -417,6 +439,18 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
                 buffer.erase(buffer.begin(), buffer.begin() + start);
             }
             if (framingViolation) {
+                // Ceiling: this only exits the receive loop, nothing more.
+                // running_ is deliberately left true, the socket is not
+                // closed, isRunning() keeps reporting true, and send() keeps
+                // returning true — the connection is half-open until the
+                // owner calls stop(). Do NOT "fix" by storing
+                // running_ = false here: start() would then run
+                // worker_ = std::thread(...) over this still-joinable
+                // handle, which is std::terminate. The real fix (mark
+                // not-running without racing a concurrent start(), refuse
+                // send() on a dead connection, have start() reap a
+                // joinable-but-dead worker) is deferred to the §6
+                // axonvex_net transport work.
                 break; // connection is unusable; terminate the receive loop
             }
         }
