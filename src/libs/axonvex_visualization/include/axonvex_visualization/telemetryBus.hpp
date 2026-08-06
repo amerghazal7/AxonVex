@@ -35,10 +35,18 @@
  * Memory-ordering argument for the lock-free publish/egress handoff: record
  * contents are published by ThreadSafeQueue's release store on the slot
  * sequence and acquired by the consumer's load (see threadSafeQueue.hpp for
- * the full argument); running_ uses release/acquire so a publisher that
- * observes running_==true cannot race the queue's destruction (stop() joins
- * before teardown). Proven by the TSan multi-producer stress test
- * (TelemetryBusTest.MultiProducerStressPreservesPerChannelOrder).
+ * the full argument). running_ (release/acquire) orders VISIBILITY only — it
+ * does NOT protect object lifetime: a publisher that loads running_==true can
+ * be preempted before its enqueue, and nothing (no refcount/epoch) keeps the
+ * queue alive across that window. Teardown contract: callers must fence every
+ * publisher out (no publish() in flight or possible) BEFORE stop() +
+ * destruction; a publish() racing destruction is a use-after-free. TSan
+ * stress coverage (MultiProducerStressPreservesPerChannelOrder) proves the
+ * publish/egress handoff, not publish-during-teardown.
+ *
+ * Ordering authority: `seq` (per-channel, delivery order). timestampNs is
+ * wall-clock (system_clock) and can step backwards under NTP adjustment —
+ * never order frames by timestamp.
  *
  * Subscriber lifetime: the bus does not own subscriber pointers. unsubscribe()
  * does not wait for an in-flight dispatch on the egress thread; destroy a
@@ -77,6 +85,9 @@ class TelemetryBus {
 
     static constexpr size_t DEFAULT_QUEUE_CAPACITY = 1024;
 
+    /// @param queueCapacity normalized by ThreadSafeQueue: clamped to
+    ///        [MIN_CAPACITY=16, MAX_CAPACITY=1<<20] and rounded up to a power
+    ///        of two (e.g. 100 becomes 128, 4 becomes 16).
     explicit TelemetryBus(size_t queueCapacity = DEFAULT_QUEUE_CAPACITY) : queue_(queueCapacity) {}
 
     ~TelemetryBus() {
@@ -96,15 +107,30 @@ class TelemetryBus {
     TelemetryBus& operator=(TelemetryBus&&) = delete;
 
     /// Spawns the egress thread. Idempotent; returns true when running.
+    /// Refuses (returns false) when called from the egress thread itself
+    /// after a deferred self-stop: joining the leftover handle here would be
+    /// a self-join (std::terminate). Restart from an external thread instead.
     bool start() {
+        // Self-restart check BEFORE the mutex, same discipline as stop(): a
+        // concurrent external start()/stop() holding lifecycleMutex_ while
+        // waiting for OUR join would deadlock both threads (C42 shape, see
+        // timingController's RealTimeScheduler::start()).
+        if (workerId_.load(std::memory_order_acquire) == std::this_thread::get_id()) {
+            return false;
+        }
         std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
-        if (running_.exchange(true))
+        if (running_.load(std::memory_order_acquire))
             return true;
         if (worker_.joinable()) {
-            // Reclaim a worker left joinable by a deferred self-stop; its loop
-            // has already exited (running_ was false), so this join is prompt.
+            // Reclaim a worker left joinable by a deferred self-stop. Join
+            // BEFORE flipping running_: flipping first lets a worker still
+            // inside its final callback re-enter its loop (running_ reads true
+            // again) and never exit — this join would then block forever with
+            // lifecycleMutex_ held (C42 regression, permanent deadlock).
             worker_.join();
+            workerId_.store(std::thread::id(), std::memory_order_release);
         }
+        running_.store(true, std::memory_order_release);
         worker_ = std::thread([this]() {
             // Published by the worker as its FIRST act and cleared LAST so
             // stop() can detect self-stop without reading the std::thread
@@ -152,9 +178,9 @@ class TelemetryBus {
      * publish (a copied lvalue payload allocates in the CALLER's move-from,
      * not here).
      *
-     * @return true if accepted; false if the bus is not running or the queue
-     *         is full (drop-newest — the frame is discarded and droppedCount()
-     *         advances).
+     * @return true if accepted. false if the bus is not running (NOT counted
+     *         by droppedCount()), or if the queue is full — drop-newest: the
+     *         frame is discarded and droppedCount() advances.
      */
     bool publish(std::string channel, Message payload) {
         if (!running_.load(std::memory_order_acquire))

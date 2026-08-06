@@ -5,6 +5,8 @@
 #include <axonvex_visualization/telemetryBus.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -64,6 +66,35 @@ class CollectingSub : public TelemetryBus::Subscriber {
 TelemetryBus::Message bytes(std::initializer_list<uint8_t> b) {
     return TelemetryBus::Message(b);
 }
+
+// The lifecycle deadlock regressions these tests guard against fail as a HANG
+// (join/destructor never returns) and gtest has no per-test timeout: without
+// this, a regression wedges the whole suite instead of failing it. Aborting is
+// loud and attributable. Yield-spin, not condition_variable::wait_for (bogus
+// TSan races on GCC 11 libtsan) and not sleep (project rule).
+class TestWatchdog {
+  public:
+    explicit TestWatchdog(std::chrono::seconds limit)
+        : thread_([this, limit] {
+              const auto deadline = std::chrono::steady_clock::now() + limit;
+              while (!done_.load(std::memory_order_acquire)) {
+                  if (std::chrono::steady_clock::now() >= deadline) {
+                      std::fprintf(stderr, "TestWatchdog: lifecycle test wedged (deadlock "
+                                           "regression?), aborting\n");
+                      std::abort();
+                  }
+                  std::this_thread::yield();
+              }
+          }) {}
+    ~TestWatchdog() {
+        done_.store(true, std::memory_order_release);
+        thread_.join();
+    }
+
+  private:
+    std::atomic<bool> done_{false};
+    std::thread thread_;
+};
 
 } // namespace
 
@@ -225,6 +256,7 @@ TEST(TelemetryBusTest, SelfStopFromCallbackDoesNotDeadlock) {
         TelemetryBus& bus_;
     };
 
+    TestWatchdog watchdog(std::chrono::seconds(30));
     TelemetryBus bus;
     SelfStopSub sub(bus);
     bus.subscribe("ch", &sub);
@@ -234,6 +266,104 @@ TEST(TelemetryBusTest, SelfStopFromCallbackDoesNotDeadlock) {
     ASSERT_TRUE(pollUntil([&] { return !bus.isRunning(); }));
     bus.stop(); // external stop reclaims the deferred join
     EXPECT_FALSE(bus.publish("ch", bytes({2})));
+}
+
+// C42 regression at the TelemetryBus layer (sibling of timingController's test
+// of the same name, fixed in 3a8de96): after a deferred self-stop, an external
+// start() must join the leftover worker BEFORE flipping running_. Flipping
+// first lets a worker still inside its final callback re-enter its loop
+// (running_ reads true again) and never exit — start() then blocks forever in
+// join() holding lifecycleMutex_, deadlocking every later lifecycle call.
+TEST(TelemetryBusTest, StartAfterDeferredSelfStopReclaimsHandleAndRunsAgain) {
+    class ParkAfterSelfStopSub : public TelemetryBus::Subscriber {
+      public:
+        explicit ParkAfterSelfStopSub(TelemetryBus& bus) : bus_(bus) {}
+        std::atomic<bool> stopped{false};
+        std::atomic<bool> release{false};
+        void callbackPerform(const TelemetryFrame) override {
+            bus_.stop(); // deferred self-stop: running_ false, worker parked here
+            stopped.store(true);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (!release.load() && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::yield();
+            }
+        }
+
+      private:
+        TelemetryBus& bus_;
+    };
+
+    TestWatchdog watchdog(std::chrono::seconds(30));
+    TelemetryBus bus;
+    ParkAfterSelfStopSub sub(bus);
+    bus.subscribe("ch", &sub);
+    bus.start();
+    ASSERT_TRUE(bus.publish("ch", bytes({1})));
+    ASSERT_TRUE(pollUntil([&] { return sub.stopped.load(); }));
+
+    // Worker is parked INSIDE its final callback with running_ already false —
+    // the exact window a supervisor's `if (!bus.isRunning()) bus.start();` hits.
+    std::atomic<bool> startReturned{false};
+    std::atomic<bool> startResult{false};
+    std::thread restarter([&] {
+        startResult.store(bus.start());
+        startReturned.store(true);
+    });
+
+    // Smoking gun of the regression: running_ observable as true while the
+    // leftover worker is still inside its callback (the join must come first).
+    EXPECT_FALSE(pollUntil([&] { return bus.isRunning(); }, std::chrono::milliseconds(200)))
+        << "start() flipped running_ before joining the leftover worker (C42 shape)";
+
+    sub.release.store(true);
+    ASSERT_TRUE(pollUntil([&] { return startReturned.load(); }, std::chrono::seconds(10)))
+        << "start() never returned: the leftover worker re-entered its loop";
+    restarter.join();
+    EXPECT_TRUE(startResult.load());
+    EXPECT_TRUE(bus.isRunning());
+
+    // The fresh worker actually dispatches.
+    bus.unsubscribe("ch", &sub);
+    CollectingSub fresh;
+    bus.subscribe("ch", &fresh);
+    ASSERT_TRUE(bus.publish("ch", bytes({2})));
+    ASSERT_TRUE(pollUntil([&] { return fresh.count() == 1; }));
+    bus.stop();
+}
+
+// C42 sibling, second failure mode: a subscriber calls stop() then start() ON
+// the egress thread. start() must refuse outright — reaching worker_.join()
+// there is a self-join (pthread EDEADLK -> std::system_error out of the thread
+// -> std::terminate).
+TEST(TelemetryBusTest, SelfRestartFromCallbackIsRefusedNotTerminate) {
+    class StopStartSub : public TelemetryBus::Subscriber {
+      public:
+        explicit StopStartSub(TelemetryBus& bus) : bus_(bus) {}
+        std::atomic<bool> called{false};
+        std::atomic<bool> startAccepted{true};
+        void callbackPerform(const TelemetryFrame) override {
+            bus_.stop();
+            startAccepted.store(bus_.start()); // must refuse, not terminate
+            called.store(true);
+        }
+
+      private:
+        TelemetryBus& bus_;
+    };
+
+    TestWatchdog watchdog(std::chrono::seconds(30));
+    TelemetryBus bus;
+    StopStartSub sub(bus);
+    bus.subscribe("ch", &sub);
+    bus.start();
+    ASSERT_TRUE(bus.publish("ch", bytes({1})));
+    ASSERT_TRUE(pollUntil([&] { return sub.called.load(); }));
+    EXPECT_FALSE(sub.startAccepted.load()) << "self-restart from the egress thread must be refused";
+    ASSERT_TRUE(pollUntil([&] { return !bus.isRunning(); }));
+
+    bus.stop();               // external stop reclaims the deferred join
+    EXPECT_TRUE(bus.start()); // external restart is allowed afterwards
+    bus.stop();
 }
 
 TEST(TelemetryBusTest, UnsubscribeStopsDelivery) {
