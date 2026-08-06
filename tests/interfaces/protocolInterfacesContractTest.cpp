@@ -2,9 +2,9 @@
 #include <array>
 #include <atomic>
 #include <axonvex_core/callback.hpp>
-#include <axonvex_interfaces/tcp/tcpClient.hpp>
-#include <axonvex_interfaces/udp/udpSocket.hpp>
 #include <axonvex_interfaces/websocket/websocketServer.hpp>
+#include <axonvex_net/tcp/tcpClient.hpp>
+#include <axonvex_net/udp/udpSocket.hpp>
 #include <chrono>
 #include <functional>
 #include <gtest/gtest.h>
@@ -516,7 +516,9 @@ class LoopbackTcpServer {
         if (listenFd_ >= 0)
             ::close(listenFd_);
     }
-    bool valid() const { return listenFd_ >= 0; }
+    bool valid() const {
+        return listenFd_ >= 0;
+    }
     bool acceptOne() {
         connFd_ = ::accept(listenFd_, nullptr, nullptr);
         return connFd_ >= 0;
@@ -553,7 +555,9 @@ class LoopbackTcpServer {
 // Frame a payload the way the C11 wire format specifies.
 std::vector<uint8_t> framed(const std::vector<uint8_t>& payload) {
     const uint32_t len = static_cast<uint32_t>(payload.size());
-    std::vector<uint8_t> out{0xAF, 0x01, static_cast<uint8_t>((len >> 24) & 0xFF),
+    std::vector<uint8_t> out{0xAF,
+                             0x01,
+                             static_cast<uint8_t>((len >> 24) & 0xFF),
                              static_cast<uint8_t>((len >> 16) & 0xFF),
                              static_cast<uint8_t>((len >> 8) & 0xFF),
                              static_cast<uint8_t>(len & 0xFF)};
@@ -652,7 +656,7 @@ TEST(ProtocolInterfacesContractTest, TcpFramesSurviveSplitAndCoalescedDelivery) 
     }
 
     const std::vector<uint8_t> a{0xDE, 0xAD};
-    const std::vector<uint8_t> b{};             // zero-length frame is legal
+    const std::vector<uint8_t> b{}; // zero-length frame is legal
     const std::vector<uint8_t> c{0x0A, 0xBE, 0xEF};
 
     const bool finished = finishesWithin(
