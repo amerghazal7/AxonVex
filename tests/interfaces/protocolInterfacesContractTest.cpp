@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <axonvex_core/callback.hpp>
 #include <axonvex_interfaces/tcp/tcpClient.hpp>
@@ -7,9 +9,17 @@
 #include <functional>
 #include <gtest/gtest.h>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(AXONVEX_PLATFORM_LINUX)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -27,8 +37,17 @@ class VectorCallback final : public axonvex::core::Callback<std::vector<uint8_t>
 class StringCallback final : public axonvex::core::Callback<std::string> {
   public:
     void callbackPerform(const std::string data) override {
-        ++count;
+        // `last` must be visible to a reader that has observed the count
+        // increment (waitForCount-style polling), so it is written before
+        // the seq_cst increment publishes it, not after.
         last = data;
+        ++count;
+    }
+
+    // Snapshot for a reader that polled `count` to a target: the atomic
+    // load below happens-after the write above via count's seq_cst store.
+    std::string lastMessage() const {
+        return last;
     }
 
     std::atomic<int> count{0};
@@ -464,6 +483,276 @@ TEST(ProtocolInterfacesContractTest, ConcurrentDispatchFromTwoThreadsDoesNotDead
         std::chrono::milliseconds(15000));
 
     EXPECT_TRUE(finished) << "concurrent dispatch on two threads deadlocked the barrier";
+}
+#endif
+
+#if defined(AXONVEX_PLATFORM_LINUX)
+namespace {
+// Minimal blocking loopback TCP server for framing tests: bind/listen on
+// 127.0.0.1, accept exactly one client, then let the test read/write raw
+// bytes on the accepted fd. Blocking is fine — every use sits inside a
+// finishesWithin() deadline.
+class LoopbackTcpServer {
+  public:
+    explicit LoopbackTcpServer(uint16_t port) {
+        listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (listenFd_ < 0)
+            return;
+        int yes = 1;
+        ::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+            ::listen(listenFd_, 1) != 0) {
+            ::close(listenFd_);
+            listenFd_ = -1;
+        }
+    }
+    ~LoopbackTcpServer() {
+        if (connFd_ >= 0)
+            ::close(connFd_);
+        if (listenFd_ >= 0)
+            ::close(listenFd_);
+    }
+    bool valid() const { return listenFd_ >= 0; }
+    bool acceptOne() {
+        connFd_ = ::accept(listenFd_, nullptr, nullptr);
+        return connFd_ >= 0;
+    }
+    bool writeRaw(const std::vector<uint8_t>& bytes) {
+        size_t off = 0;
+        while (off < bytes.size()) {
+            ssize_t n = ::send(connFd_, bytes.data() + off, bytes.size() - off, MSG_NOSIGNAL);
+            if (n <= 0)
+                return false;
+            off += static_cast<size_t>(n);
+        }
+        return true;
+    }
+    // Reads exactly n bytes or gives up on EOF/error.
+    bool readExactly(size_t n, std::vector<uint8_t>& out) {
+        out.clear();
+        out.reserve(n);
+        std::array<uint8_t, 512> tmp{};
+        while (out.size() < n) {
+            ssize_t got = ::recv(connFd_, tmp.data(), std::min(tmp.size(), n - out.size()), 0);
+            if (got <= 0)
+                return false;
+            out.insert(out.end(), tmp.begin(), tmp.begin() + got);
+        }
+        return true;
+    }
+
+  private:
+    int listenFd_{-1};
+    int connFd_{-1};
+};
+
+// Frame a payload the way the C11 wire format specifies.
+std::vector<uint8_t> framed(const std::vector<uint8_t>& payload) {
+    const uint32_t len = static_cast<uint32_t>(payload.size());
+    std::vector<uint8_t> out{0xAF, 0x01, static_cast<uint8_t>((len >> 24) & 0xFF),
+                             static_cast<uint8_t>((len >> 16) & 0xFF),
+                             static_cast<uint8_t>((len >> 8) & 0xFF),
+                             static_cast<uint8_t>(len & 0xFF)};
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
+// Collects every dispatched message; poll `count` against a deadline.
+class CollectingCallback final : public axonvex::core::Callback<std::vector<uint8_t>> {
+  public:
+    std::mutex m;
+    std::vector<std::vector<uint8_t>> messages;
+    std::atomic<int> count{0};
+
+    void callbackPerform(const std::vector<uint8_t> data) override {
+        {
+            std::lock_guard<std::mutex> lock(m);
+            messages.push_back(data);
+        }
+        ++count;
+    }
+};
+
+bool waitForCount(std::atomic<int>& counter, int target, std::chrono::milliseconds limit) {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (counter.load() < target && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    return counter.load() >= target;
+}
+} // namespace
+
+// C11 regression: newline framing corrupted binary payloads — a 0x0A byte
+// inside the data was indistinguishable from the frame boundary, so the
+// receiver split the message. The wire format is now magic 0xAF 0x01 +
+// u32 BE payload length + payload; this test pins BOTH directions:
+// the exact bytes send() puts on the wire, and that a framed payload
+// containing 0x0A dispatches intact.
+TEST(ProtocolInterfacesContractTest, TcpBinaryPayloadWithNewlineRoundTripsIntact) {
+    const uint16_t kPort = 39420;
+    LoopbackTcpServer server(kPort);
+    if (!server.valid()) {
+        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
+    }
+
+    const std::vector<uint8_t> payload{0x01, 0x0A, 0x02, 0x0A, 0x0A, 0x03};
+
+    const bool finished = finishesWithin(
+        [&]() {
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            CollectingCallback rx;
+            client.setMessageCallback(&rx);
+            ASSERT_TRUE(client.start());
+            ASSERT_TRUE(server.acceptOne());
+
+            // Direction 1: client -> wire. The exact framed bytes, nothing more.
+            ASSERT_TRUE(client.send(payload));
+            std::vector<uint8_t> wire;
+            ASSERT_TRUE(server.readExactly(6 + payload.size(), wire));
+            EXPECT_EQ(wire, framed(payload)) << "send() did not emit the C11 wire format";
+
+            // Direction 2: wire -> client. One dispatch, payload intact.
+            ASSERT_TRUE(server.writeRaw(framed(payload)));
+            ASSERT_TRUE(waitForCount(rx.count, 1, std::chrono::seconds(5)));
+            {
+                std::lock_guard<std::mutex> lock(rx.m);
+                ASSERT_EQ(rx.messages.size(), 1u)
+                    << "payload with embedded 0x0A was split into multiple frames";
+                EXPECT_EQ(rx.messages[0], payload);
+            }
+            client.stop();
+        },
+        std::chrono::milliseconds(15000));
+    EXPECT_TRUE(finished) << "framing round-trip wedged";
+}
+
+// Frames survive arbitrary TCP segmentation: header and payload dribbled
+// byte-wise, then several complete frames in one write, incl. an empty frame.
+TEST(ProtocolInterfacesContractTest, TcpFramesSurviveSplitAndCoalescedDelivery) {
+    const uint16_t kPort = 39421;
+    LoopbackTcpServer server(kPort);
+    if (!server.valid()) {
+        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
+    }
+
+    const std::vector<uint8_t> a{0xDE, 0xAD};
+    const std::vector<uint8_t> b{};             // zero-length frame is legal
+    const std::vector<uint8_t> c{0x0A, 0xBE, 0xEF};
+
+    const bool finished = finishesWithin(
+        [&]() {
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            CollectingCallback rx;
+            client.setMessageCallback(&rx);
+            ASSERT_TRUE(client.start());
+            ASSERT_TRUE(server.acceptOne());
+
+            // Frame `a` one byte at a time (splits inside header AND payload).
+            for (uint8_t byte : framed(a)) {
+                ASSERT_TRUE(server.writeRaw({byte}));
+            }
+            // Frames `b` (empty) and `c` coalesced into one write.
+            std::vector<uint8_t> burst = framed(b);
+            const std::vector<uint8_t> fc = framed(c);
+            burst.insert(burst.end(), fc.begin(), fc.end());
+            ASSERT_TRUE(server.writeRaw(burst));
+
+            ASSERT_TRUE(waitForCount(rx.count, 3, std::chrono::seconds(5)));
+            {
+                std::lock_guard<std::mutex> lock(rx.m);
+                ASSERT_EQ(rx.messages.size(), 3u);
+                EXPECT_EQ(rx.messages[0], a);
+                EXPECT_EQ(rx.messages[1], b);
+                EXPECT_EQ(rx.messages[2], c);
+            }
+            client.stop();
+        },
+        std::chrono::milliseconds(15000));
+    EXPECT_TRUE(finished) << "split/coalesced framing wedged";
+}
+
+// A non-AxonVex peer (wrong magic — e.g. an old newline-framing peer) is a
+// precise loud error, not a garbage dispatch and not a silent drop.
+TEST(ProtocolInterfacesContractTest, TcpBadMagicIsLoudErrorAndNothingDispatches) {
+    const uint16_t kPort = 39422;
+    LoopbackTcpServer server(kPort);
+    if (!server.valid()) {
+        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
+    }
+
+    const bool finished = finishesWithin(
+        [&]() {
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            CollectingCallback rx;
+            StringCallback err; // existing helper in this file: collects error strings
+            client.setMessageCallback(&rx);
+            client.registerErrorHandler("default", &err);
+            ASSERT_TRUE(client.start());
+            ASSERT_TRUE(server.acceptOne());
+
+            ASSERT_TRUE(server.writeRaw({'H', 'e', 'l', 'l', 'o', '\n'}));
+            ASSERT_TRUE(waitForCount(err.count, 1, std::chrono::seconds(5)));
+            EXPECT_EQ(rx.count.load(), 0) << "garbage bytes must never dispatch";
+            EXPECT_NE(err.lastMessage().find("not an AxonVex frame"), std::string::npos);
+            client.stop();
+        },
+        std::chrono::milliseconds(15000));
+    EXPECT_TRUE(finished) << "bad-magic handling wedged";
+}
+
+// A hostile/corrupt length field must not drive a giant allocation: valid
+// magic + a length above kMaxFrameLength is a precise loud error.
+TEST(ProtocolInterfacesContractTest, TcpOversizeLengthIsLoudErrorAndNothingDispatches) {
+    const uint16_t kPort = 39423;
+    LoopbackTcpServer server(kPort);
+    if (!server.valid()) {
+        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
+    }
+
+    const bool finished = finishesWithin(
+        [&]() {
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            CollectingCallback rx;
+            StringCallback err;
+            client.setMessageCallback(&rx);
+            client.registerErrorHandler("default", &err);
+            ASSERT_TRUE(client.start());
+            ASSERT_TRUE(server.acceptOne());
+
+            // 0xFFFFFFFF payload length: far above the 16 MiB limit.
+            ASSERT_TRUE(server.writeRaw({0xAF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF}));
+            ASSERT_TRUE(waitForCount(err.count, 1, std::chrono::seconds(5)));
+            EXPECT_EQ(rx.count.load(), 0);
+            EXPECT_NE(err.lastMessage().find("exceeds max"), std::string::npos);
+            client.stop();
+        },
+        std::chrono::milliseconds(15000));
+    EXPECT_TRUE(finished) << "oversize-length handling wedged";
+}
+
+// send() refuses an over-limit payload before touching the socket.
+TEST(ProtocolInterfacesContractTest, TcpSendRefusesOverLimitPayload) {
+    const uint16_t kPort = 39424;
+    LoopbackTcpServer server(kPort);
+    if (!server.valid()) {
+        GTEST_SKIP() << "port " << kPort << " unavailable on this host";
+    }
+
+    axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+    StringCallback err;
+    client.registerErrorHandler("default", &err);
+    ASSERT_TRUE(client.start());
+    ASSERT_TRUE(server.acceptOne());
+
+    // 16 MiB + 1 of zeros; allocation is fine, the send must refuse it.
+    std::vector<uint8_t> tooBig(16u * 1024u * 1024u + 1u, 0);
+    EXPECT_FALSE(client.send(tooBig));
+    EXPECT_GE(err.count.load(), 1);
+    client.stop();
 }
 #endif
 
