@@ -609,11 +609,23 @@ TEST(ProtocolInterfacesContractTest, TcpBinaryPayloadWithNewlineRoundTripsIntact
             ASSERT_TRUE(client.start());
             ASSERT_TRUE(server.acceptOne());
 
-            // Direction 1: client -> wire. The exact framed bytes, nothing more.
+            // Direction 1: client -> wire. The exact framed bytes, nothing
+            // more. A second, empty-payload frame is sent immediately after:
+            // readExactly reads past frame 1's boundary, so a stray byte left
+            // over from frame 1 (e.g. the old '\n' delimiter) corrupts frame
+            // 2's magic in the comparison below instead of going unnoticed
+            // past the end of a single-frame read. This also exercises
+            // send()'s zero-length-payload skip branch on the send side.
             ASSERT_TRUE(client.send(payload));
+            ASSERT_TRUE(client.send({}));
             std::vector<uint8_t> wire;
-            ASSERT_TRUE(server.readExactly(6 + payload.size(), wire));
-            EXPECT_EQ(wire, framed(payload)) << "send() did not emit the C11 wire format";
+            ASSERT_TRUE(server.readExactly(6 + payload.size() + 6, wire));
+            std::vector<uint8_t> expectedWire = framed(payload);
+            const std::vector<uint8_t> secondFrame = framed({});
+            expectedWire.insert(expectedWire.end(), secondFrame.begin(), secondFrame.end());
+            EXPECT_EQ(wire, expectedWire)
+                << "send() did not emit the C11 wire format, or left a stray "
+                   "trailing byte that corrupted the following frame";
 
             // Direction 2: wire -> client. One dispatch, payload intact.
             ASSERT_TRUE(server.writeRaw(framed(payload)));
@@ -742,17 +754,27 @@ TEST(ProtocolInterfacesContractTest, TcpSendRefusesOverLimitPayload) {
         GTEST_SKIP() << "port " << kPort << " unavailable on this host";
     }
 
-    axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
-    StringCallback err;
-    client.registerErrorHandler("default", &err);
-    ASSERT_TRUE(client.start());
-    ASSERT_TRUE(server.acceptOne());
+    // If the size guard ever regresses, client.send(tooBig) below would try
+    // to actually write 16 MiB+1 to a peer that never reads it: the kernel
+    // send buffer fills and the blocking ::send() (no SO_SNDTIMEO) blocks
+    // forever inside sockMutex_. Bound it like its four neighbors so that
+    // regression is a fast failure, not a wedged ctest run.
+    const bool finished = finishesWithin(
+        [&]() {
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", kPort);
+            StringCallback err;
+            client.registerErrorHandler("default", &err);
+            ASSERT_TRUE(client.start());
+            ASSERT_TRUE(server.acceptOne());
 
-    // 16 MiB + 1 of zeros; allocation is fine, the send must refuse it.
-    std::vector<uint8_t> tooBig(16u * 1024u * 1024u + 1u, 0);
-    EXPECT_FALSE(client.send(tooBig));
-    EXPECT_GE(err.count.load(), 1);
-    client.stop();
+            // 16 MiB + 1 of zeros; allocation is fine, the send must refuse it.
+            std::vector<uint8_t> tooBig(16u * 1024u * 1024u + 1u, 0);
+            EXPECT_FALSE(client.send(tooBig));
+            EXPECT_GE(err.count.load(), 1);
+            client.stop();
+        },
+        std::chrono::milliseconds(15000));
+    EXPECT_TRUE(finished) << "over-limit send refusal wedged";
 }
 #endif
 
