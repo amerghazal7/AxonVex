@@ -20,6 +20,7 @@ set(CMAKE_INSTALL_RPATH
     "${AXONVEX_INSTALL_PREFIX}/axonvex_core/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_plugins/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_interfaces/libs"
+    "${AXONVEX_INSTALL_PREFIX}/axonvex_net/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_safety/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_io/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_visualization/libs"
@@ -170,6 +171,7 @@ if(BUILD_TESTING)
                 axonvex_core
                 axonvex_plugins
                 axonvex_interfaces
+                axonvex_net
                 axonvex_safety
                 axonvex_io
                 axonvex_visualization
