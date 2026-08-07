@@ -307,7 +307,13 @@ bool RealTimeScheduler::isTaskActive(uint32_t taskId) const {
 }
 
 void RealTimeScheduler::setCustomScheduler(CustomSchedulerCallback callback) {
-    std::lock_guard<std::mutex> lock(schedulerMutex_);
+    // C44-sibling fix: setup-only, no lock -- same shape as setErrorCallback,
+    // reusing its hasStarted_ latch / requireNotStarted() helper rather than
+    // a second mechanism. scheduleCustom() reads customScheduler_ unlocked on
+    // the scheduler thread; this call used to write it under schedulerMutex_
+    // while running, which is exactly the torn-std::function-read hazard C44
+    // closed for errorCallback_.
+    requireNotStarted("setCustomScheduler");
     customScheduler_ = callback;
 }
 
@@ -602,6 +608,14 @@ uint32_t RealTimeScheduler::scheduleRoundRobin() {
 }
 
 uint32_t RealTimeScheduler::scheduleCustom() {
+    // C44-sibling: both this guard and the call below read customScheduler_
+    // with no lock, on the scheduler thread. That is legal only because
+    // setCustomScheduler() is setup-only (requireNotStarted(), latched by
+    // hasStarted_): no write can land once the scheduler has started, and
+    // scheduleCustom() itself never runs before then, so there is no
+    // concurrent writer to race and no check-then-act window between the two
+    // reads. Do not "fix" this back into a schedulerMutex_ lock -- that would
+    // be a lock on the RT path for a hazard that no longer exists.
     if (!customScheduler_) {
         return schedulePriorityBased(); // Fallback
     }
