@@ -74,7 +74,10 @@ class TcpClient : public axonvex::interfaces::ProtocolInterface {
     static constexpr int RECV_TIMEOUT_MS = 100;
 
 #if defined(AXONVEX_PLATFORM_LINUX)
-    bool connectSocket();
+    /// Appends failure messages to @p errorsOut instead of dispatching them:
+    /// it runs under lifecycleMutex_ (from start()), and user callbacks must
+    /// never be invoked while a transport lock is held (C34/C12).
+    bool connectSocket(std::vector<std::string>& errorsOut);
 
     /// ::send may accept fewer bytes than asked; the caller must resume from the
     /// offset. Not looping here silently truncated the payload and still counted

@@ -61,13 +61,21 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     static constexpr int RECV_TIMEOUT_MS = 100;
 
 #if defined(AXONVEX_PLATFORM_LINUX)
-    bool openAndBind();
+    /// Appends failure messages to @p errorsOut instead of dispatching them:
+    /// it runs under lifecycleMutex_ (from start()), and user callbacks must
+    /// never be invoked while a transport lock is held (C34/C12).
+    bool openAndBind(std::vector<std::string>& errorsOut);
 
     /// Called twice on purpose when remote_host is configured before start():
     /// once from configure(), when sockFamily_ is still AF_UNSPEC and the family
     /// preference cannot be applied, and again from openAndBind() once the
     /// socket's real family is known, which overwrites that first guess.
-    void updateRemote();
+    /// Appends failures to @p errorsOut (same rationale as openAndBind).
+    void updateRemote(std::vector<std::string>& errorsOut);
+
+    /// configure()-path wrapper: collects from updateRemote() and dispatches
+    /// immediately — safe there because configure() holds no transport lock.
+    void updateRemoteAndReport();
 
     void recvLoop();
 #endif

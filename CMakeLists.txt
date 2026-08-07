@@ -160,6 +160,7 @@ if(BUILD_TESTING)
             tests/safety/systemSafetyTest.cpp
             tests/interfaces/protocolInterfacesContractTest.cpp
             tests/net/tcpConnectionLifecycleTest.cpp
+            tests/net/transportCallbackApiTest.cpp
             tests/core/interfaceUnitsTest.cpp
             tests/core/missionTest.cpp
             tests/core/traceReplayTest.cpp

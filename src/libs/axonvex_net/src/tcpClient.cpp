@@ -56,61 +56,73 @@ bool TcpClient::start() {
         return false;
     }
 
-    // Serialises the whole lifecycle. `running_` alone was check-then-act:
-    // two concurrent stop() calls could both pass the guard and both reach
-    // worker_.join(), and joining an already-joined thread is UB (C33).
-    std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
-    if (running_.load() && connectionAlive_.load(std::memory_order_acquire))
-        return true; // already running on a live connection
-#if defined(AXONVEX_PLATFORM_LINUX)
-    // Reap a dead-but-unjoined worker (framing violation, peer EOF, hard
-    // recv/send error, or a deferred self-stop) before reassigning worker_:
-    // move-assigning over a joinable std::thread is std::terminate. The join
-    // is bounded — with running_ or connectionAlive_ false, recvLoop exits
-    // within RECV_TIMEOUT_MS via SO_RCVTIMEO.
-    if (worker_.joinable()) {
-        running_.store(false);
-        worker_.join();
-        workerId_.store(std::thread::id(), std::memory_order_release);
-    }
-    running_.store(false);
+    // Failure messages are built under lifecycleMutex_ but dispatched only
+    // after it is released (the C34/C12 rule): an error handler reacting to a
+    // connect failure by calling start() or stop() — both supported — would
+    // otherwise self-deadlock on the non-recursive lifecycleMutex_.
+    std::vector<std::string> startErrors;
+    bool started = false;
     {
-        // The dead connection's fd survives until here (not closed by
-        // recvLoop) so late send() calls fail on the connectionAlive_ flag,
-        // never on a recycled fd number.
-        std::lock_guard<std::mutex> lock(sockMutex_);
-        if (sock_ >= 0) {
-            ::close(sock_);
-            sock_ = -1;
+        // Serialises the whole lifecycle. `running_` alone was check-then-act:
+        // two concurrent stop() calls could both pass the guard and both reach
+        // worker_.join(), and joining an already-joined thread is UB (C33).
+        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
+        if (running_.load() && connectionAlive_.load(std::memory_order_acquire))
+            return true; // already running on a live connection
+#if defined(AXONVEX_PLATFORM_LINUX)
+        // Reap a dead-but-unjoined worker (framing violation, peer EOF, hard
+        // recv/send error, or a deferred self-stop) before reassigning worker_:
+        // move-assigning over a joinable std::thread is std::terminate. The join
+        // is bounded — with running_ or connectionAlive_ false, recvLoop exits
+        // within RECV_TIMEOUT_MS via SO_RCVTIMEO.
+        if (worker_.joinable()) {
+            running_.store(false);
+            worker_.join();
+            workerId_.store(std::thread::id(), std::memory_order_release);
         }
-    }
-    if (!connectSocket()) {
-        reportError("tcp: failed to connect to " + host_ + ":" + std::to_string(port_));
-        return false;
-    }
-    connectionAlive_.store(true, std::memory_order_release);
-    running_.store(true);
-    worker_ = std::thread([this]() {
-        workerId_.store(std::this_thread::get_id(), std::memory_order_release);
-        recvLoop();
-        // Terminal exits inside recvLoop already cleared connectionAlive_;
-        // this covers the ordinary stop() path so "stopped" and "dead" are
-        // the same state for send()/isRunning().
-        connectionAlive_.store(false, std::memory_order_release);
-        // Cleared by the worker itself on the way out. A thread::id is
-        // reusable once its thread has exited, so leaving a stale id here
-        // would let an unrelated future thread match it and wrongly skip
-        // the join, stranding a joinable std::thread.
-        workerId_.store(std::thread::id(), std::memory_order_release);
-    });
-    return true;
+        running_.store(false);
+        {
+            // The dead connection's fd survives until here (not closed by
+            // recvLoop) so late send() calls fail on the connectionAlive_ flag,
+            // never on a recycled fd number.
+            std::lock_guard<std::mutex> lock(sockMutex_);
+            if (sock_ >= 0) {
+                ::close(sock_);
+                sock_ = -1;
+            }
+        }
+        if (!connectSocket(startErrors)) {
+            startErrors.push_back("tcp: failed to connect to " + host_ + ":" +
+                                  std::to_string(port_));
+        } else {
+            connectionAlive_.store(true, std::memory_order_release);
+            running_.store(true);
+            worker_ = std::thread([this]() {
+                workerId_.store(std::this_thread::get_id(), std::memory_order_release);
+                recvLoop();
+                // Terminal exits inside recvLoop already cleared connectionAlive_;
+                // this covers the ordinary stop() path so "stopped" and "dead" are
+                // the same state for send()/isRunning().
+                connectionAlive_.store(false, std::memory_order_release);
+                // Cleared by the worker itself on the way out. A thread::id is
+                // reusable once its thread has exited, so leaving a stale id here
+                // would let an unrelated future thread match it and wrongly skip
+                // the join, stranding a joinable std::thread.
+                workerId_.store(std::thread::id(), std::memory_order_release);
+            });
+            started = true;
+        }
 #else
-    // No sockets on this platform. Reporting success and spinning a thread
-    // that does nothing made every caller believe it had a live transport
-    // (C24); fail honestly instead.
-    reportError("tcp: not implemented on this platform");
-    return false;
+        // No sockets on this platform. Reporting success and spinning a thread
+        // that does nothing made every caller believe it had a live transport
+        // (C24); fail honestly instead.
+        startErrors.push_back("tcp: not implemented on this platform");
 #endif
+    }
+    for (const auto& msg : startErrors) {
+        reportError(msg);
+    }
+    return started;
 }
 
 void TcpClient::stop() {
@@ -180,6 +192,11 @@ bool TcpClient::send(const std::vector<uint8_t>& data) {
     // stream, stop() ran, or start() never did — must fail loudly. A silent
     // false was indistinguishable from a transient hiccup (2a).
     if (!connectionAlive_.load(std::memory_order_acquire)) {
+        // Ceiling: an error handler that reacts to this report by calling
+        // send() again recurses reportError -> handler -> send unboundedly
+        // (the connection stays dead). Handlers must not retry send()
+        // synchronously; upgrade path is a per-thread reentry guard if a
+        // real consumer needs one.
         reportError("tcp: send refused — connection is not open (start() (re)connects)");
         return false;
     }
@@ -199,36 +216,42 @@ bool TcpClient::send(const std::vector<uint8_t>& data) {
         // bytes. Ceiling: a send that blocks on a full socket buffer blocks
         // every other sender and delays stop()'s close.
         std::lock_guard<std::mutex> lock(sockMutex_);
-        if (sock_ < 0)
-            return false; // belt only: connectionAlive_ implies an open fd
-        const uint32_t len = static_cast<uint32_t>(data.size());
-        const uint8_t header[kFrameHeaderSize] = {kFrameMagic0,
-                                                  kFrameMagic1,
-                                                  static_cast<uint8_t>((len >> 24) & 0xFFu),
-                                                  static_cast<uint8_t>((len >> 16) & 0xFFu),
-                                                  static_cast<uint8_t>((len >> 8) & 0xFFu),
-                                                  static_cast<uint8_t>(len & 0xFFu)};
-        ssize_t sent = 0;
-        if (!sendAll(header, sizeof(header), sent)) {
-            poisonConnectionLocked();
-            sendError = "tcp: send failed after " + std::to_string(sent) + " of " +
-                        std::to_string(sizeof(header)) +
-                        " header bytes: " + std::string(strerror(errno));
-        } else if (!data.empty() && !sendAll(data.data(), data.size(), sent)) {
-            // A partial frame write (header out, payload cut short — or a
-            // truncated header) leaves the peer waiting for bytes that will
-            // never arrive, and a TCP stream has no resync point: a later
-            // send() would write its next header straight into that gap.
-            // Poisoning the connection (2b) is what keeps that garbage off
-            // the wire — every later send() refuses until start() reconnects.
-            poisonConnectionLocked();
-            sendError = "tcp: send failed after " + std::to_string(sent) + " of " +
-                        std::to_string(data.size()) +
-                        " payload bytes: " + std::string(strerror(errno));
+        if (sock_ < 0) {
+            // Belt only (connectionAlive_ implies an open fd) but reachable:
+            // stop() can close the fd between the connectionAlive_ load above
+            // and this lock. The contract is loud refusal, so report it too —
+            // a silent false here contradicted "send() refuses loudly".
+            sendError = "tcp: send refused — connection is not open (start() (re)connects)";
         } else {
-            stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
-            stats_.bytesSent.fetch_add(static_cast<uint64_t>(kFrameHeaderSize + data.size()),
-                                       std::memory_order_relaxed);
+            const uint32_t len = static_cast<uint32_t>(data.size());
+            const uint8_t header[kFrameHeaderSize] = {kFrameMagic0,
+                                                      kFrameMagic1,
+                                                      static_cast<uint8_t>((len >> 24) & 0xFFu),
+                                                      static_cast<uint8_t>((len >> 16) & 0xFFu),
+                                                      static_cast<uint8_t>((len >> 8) & 0xFFu),
+                                                      static_cast<uint8_t>(len & 0xFFu)};
+            ssize_t sent = 0;
+            if (!sendAll(header, sizeof(header), sent)) {
+                poisonConnectionLocked();
+                sendError = "tcp: send failed after " + std::to_string(sent) + " of " +
+                            std::to_string(sizeof(header)) +
+                            " header bytes: " + std::string(strerror(errno));
+            } else if (!data.empty() && !sendAll(data.data(), data.size(), sent)) {
+                // A partial frame write (header out, payload cut short — or a
+                // truncated header) leaves the peer waiting for bytes that will
+                // never arrive, and a TCP stream has no resync point: a later
+                // send() would write its next header straight into that gap.
+                // Poisoning the connection (2b) is what keeps that garbage off
+                // the wire — every later send() refuses until start() reconnects.
+                poisonConnectionLocked();
+                sendError = "tcp: send failed after " + std::to_string(sent) + " of " +
+                            std::to_string(data.size()) +
+                            " payload bytes: " + std::string(strerror(errno));
+            } else {
+                stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
+                stats_.bytesSent.fetch_add(static_cast<uint64_t>(kFrameHeaderSize + data.size()),
+                                           std::memory_order_relaxed);
+            }
         }
     }
     if (!sendError.empty()) {
@@ -278,7 +301,12 @@ size_t TcpClient::unregisterAllMessageHandlersForKey(const std::string& key) {
 void TcpClient::setErrorCallback(ErrorCallback cb) {
     std::unique_lock<std::mutex> lock(cbMutex_);
     dispatch_.waitQuiescent(lock); // it destroys the previous adapter
-    errorAdapter_.reset();
+    if (errorAdapter_) {
+        // Unregister before destroying: reset() alone would leave a dangling
+        // handler pointer in errorKeyed_ for the next reportError to call.
+        errorKeyed_.unregisterKeyedCallback(defaultKey(), errorAdapter_.get());
+        errorAdapter_.reset();
+    }
     if (cb) {
         struct FnAdapter : public ErrorHandler {
             ErrorCallback fn;
@@ -289,7 +317,10 @@ void TcpClient::setErrorCallback(ErrorCallback cb) {
             }
         };
         errorAdapter_ = std::make_unique<FnAdapter>(std::move(cb));
-        this->registerErrorHandler(defaultKey(), errorAdapter_.get());
+        // Direct, not this->registerErrorHandler(): the public override locks
+        // cbMutex_, which this function already holds — calling it here was a
+        // guaranteed self-deadlock on the non-recursive mutex.
+        errorKeyed_.registerKeyedCallback(defaultKey(), errorAdapter_.get());
     }
 }
 
@@ -330,12 +361,14 @@ axonvex::interfaces::ProtocolStatistics TcpClient::getStatistics() const {
 
 #if defined(AXONVEX_PLATFORM_LINUX)
 
-bool TcpClient::connectSocket() {
+bool TcpClient::connectSocket(std::vector<std::string>& errorsOut) {
     std::vector<detail::ResolvedAddress> candidates;
     std::string resolveError;
     if (!detail::resolveAddresses(host_, port_, SOCK_STREAM, /*passive=*/false, candidates,
                                   resolveError)) {
-        reportError("tcp: " + resolveError);
+        // Collected, not dispatched: the caller (start()) holds lifecycleMutex_
+        // here and dispatches after releasing it (C34/C12 rule).
+        errorsOut.push_back("tcp: " + resolveError);
         return false;
     }
 
@@ -449,9 +482,10 @@ void TcpClient::recvLoop() {
         // Re-checked before every frame: a callback invoked by
         // dispatchMessage() below (e.g. for the previous frame) may have
         // called stop() on this thread (C33's supported reentrant-stop
-        // case). Do not drain every remaining buffered frame after that —
-        // stop() means stop, not "finish the batch".
-        while (running_.load()) {
+        // case) or poisoned the connection via a failed send(). Do not
+        // drain every remaining buffered frame after that — stop() means
+        // stop, not "finish the batch".
+        while (running_.load() && connectionAlive_.load(std::memory_order_acquire)) {
             const size_t avail = buffer.size() - start;
             if (avail == 0)
                 break;

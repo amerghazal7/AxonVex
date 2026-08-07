@@ -33,35 +33,47 @@ UdpSocket::~UdpSocket() {
 }
 
 bool UdpSocket::start() {
-    // Serialises the whole lifecycle. `running_` alone was check-then-act:
-    // two concurrent stop() calls could both pass the guard and both reach
-    // worker_.join(), and joining an already-joined thread is UB (C33).
-    std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
-    if (running_.load())
-        return true;
+    // Failure messages are built under lifecycleMutex_ but dispatched only
+    // after it is released (the C34/C12 rule): an error handler reacting to a
+    // bind failure by calling start() or stop() would otherwise self-deadlock
+    // on the non-recursive lifecycleMutex_.
+    std::vector<std::string> startErrors;
+    bool started = false;
+    {
+        // Serialises the whole lifecycle. `running_` alone was check-then-act:
+        // two concurrent stop() calls could both pass the guard and both reach
+        // worker_.join(), and joining an already-joined thread is UB (C33).
+        std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
+        if (running_.load())
+            return true;
 #if defined(AXONVEX_PLATFORM_LINUX)
-    if (!openAndBind()) {
-        reportError("udp: failed to bind to " + bindAddress_ + ":" + std::to_string(port_));
-        return false;
-    }
-    running_.store(true);
-    worker_ = std::thread([this]() {
-        workerId_.store(std::this_thread::get_id(), std::memory_order_release);
-        recvLoop();
-        // Cleared by the worker itself on the way out. A thread::id is
-        // reusable once its thread has exited, so leaving a stale id here
-        // would let an unrelated future thread match it and wrongly skip
-        // the join, stranding a joinable std::thread.
-        workerId_.store(std::thread::id(), std::memory_order_release);
-    });
-    return true;
+        if (!openAndBind(startErrors)) {
+            startErrors.push_back("udp: failed to bind to " + bindAddress_ + ":" +
+                                  std::to_string(port_));
+        } else {
+            running_.store(true);
+            worker_ = std::thread([this]() {
+                workerId_.store(std::this_thread::get_id(), std::memory_order_release);
+                recvLoop();
+                // Cleared by the worker itself on the way out. A thread::id is
+                // reusable once its thread has exited, so leaving a stale id here
+                // would let an unrelated future thread match it and wrongly skip
+                // the join, stranding a joinable std::thread.
+                workerId_.store(std::thread::id(), std::memory_order_release);
+            });
+            started = true;
+        }
 #else
-    // No sockets on this platform. Reporting success and spinning a thread
-    // that does nothing made every caller believe it had a live transport
-    // (C24); fail honestly instead.
-    reportError("udp: not implemented on this platform");
-    return false;
+        // No sockets on this platform. Reporting success and spinning a thread
+        // that does nothing made every caller believe it had a live transport
+        // (C24); fail honestly instead.
+        startErrors.push_back("udp: not implemented on this platform");
 #endif
+    }
+    for (const auto& msg : startErrors) {
+        reportError(msg);
+    }
+    return started;
 }
 
 void UdpSocket::stop() {
@@ -126,11 +138,21 @@ bool UdpSocket::send(const std::vector<uint8_t>& data) {
     // it. A UDP sendto does not block short of a full socket buffer, so the
     // hold is bounded; if that ever changes, hand out a dup()'d fd instead.
     ssize_t n = -1;
+    bool sockClosed = false;
     {
         std::lock_guard<std::mutex> lock(sockMutex_);
         if (sock_ < 0)
-            return false;
-        n = ::sendto(sock_, data.data(), data.size(), MSG_NOSIGNAL, dest.addr(), dest.length);
+            sockClosed = true;
+        else
+            n = ::sendto(sock_, data.data(), data.size(), MSG_NOSIGNAL, dest.addr(), dest.length);
+    }
+    if (sockClosed) {
+        // Loud, like every other refusal on this path: a destination can be
+        // configured while the socket was never opened (send before start())
+        // or already closed (send racing stop()); a silent false here was
+        // indistinguishable from a transient error.
+        reportError("udp: send refused — socket is not open (start() opens it)");
+        return false;
     }
     if (n < 0) {
         reportError(std::string("udp: sendto failed: ") + strerror(errno));
@@ -181,7 +203,12 @@ size_t UdpSocket::unregisterAllMessageHandlersForKey(const std::string& key) {
 void UdpSocket::setErrorCallback(ErrorCallback cb) {
     std::unique_lock<std::mutex> lock(cbMutex_);
     dispatch_.waitQuiescent(lock); // it destroys the previous adapter
-    errorAdapter_.reset();
+    if (errorAdapter_) {
+        // Unregister before destroying: reset() alone would leave a dangling
+        // handler pointer in errorKeyed_ for the next reportError to call.
+        errorKeyed_.unregisterKeyedCallback(defaultKey(), errorAdapter_.get());
+        errorAdapter_.reset();
+    }
     if (cb) {
         struct FnAdapter : public ErrorHandler {
             ErrorCallback fn;
@@ -192,7 +219,10 @@ void UdpSocket::setErrorCallback(ErrorCallback cb) {
             }
         };
         errorAdapter_ = std::make_unique<FnAdapter>(std::move(cb));
-        this->registerErrorHandler(defaultKey(), errorAdapter_.get());
+        // Direct, not this->registerErrorHandler(): the public override locks
+        // cbMutex_, which this function already holds — calling it here was a
+        // guaranteed self-deadlock on the non-recursive mutex.
+        errorKeyed_.registerKeyedCallback(defaultKey(), errorAdapter_.get());
     }
 }
 
@@ -227,7 +257,7 @@ bool UdpSocket::configure(const std::string& key, const std::string& value) {
     if (key == "remote_host") {
         remoteHost_ = value;
 #if defined(AXONVEX_PLATFORM_LINUX)
-        updateRemote();
+        updateRemoteAndReport();
 #endif
         return true;
     }
@@ -235,7 +265,7 @@ bool UdpSocket::configure(const std::string& key, const std::string& value) {
         try {
             remotePort_ = static_cast<uint16_t>(std::stoul(value));
 #if defined(AXONVEX_PLATFORM_LINUX)
-            updateRemote();
+            updateRemoteAndReport();
 #endif
             return true;
         } catch (...) { return false; }
@@ -249,12 +279,14 @@ axonvex::interfaces::ProtocolStatistics UdpSocket::getStatistics() const {
 
 #if defined(AXONVEX_PLATFORM_LINUX)
 
-bool UdpSocket::openAndBind() {
+bool UdpSocket::openAndBind(std::vector<std::string>& errorsOut) {
     std::vector<detail::ResolvedAddress> candidates;
     std::string resolveError;
     if (!detail::resolveAddresses(bindAddress_, port_, SOCK_DGRAM, /*passive=*/true, candidates,
                                   resolveError)) {
-        reportError("udp: " + resolveError);
+        // Collected, not dispatched: the caller (start()) holds lifecycleMutex_
+        // here and dispatches after releasing it (C34/C12 rule).
+        errorsOut.push_back("udp: " + resolveError);
         return false;
     }
 
@@ -279,17 +311,17 @@ bool UdpSocket::openAndBind() {
         if (::bind(fd, candidate.addr(), candidate.length) == 0) {
             sock_ = fd;
             sockFamily_ = candidate.family;
-            updateRemote();
+            updateRemote(errorsOut);
             return true;
         }
         ::close(fd);
     }
-    reportError("udp: no resolved address for " + bindAddress_ + ":" + std::to_string(port_) +
-                " could be bound");
+    errorsOut.push_back("udp: no resolved address for " + bindAddress_ + ":" +
+                        std::to_string(port_) + " could be bound");
     return false;
 }
 
-void UdpSocket::updateRemote() {
+void UdpSocket::updateRemote(std::vector<std::string>& errorsOut) {
     std::vector<detail::ResolvedAddress> candidates;
     std::string resolveError;
     bool resolved = false;
@@ -309,18 +341,28 @@ void UdpSocket::updateRemote() {
             }
         }
         if (!resolved) {
-            reportError("udp: " + remoteHost_ +
-                        " resolved, but to no address in the bound "
-                        "socket's family");
+            errorsOut.push_back("udp: " + remoteHost_ +
+                                " resolved, but to no address in the bound "
+                                "socket's family");
         }
     } else if (!remoteHost_.empty() && remotePort_ != 0) {
-        reportError("udp: " + resolveError);
+        errorsOut.push_back("udp: " + resolveError);
     }
 
     std::lock_guard<std::mutex> lock(peerMutex_);
     remoteSet_ = resolved;
     if (resolved) {
         remoteAddr_ = chosen;
+    }
+}
+
+void UdpSocket::updateRemoteAndReport() {
+    // configure() path only: no transport lock is held, so dispatching the
+    // collected errors here is safe.
+    std::vector<std::string> errors;
+    updateRemote(errors);
+    for (const auto& msg : errors) {
+        reportError(msg);
     }
 }
 
