@@ -13,6 +13,7 @@
 #endif
 
 #include <array>
+#include <system_error>
 
 namespace axonvex {
 namespace interfaces {
@@ -196,7 +197,7 @@ bool UdpSocket::send(const std::vector<uint8_t>& data) {
         return false;
     }
     if (n < 0) {
-        reportError(std::string("udp: sendto failed: ") + strerror(errno));
+        reportError(std::string("udp: sendto failed: ") + std::generic_category().message(errno));
         return false;
     }
     stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
@@ -425,7 +426,14 @@ void UdpSocket::recvLoop() {
             // Dead before the report, so an error handler that immediately
             // checks isRunning() already sees the dead state.
             connectionAlive_.store(false, std::memory_order_release);
-            reportError(std::string("udp: recvfrom error: ") + strerror(errno));
+            // strerror(errno) is not required to be thread-safe by POSIX
+            // (may format into a shared static buffer); generic_category's
+            // message() is the reentrant equivalent (libstdc++ uses
+            // strerror_r internally) — this fires on the socket's own recv
+            // thread and a concurrent error elsewhere must not race this
+            // read (same defect class as C37).
+            reportError(std::string("udp: recvfrom error: ") +
+                        std::generic_category().message(errno));
             break;
         }
         if (n == 0)

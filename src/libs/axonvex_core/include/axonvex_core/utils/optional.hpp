@@ -16,6 +16,11 @@ constexpr nullopt_t nullopt{nullopt_t::init{}};
 template <typename T>
 class optional {
   private:
+    // Aligned-storage idiom: this is a byte buffer sized to hold one T, and
+    // T is legitimately a pointer-to-aggregate for some instantiations. The
+    // check's "pointer where a pointee size was probably meant" heuristic
+    // doesn't apply to a template's storage buffer.
+    // NOLINTNEXTLINE(bugprone-sizeof-expression)
     alignas(T) unsigned char storage_[sizeof(T)];
     bool engaged_{false};
 
