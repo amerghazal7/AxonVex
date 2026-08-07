@@ -417,17 +417,6 @@ TEST_F(PathTest, FileOperationsTest) {
     EXPECT_TRUE(dest_file.moveTo(moved_file));
     EXPECT_FALSE(dest_file.exists());
     EXPECT_TRUE(moved_file.exists());
-
-    // Create backup
-    Path backup_file = source_file.createBackup();
-    EXPECT_TRUE(backup_file.exists());
-    EXPECT_NE(backup_file.toString().find(".bak"), std::string::npos);
-
-    // Get unique filename
-    Path unique_file = source_file.getUniqueFilename();
-    if (source_file.exists()) {
-        EXPECT_NE(unique_file.toString(), source_file.toString());
-    }
 }
 
 //==============================================================================
@@ -501,41 +490,6 @@ TEST_F(PathTest, AxonVexIntegrationTest) {
     Path custom_temp = Path::createTempPath("custom_prefix_", ".data");
     EXPECT_EQ(custom_temp.extension(), ".data");
     EXPECT_NE(custom_temp.toString().find("custom_prefix_"), std::string::npos);
-}
-
-//==============================================================================
-// Custom Validator Tests
-//==============================================================================
-
-TEST_F(PathTest, CustomValidatorTest) {
-    // Register custom validator
-    Path::registerValidator("test_validator", [](const Path& path) {
-        return path.toString().find("allowed") != std::string::npos;
-    });
-
-    Path allowed_path("allowed/path");
-    Path disallowed_path("forbidden/path");
-
-    EXPECT_TRUE(allowed_path.validateWith("test_validator"));
-    EXPECT_FALSE(disallowed_path.validateWith("test_validator"));
-
-    // Non-existent validator
-    EXPECT_FALSE(allowed_path.validateWith("nonexistent_validator"));
-}
-
-//==============================================================================
-// System Information Tests
-//==============================================================================
-
-TEST_F(PathTest, SystemInfoTest) {
-    auto system_info = Path::getSystemInfo();
-
-    EXPECT_GT(system_info.size(), 0);
-    EXPECT_NE(system_info.find("current_path"), system_info.end());
-    EXPECT_NE(system_info.find("temp_directory"), system_info.end());
-    EXPECT_NE(system_info.find("max_path_length"), system_info.end());
-    EXPECT_NE(system_info.find("separator"), system_info.end());
-    EXPECT_NE(system_info.find("case_sensitive"), system_info.end());
 }
 
 //==============================================================================

@@ -63,7 +63,6 @@ namespace axonvex::core {
 std::unordered_map<Path::DefaultDir, axonvex_fs::path> Path::default_dirs_;
 Path::SecurityLevel Path::default_security_level_ = Path::SecurityLevel::BASIC;
 std::mutex Path::static_mutex_;
-std::unordered_map<std::string, std::function<bool(const Path&)>> Path::custom_validators_;
 
 //==============================================================================
 // Construction and Assignment
@@ -602,37 +601,6 @@ bool Path::moveTo(const Path& destination) const {
     } catch (const std::exception&) { return false; }
 }
 
-Path Path::createBackup(const std::string& backup_suffix) const {
-    auto backup_path = Path(toString() + backup_suffix);
-
-    if (copyTo(backup_path, true)) {
-        return backup_path;
-    }
-
-    return Path(); // Return empty path on failure
-}
-
-Path Path::getUniqueFilename() const {
-    if (!exists()) {
-        return *this;
-    }
-
-    auto parent_dir = parent();
-    auto file_stem = stem();
-    auto file_ext = extension();
-
-    int counter = 1;
-    Path unique_path;
-
-    do {
-        std::string unique_name = file_stem + "_" + std::to_string(counter) + file_ext;
-        unique_path = parent_dir / unique_name;
-        counter++;
-    } while (unique_path.exists() && counter < 10000);
-
-    return unique_path;
-}
-
 //==============================================================================
 // String Conversion and Comparison
 //==============================================================================
@@ -686,45 +654,6 @@ void Path::setDefaultSecurityLevel(SecurityLevel level) {
 Path::SecurityLevel Path::getDefaultSecurityLevel() {
     std::lock_guard<std::mutex> lock(static_mutex_);
     return default_security_level_;
-}
-
-void Path::registerValidator(const std::string& name, std::function<bool(const Path&)> validator) {
-    std::lock_guard<std::mutex> lock(static_mutex_);
-    custom_validators_[name] = std::move(validator);
-}
-
-bool Path::validateWith(const std::string& validator_name) const {
-    std::lock_guard<std::mutex> lock(static_mutex_);
-    auto it = custom_validators_.find(validator_name);
-    if (it != custom_validators_.end()) {
-        return it->second(*this);
-    }
-    return false;
-}
-
-std::unordered_map<std::string, std::string> Path::getSystemInfo() {
-    std::unordered_map<std::string, std::string> info;
-
-    try {
-        info["current_path"] = axonvex_fs::current_path().string();
-        info["temp_directory"] = axonvex_fs::temp_directory_path().string();
-
-        // Path limits (platform-specific)
-#ifdef _WIN32
-        info["max_path_length"] = "260"; // Traditional limit, 32767 with long path support
-        info["separator"] = "\\";
-        info["case_sensitive"] = "false";
-#else
-        info["max_path_length"] = "4096"; // Typical Linux limit
-        info["separator"] = "/";
-        info["case_sensitive"] = "true";
-#endif
-
-        info["filesystem_space"] = std::to_string(axonvex_fs::space(".").available);
-
-    } catch (const std::exception& e) { info["error"] = e.what(); }
-
-    return info;
 }
 
 //==============================================================================

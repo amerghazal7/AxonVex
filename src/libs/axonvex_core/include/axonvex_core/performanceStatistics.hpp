@@ -37,9 +37,9 @@ class IPerformanceStatistics {
  * @brief Common base implementation for performance statistics
  *
  * Provides shared functionality and patterns used across all
- * AxonVex statistics implementations.
+ * AxonVex statistics implementations. Plain base class - a former CRTP
+ * parameter was never used and was dropped (plan §7).
  */
-template <typename Derived>
 class PerformanceStatisticsBase : public IPerformanceStatistics {
   public:
     /**
@@ -154,7 +154,7 @@ class PerformanceStatisticsBase : public IPerformanceStatistics {
 /**
  * @brief Enhanced statistics for components with throughput metrics
  */
-class ThroughputStatistics : public PerformanceStatisticsBase<ThroughputStatistics> {
+class ThroughputStatistics : public PerformanceStatisticsBase {
   public:
     std::atomic<uint64_t> total_operations{0};
     std::atomic<uint64_t> successful_operations{0};
@@ -230,80 +230,6 @@ class ThroughputStatistics : public PerformanceStatisticsBase<ThroughputStatisti
 
     std::string getComponentName() const override {
         return "ThroughputStatistics";
-    }
-};
-
-/**
- * @brief Enhanced statistics for memory-related components
- */
-class MemoryStatistics : public PerformanceStatisticsBase<MemoryStatistics> {
-  public:
-    std::atomic<uint64_t> allocations{0};
-    std::atomic<uint64_t> deallocations{0};
-    std::atomic<uint64_t> allocation_failures{0};
-    std::atomic<uint64_t> current_usage{0};
-    std::atomic<uint64_t> peak_usage{0};
-    std::atomic<uint64_t> total_bytes_allocated{0};
-
-    /**
-     * @brief Record an allocation
-     */
-    void recordAllocation(size_t bytes) noexcept {
-        safeIncrement(allocations);
-        safeIncrement(total_bytes_allocated, bytes);
-        uint64_t new_usage = current_usage.fetch_add(bytes, std::memory_order_relaxed) + bytes;
-        updateMaximum(peak_usage, new_usage);
-        updateLastAccess();
-    }
-
-    /**
-     * @brief Record a deallocation
-     */
-    void recordDeallocation(size_t bytes) noexcept {
-        safeIncrement(deallocations);
-        current_usage.fetch_sub(bytes, std::memory_order_relaxed);
-        updateLastAccess();
-    }
-
-    /**
-     * @brief Record an allocation failure
-     */
-    void recordAllocationFailure() noexcept {
-        safeIncrement(allocation_failures);
-        updateLastAccess();
-    }
-
-    /**
-     * @brief Get current utilization percentage
-     */
-    double getUtilization(size_t capacity_bytes) const noexcept {
-        return calculatePercentage(safeLoad(current_usage), capacity_bytes);
-    }
-
-    void reset() noexcept override {
-        safeStore(allocations, 0UL);
-        safeStore(deallocations, 0UL);
-        safeStore(allocation_failures, 0UL);
-        safeStore(current_usage, 0UL);
-        safeStore(peak_usage, 0UL);
-        safeStore(total_bytes_allocated, 0UL);
-    }
-
-    std::string getReport() const override {
-        auto elapsed = getElapsedTime();
-        std::string report = getComponentName() + " Memory Statistics:\n";
-        report += "  Allocations: " + std::to_string(safeLoad(allocations)) + "\n";
-        report += "  Deallocations: " + std::to_string(safeLoad(deallocations)) + "\n";
-        report += "  Allocation Failures: " + std::to_string(safeLoad(allocation_failures)) + "\n";
-        report += "  Current Usage: " + formatBytes(safeLoad(current_usage)) + "\n";
-        report += "  Peak Usage: " + formatBytes(safeLoad(peak_usage)) + "\n";
-        report += "  Total Allocated: " + formatBytes(safeLoad(total_bytes_allocated)) + "\n";
-        report += "  Runtime: " + std::to_string(elapsed.count()) + " seconds\n";
-        return report;
-    }
-
-    std::string getComponentName() const override {
-        return "MemoryStatistics";
     }
 };
 

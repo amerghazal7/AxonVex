@@ -8,10 +8,6 @@ target_link_libraries(precision_timer_example axonvex_core)
 add_executable(threadSafeQueue_example threadSafeQueueExample.cpp)
 target_link_libraries(threadSafeQueue_example axonvex_core)
 
-# Logger example (with stream interface)
-add_executable(logger_stream_example logger_stream_example.cpp)
-target_link_libraries(logger_stream_example axonvex_core)
-
 # Configuration example
 add_executable(configuration_example configuration_example.cpp)
 target_link_libraries(configuration_example axonvex_core)

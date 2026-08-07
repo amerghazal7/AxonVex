@@ -24,7 +24,12 @@
 #include <axonvex_core/axonvex.hpp>
 
 using namespace axonvex;
-using namespace axonvex::Log; // Use framework's Logger
+using namespace axonvex::core;
+#include "exampleLog.hpp"
+
+using examplelog::Error;
+using examplelog::Info;
+using examplelog::Warn;
 
 void printHeader(const std::string& title) {
     Info() << "\n=== " << title << " ===";
@@ -217,22 +222,12 @@ void demonstrateFileOperations() {
     // File operations
     Info() << "\n🔄 File Operations:";
 
-    // Copy file
-    Path backup_config = config_file.createBackup();
-    if (backup_config.exists()) {
-        printSuccess("Backup created: " + backup_config.filename());
-    }
-
     // Find files
     auto json_files = test_root.findFiles("*.json", true);
     Info() << "  Found " << json_files.size() << " JSON files:";
     for (const auto& file : json_files) {
         Info() << "    " << file.relativeTo(test_root);
     }
-
-    // Get unique filename
-    Path unique_config = config_file.getUniqueFilename();
-    Info() << "  Unique filename: " << unique_config.filename();
 
     // Cleanup
     Info() << "\n🧹 Cleanup:";
@@ -341,38 +336,6 @@ void demonstrateConfigurationIntegration() {
 
 void demonstrateAdvancedFeatures() {
     printHeader("Advanced Path Features");
-
-    // Custom validators
-    Path::registerValidator("config_file_validator", [](const Path& path) {
-        return path.extension() == ".json" || path.extension() == ".yaml" ||
-               path.extension() == ".yml";
-    });
-
-    Path::registerValidator("log_file_validator", [](const Path& path) {
-        return path.extension() == ".log" || path.extension() == ".txt";
-    });
-
-    Info() << "🔍 Custom Validators:";
-
-    std::vector<std::pair<std::string, std::string>> test_files = {
-        {"config.json", "config_file_validator"}, {"settings.yaml", "config_file_validator"},
-        {"data.xml", "config_file_validator"},    {"application.log", "log_file_validator"},
-        {"debug.txt", "log_file_validator"},      {"binary.exe", "log_file_validator"}};
-
-    for (const auto& pr : test_files) {
-        const std::string& filename = pr.first;
-        const std::string& validator = pr.second;
-        Path test_path(filename);
-        bool valid = test_path.validateWith(validator);
-        Info() << "  " << filename << " → " << validator << ": " << (valid ? "VALID" : "INVALID");
-    }
-
-    // System information
-    Info() << "\n💻 System Information:";
-    auto system_info = Path::getSystemInfo();
-    for (const auto& kv : system_info) {
-        Info() << "  " << kv.first << ": " << kv.second;
-    }
 
     // Temporary file creation with automatic cleanup
     Info() << "\n🗂️  Temporary Files:";
