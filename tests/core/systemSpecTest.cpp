@@ -314,6 +314,45 @@ TEST_F(SpecTestFactory, RequiredInputWiredViaSystemPortsSatisfiesTheCheck) {
     EXPECT_TRUE(spec->validate(factory, errors)) << (errors.empty() ? "" : errors[0].message);
 }
 
+TEST_F(SpecTestFactory, TwoConnectionsIntoSameSyncInputAreRejected) {
+    // Regression: connection state lives only on the OutputPort side
+    // (ports.hpp), so nothing at runtime detects a second writer into the
+    // same InputPort — the earlier writer's data is silently clobbered every
+    // tick. validate() is the only place this can be caught statically.
+    json doc = json{{"specVersion", "1.0"},
+                    {"system", {{"name", "t"}}},
+                    {"units", json::array({{{"name", "src1"}, {"type", "test.DoubleSource"}},
+                                           {{"name", "src2"}, {"type", "test.DoubleSource"}},
+                                           {{"name", "dst"}, {"type", "test.DoubleSink"}}})},
+                    {"connections", json::array({{{"from", "src1.out"}, {"to", "dst.in"}},
+                                                 {{"from", "src2.out"}, {"to", "dst.in"}}})}};
+    std::vector<SpecError> parseErrors;
+    auto spec = SystemSpec::parse(doc, parseErrors);
+    ASSERT_TRUE(spec.has_value()) << (parseErrors.empty() ? "" : parseErrors[0].message);
+
+    std::vector<SpecError> errors;
+    EXPECT_FALSE(spec->validate(factory, errors));
+    EXPECT_TRUE(errorsContain(errors, SpecErrorCode::DUP_INPUT_WIRE));
+}
+
+TEST_F(SpecTestFactory, ConnectionAndSystemPortIntoSameInputAreRejected) {
+    // Same defect, reached via the systemPorts.inputs path instead of a
+    // second connection entry.
+    json doc = json{{"specVersion", "1.0"},
+                    {"system", {{"name", "t"}}},
+                    {"units", json::array({{{"name", "src"}, {"type", "test.DoubleSource"}},
+                                           {{"name", "dst"}, {"type", "test.DoubleSink"}}})},
+                    {"connections", json::array({{{"from", "src.out"}, {"to", "dst.in"}}})},
+                    {"systemPorts", {{"inputs", {{"cmd", "dst.in"}}}}}};
+    std::vector<SpecError> parseErrors;
+    auto spec = SystemSpec::parse(doc, parseErrors);
+    ASSERT_TRUE(spec.has_value()) << (parseErrors.empty() ? "" : parseErrors[0].message);
+
+    std::vector<SpecError> errors;
+    EXPECT_FALSE(spec->validate(factory, errors));
+    EXPECT_TRUE(errorsContain(errors, SpecErrorCode::DUP_INPUT_WIRE));
+}
+
 TEST_F(SpecTestFactory, BadConnectionReferenceToUnknownUnitIsReported) {
     json doc = json{{"specVersion", "1.0"},
                     {"system", {{"name", "t"}}},

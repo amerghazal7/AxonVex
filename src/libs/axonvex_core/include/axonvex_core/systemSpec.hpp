@@ -41,6 +41,12 @@ constexpr const char* BAD_REFERENCE = "BAD_REFERENCE";
 constexpr const char* KIND_MISMATCH = "KIND_MISMATCH";
 constexpr const char* PORT_TYPE_MISMATCH = "PORT_TYPE_MISMATCH";
 constexpr const char* REQUIRED_INPUT_UNWIRED = "REQUIRED_INPUT_UNWIRED";
+/// A Sync input port has more than one writer (a second `connections` entry
+/// or a `systemPorts.inputs` mapping targeting a port already wired). The
+/// runtime has no arity check on InputPort (connection state lives only on
+/// OutputPort::connect()), so an unwitting second wire silently discards one
+/// source's data every tick; validate() is the only static backstop.
+constexpr const char* DUP_INPUT_WIRE = "DUP_INPUT_WIRE";
 /// Reserved for the loader (design spec §4.2 step 3 / §7 Q7), which does not
 /// exist yet — validate() never emits this in this wave. Defined here so the
 /// wiring layer that lands next wave has a stable code to reuse instead of
