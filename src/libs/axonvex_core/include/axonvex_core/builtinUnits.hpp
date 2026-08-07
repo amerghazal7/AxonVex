@@ -13,7 +13,7 @@
 #include "processingUnit.hpp"
 #include "unitFactory.hpp"
 
-#include <deque>
+#include <vector>
 
 namespace axonvex::core::builtin {
 
@@ -60,7 +60,13 @@ class MovingAverage final : public ProcessingUnit {
     InputPort<double>* in_;
     OutputPort<double>* out_;
     size_t window_;
-    std::deque<double> samples_;
+    // Fixed-size ring buffer, sized once in the constructor: window_ is known
+    // at construction (unlike std::deque's push_back/pop_front, indexing a
+    // pre-sized std::vector never allocates on processSync(), the scheduler
+    // hot path — CLAUDE.md rule 2).
+    std::vector<double> samples_;
+    size_t head_{0};
+    size_t filled_{0}; ///< samples written so far, saturating at window_.
     double runningSum_{0.0};
 };
 

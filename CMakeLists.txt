@@ -171,6 +171,7 @@ if(BUILD_TESTING)
             tests/core/unitMetadataTest.cpp
             tests/core/unitFactoryTest.cpp
             tests/core/systemSpecTest.cpp
+            tests/core/builtinUnitsTest.cpp
         )
         target_link_libraries(test_core
             PRIVATE

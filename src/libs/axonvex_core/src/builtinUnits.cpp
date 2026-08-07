@@ -5,6 +5,7 @@
 
 #include "axonvex_core/builtinUnits.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace axonvex::core::builtin {
@@ -54,27 +55,37 @@ UnitTypeDescriptor SineGenerator::describeType() {
 MovingAverage::MovingAverage(const std::string& name, const nlohmann::json& params)
     : ProcessingUnit(name), in_(createInputPort<double>(kInputIndex, "in")),
       out_(createOutputPort<double>(kOutputIndex, "out")),
-      window_(static_cast<size_t>(params.at("window").get<int64_t>())) {}
+      window_(static_cast<size_t>(params.at("window").get<int64_t>())), samples_(window_, 0.0) {}
 
 void MovingAverage::initialize() {
-    samples_.clear();
+    std::fill(samples_.begin(), samples_.end(), 0.0);
+    head_ = 0;
+    filled_ = 0;
     runningSum_ = 0.0;
     setState(ExecutionState::INITIALIZED);
 }
 
 void MovingAverage::processSync() {
     double value = in_->read();
-    samples_.push_back(value);
-    runningSum_ += value;
-    while (samples_.size() > window_) {
-        runningSum_ -= samples_.front();
-        samples_.pop_front();
+    if (window_ == 0) {   // guards the ring's modulo; matches the old
+        out_->write(0.0); // deque code's behavior (never accumulates).
+        return;
     }
-    out_->write(samples_.empty() ? 0.0 : runningSum_ / static_cast<double>(samples_.size()));
+    if (filled_ < window_) {
+        runningSum_ += value;
+        ++filled_;
+    } else {
+        runningSum_ += value - samples_[head_];
+    }
+    samples_[head_] = value;
+    head_ = (head_ + 1) % window_;
+    out_->write(runningSum_ / static_cast<double>(filled_));
 }
 
 void MovingAverage::reset() {
-    samples_.clear();
+    std::fill(samples_.begin(), samples_.end(), 0.0);
+    head_ = 0;
+    filled_ = 0;
     runningSum_ = 0.0;
 }
 

@@ -777,8 +777,9 @@ bool SystemSpec::validate(const UnitFactory& factory, std::vector<SpecError>& er
                          "'" + connections[i].from + "' (" + fromPort->dataType +
                              ") cannot connect to '" + connections[i].to + "' (" +
                              toPort->dataType + ")");
-            } else {
-                wiredInputs.insert(connections[i].to);
+            } else if (!wiredInputs.insert(connections[i].to).second) {
+                addError(local, base + ".to", SpecErrorCode::DUP_INPUT_WIRE,
+                         "'" + connections[i].to + "' already has a connection wired to it");
             }
         }
     }
@@ -790,8 +791,9 @@ bool SystemSpec::validate(const UnitFactory& factory, std::vector<SpecError>& er
             if (p->direction != PortDescriptor::Direction::Input) {
                 addError(local, path, SpecErrorCode::BAD_REFERENCE,
                          "'" + kv.second + "' is not an input port");
-            } else {
-                wiredInputs.insert(kv.second);
+            } else if (!wiredInputs.insert(kv.second).second) {
+                addError(local, path, SpecErrorCode::DUP_INPUT_WIRE,
+                         "'" + kv.second + "' already has a connection wired to it");
             }
         }
     }
