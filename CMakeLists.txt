@@ -7,8 +7,6 @@ set(CMAKE_BUILD_TYPE Debug)
 
 set(CMAKE_ENABLE_EXPORTS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CXX_STANDARD 14)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Install prefix for native libs (used before project() for RPATH)
@@ -31,6 +29,23 @@ project("${PROJECT_NAME}"
     VERSION 1.0.0
     DESCRIPTION "A Real-Time Framework Built for Scalable, Precise Execution"
     LANGUAGES CXX)
+
+# C++14 is set here, AFTER project(), not above it. project() is what loads
+# -DCMAKE_TOOLCHAIN_FILE (e.g. Conan's conan_toolchain.cmake), and that file
+# does a plain (non-cache) `set(CMAKE_CXX_STANDARD <profile's cppstd>)`. A
+# plain set() always shadows a prior value of the same name for the rest of
+# this scope — that includes both a pre-project() plain set() here and a
+# command-line -DCMAKE_CXX_STANDARD=14 (which only ever creates a cache
+# entry). Either one is silently overwritten by the toolchain the moment
+# project() runs. Re-asserting the plain set() here, after project() has
+# already executed the toolchain, is the only ordering that sticks: it
+# reliably enforces CLAUDE.md's "C++14 strictly" rule regardless of the
+# active Conan profile's compiler.cppstd. Verified against conan 2.31.2 with
+# the default profile (gcc 11, cppstd=gnu17): compile_commands.json shows
+# -std=gnu++14 on all translation units with this ordering, -std=gnu++17 on
+# all of them with the standard set only above (or only via -D).
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set install prefix to project-local directory
 set(CMAKE_INSTALL_PREFIX "${AXONVEX_INSTALL_PREFIX}" CACHE PATH "" FORCE)
