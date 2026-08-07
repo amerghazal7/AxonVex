@@ -130,6 +130,41 @@ class SelfStoppingUnit : public MockProcessingUnit {
     std::shared_ptr<std::atomic<bool>> finished_;
 };
 
+// CRITICAL review fix regression: a task body that self-stops while an
+// external thread concurrently holds lifecycleMutex_ blocked inside a
+// genuine schedulerWorker_.join() waiting for exactly this thread. Signals
+// externalMayStop_ once on the scheduler thread, waits briefly to widen the
+// race window, then calls stop() on itself and records whether it returned
+// promptly.
+class SelfStopUnderContentionUnit : public MockProcessingUnit {
+  public:
+    SelfStopUnderContentionUnit(const std::string& name, TimingController* controller,
+                                std::shared_ptr<std::atomic<bool>> externalMayStop,
+                                std::shared_ptr<std::atomic<bool>> selfStopReturned)
+        : MockProcessingUnit(name), controller_(controller),
+          externalMayStop_(std::move(externalMayStop)),
+          selfStopReturned_(std::move(selfStopReturned)) {}
+
+    void processSync() override {
+        if (!attempted_.exchange(true)) {
+            externalMayStop_->store(true);
+            // Race-window widener (not the correctness guarantee -- the
+            // test's watchdog is): give the external stop() a real chance
+            // to acquire lifecycleMutex_ and block inside the actual
+            // schedulerWorker_.join() before the self-stop below fires.
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            controller_->stop(); // self-stop; must not block on lifecycleMutex_
+            selfStopReturned_->store(true);
+        }
+    }
+
+  private:
+    TimingController* controller_;
+    std::shared_ptr<std::atomic<bool>> externalMayStop_;
+    std::shared_ptr<std::atomic<bool>> selfStopReturned_;
+    std::atomic<bool> attempted_{false};
+};
+
 class TimingControllerTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -1089,6 +1124,124 @@ TEST_F(TimingControllerTest, EmergencyStopFromTaskBodyIsSafe) {
     }
     EXPECT_FALSE(controller->isRunning());
     controller->stop(); // must return -- no self-join, no terminate
+}
+
+// Part 1 lifecycle-hang regression (v1_release_plan.md phase4): an external
+// thread's start() (the AxonVexSystem::start()/startComponents() shape) can
+// race an event-callback-triggered stop() (the
+// AxonVexSystem::emergencyShutdown() shape, itself reachable from the
+// event-processing thread) on the SAME RealTimeScheduler instance.
+// schedulerThread_ pre-fix was a plain unique_ptr<thread> with no lock
+// protecting it across start()/stop(): one thread's assignment of a fresh
+// std::thread could interleave with the other thread's
+// check-then-join, producing a join() on a torn/stale thread handle that
+// blocks forever (confirmed via gdb on the system-level
+// ReinitializeAfterCallbackInitiatedEmergencyShutdown hang: stop()'s
+// schedulerThread_->join() stuck on a futex with no matching live thread
+// left in the process). A hang here has no natural timeout, so a watchdog
+// thread aborts the process if the racing loop doesn't finish within a
+// generous deadline -- CLAUDE.md: "a test whose failure mode is a HANG
+// needs its own deadline/watchdog."
+TEST_F(TimingControllerTest, ConcurrentStartStopDoesNotHang) {
+    std::atomic<bool> finished{false};
+    std::thread watchdog([&finished] {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!finished.load()) {
+            std::fprintf(stderr, "ConcurrentStartStopDoesNotHang: watchdog deadline exceeded -- "
+                                 "start()/stop() race hung\n");
+            std::abort();
+        }
+    });
+
+    std::atomic<bool> stopFlag{false};
+    std::thread starter([this, &stopFlag] {
+        while (!stopFlag.load()) {
+            controller->start();
+        }
+    });
+    std::thread stopper([this, &stopFlag] {
+        while (!stopFlag.load()) {
+            controller->stop();
+        }
+    });
+
+    auto raceDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    while (std::chrono::steady_clock::now() < raceDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    stopFlag.store(true);
+    starter.join();
+    stopper.join();
+    controller->stop(); // deterministic teardown for TearDown()
+
+    finished.store(true);
+    watchdog.join();
+    SUCCEED();
+}
+
+// CRITICAL review fix regression: neither StopFromTaskBodyDefersJoinInstead
+// OfSelfJoining (no external caller in flight) nor
+// ConcurrentStartStopDoesNotHang (external threads only, no self-call)
+// exercises the actual defect -- stop() acquiring lifecycleMutex_ BEFORE
+// its isOnSchedulerThread() self-check instead of after. That ordering
+// means a self-stop call (from a ProcessingUnit task body running on the
+// scheduler thread) blocks trying to acquire the SAME mutex an external
+// stop() already holds while genuinely blocked inside
+// schedulerWorker_.join() waiting for exactly this thread to return:
+// permanent two-thread deadlock. This test combines both halves: a real
+// external stop() in flight, concurrent with a self-stop from inside the
+// task body.
+TEST_F(TimingControllerTest, SelfStopDoesNotDeadlockUnderConcurrentExternalStop) {
+    std::atomic<bool> finished{false};
+    std::thread watchdog([&finished] {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!finished.load()) {
+            std::fprintf(stderr,
+                         "SelfStopDoesNotDeadlockUnderConcurrentExternalStop: watchdog deadline "
+                         "exceeded -- self-stop deadlocked against a concurrent external stop()\n");
+            std::abort();
+        }
+    });
+
+    auto externalMayStop = std::make_shared<std::atomic<bool>>(false);
+    auto selfStopReturned = std::make_shared<std::atomic<bool>>(false);
+    TimingController* ctrl = controller.get();
+    auto selfStopper = std::make_unique<SelfStopUnderContentionUnit>(
+        "SelfStopper", ctrl, externalMayStop, selfStopReturned);
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    controller->scheduleProcessingUnit(selfStopper.get(), constraints);
+    controller->start();
+
+    const auto rendezvousDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!externalMayStop->load() && std::chrono::steady_clock::now() < rendezvousDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(externalMayStop->load());
+
+    std::thread externalStopper(
+        [ctrl] { ctrl->stop(); }); // genuine external stop, blocks in join()
+
+    const auto returnDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!selfStopReturned->load() && std::chrono::steady_clock::now() < returnDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(selfStopReturned->load())
+        << "self-stop must return promptly even while an external stop() is in flight";
+
+    externalStopper.join();
+    controller->stop(); // deterministic teardown for TearDown()
+
+    finished.store(true);
+    watchdog.join();
+    SUCCEED();
 }
 
 // V5 (CLAUDE.md #8: lock-free claims require a TSan-clean stress test plus a

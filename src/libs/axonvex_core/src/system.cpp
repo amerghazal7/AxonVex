@@ -187,15 +187,16 @@ AxonVexSystem::~AxonVexSystem() {
     // If a concurrent emergencyShutdown owned the teardown (our call above
     // skipped via try_lock), wait for it to finish before members are
     // destroyed. This only synchronizes with mutex-owning teardowns: a
-    // deferred self-join emergencyShutdown (running ON eventProcessingThread_/
-    // monitoringThread_) releases the mutex via try_lock's early return while
-    // still unwinding user-code frames on that thread — the joins below cover
-    // that window. Legal here (no self-join risk): a worker thread cannot
-    // reach the destructor without going through initialize()/stop()/reset(),
-    // all of which refuse on isOnWorkerThread().
+    // deferred self-join emergencyShutdown (running ON eventWorker_'s/
+    // monitoringWorker_'s thread) releases the mutex via try_lock's early
+    // return while still unwinding user-code frames on that thread — the
+    // joins below cover that window. Legal here (no self-join risk): a
+    // worker thread cannot reach the destructor without going through
+    // initialize()/stop()/reset(), all of which refuse on
+    // isOnWorkerThread().
     { std::lock_guard<std::mutex> wait(shutdownMutex_); }
-    joinAndClearThreadHandle(eventProcessingThread_);
-    joinAndClearThreadHandle(monitoringThread_);
+    eventWorker_.join();
+    monitoringWorker_.join();
 }
 
 // =================================================================
@@ -207,8 +208,8 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
     // using; refusal is the only honest behavior. emergencyShutdown() remains
     // the sanctioned from-any-thread path (it stops but never destroys).
     // Must be the first statement: everything below (including the C39
-    // joins just after this) assumes it is not running on eventThreadId_/
-    // monitoringThreadId_.
+    // joins just after this) assumes it is not running on eventWorker_'s/
+    // monitoringWorker_'s thread.
     if (isOnWorkerThread()) {
         if (logger_) {
             logger_->error("System", "initialize() called from a system worker thread -- refused. "
@@ -242,8 +243,8 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
     // below into a potential indefinite block. Join both handles first,
     // THEN initialize components, THEN clear/set flags, THEN start new
     // threads.
-    joinAndClearThreadHandle(monitoringThread_);
-    joinAndClearThreadHandle(eventProcessingThread_);
+    monitoringWorker_.join();
+    eventWorker_.join();
 
     // Initialize core components first to ensure they're ready for use
     if (!initializeComponents()) {
@@ -300,13 +301,12 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
         // Start monitoring if enabled
         if (systemConfig_.enablePerformanceMonitoring) {
             monitoringEnabled_.store(true);
-            monitoringThread_ = std::make_unique<std::thread>(&AxonVexSystem::monitoringLoop, this);
+            monitoringWorker_.start([this] { monitoringLoop(); });
         }
 
         // Start event processing thread
         eventProcessingRunning_.store(true);
-        eventProcessingThread_ =
-            std::make_unique<std::thread>(&AxonVexSystem::eventProcessingLoop, this);
+        eventWorker_.start([this] { eventProcessingLoop(); });
 
         // Transition to initialized state
         if (!transitionState(SystemState::INITIALIZED)) {
@@ -472,17 +472,13 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
         // emergencyShutdown must not touch timingController_ while
         // cleanupComponents() resets it (it try_locks and skips instead)
         std::unique_lock<std::mutex> teardownLock(shutdownMutex_);
-        // Stop event processing thread first
-        if (eventProcessingThread_ && eventProcessingThread_->joinable()) {
-            eventProcessingThread_->join();
-            eventProcessingThread_.reset();
+        // Stop event processing thread first. Not a self-join risk here --
+        // stop() already refused above if called on eventWorker_'s thread.
+        if (eventWorker_.join()) {
             drainEventQueue();
         }
         // Stop monitoring thread next
-        if (monitoringThread_ && monitoringThread_->joinable()) {
-            monitoringThread_->join();
-            monitoringThread_.reset();
-        }
+        monitoringWorker_.join();
         // Now stop all components
         if (!stopComponents(timeoutMs)) {
             // Release first: emergencyShutdown try_locks this mutex and must
@@ -533,24 +529,18 @@ void AxonVexSystem::emergencyShutdown() {
         return;
     }
 
-    // Stop event processing thread first. Self-join guard: the emergency
-    // callback may run on a system thread; skip the join and reset there —
-    // the destructor's second pass joins from the owner thread.
-    if (eventProcessingThread_ && eventProcessingThread_->joinable() &&
-        std::this_thread::get_id() != eventThreadId_.load()) {
-        eventProcessingThread_->join();
-        eventProcessingThread_.reset();
-    }
+    // Stop event processing thread first. Self-join guard (now inside
+    // eventWorker_.join() itself): the emergency callback may run on a
+    // system thread; that call refuses and returns false rather than
+    // joining/resetting — the destructor's second pass joins from the
+    // owner thread instead.
+    eventWorker_.join();
     // Unconditional: events can be queued before the event thread ever starts
     // (e.g. registerProcessingUnit during a failed initializeBlocksLayout) and
     // would otherwise leak when the pool is torn down (C25)
     drainEventQueue();
     // Stop monitoring thread next
-    if (monitoringThread_ && monitoringThread_->joinable() &&
-        std::this_thread::get_id() != monitoringThreadId_.load()) {
-        monitoringThread_->join();
-        monitoringThread_.reset();
-    }
+    monitoringWorker_.join();
     // Force stop all components immediately
     try {
         if (timingController_) {
@@ -622,7 +612,7 @@ void AxonVexSystem::reset() {
     // worker thread's own call stack may be using; a worker calling this
     // would tear down its own components mid-callback. Refuse — same
     // contract as initialize()/stop(). Must be the first statement: nothing
-    // below is safe to run on eventThreadId_/monitoringThreadId_.
+    // below is safe to run on eventWorker_'s/monitoringWorker_'s thread.
     if (isOnWorkerThread()) {
         if (logger_) {
             logger_->error("System", "reset() called from a system worker thread -- refused. "
@@ -638,14 +628,14 @@ void AxonVexSystem::reset() {
     // case) instead of guessing with a sleep. Safe from deadlock: worker
     // threads are refused above, so nobody joining US can hold this mutex.
     // This only synchronizes with mutex-owning teardowns, not a deferred
-    // self-join emergencyShutdown: that variant runs ON eventProcessingThread_/
-    // monitoringThread_ and releases the mutex via try_lock's early return
-    // while still unwinding user-code frames on that thread. The joins below
-    // close that window — legal here because worker threads can't reach this
-    // point (refused above), so no self-join is possible.
+    // self-join emergencyShutdown: that variant runs ON eventWorker_'s/
+    // monitoringWorker_'s thread and releases the mutex via try_lock's early
+    // return while still unwinding user-code frames on that thread. The
+    // joins below close that window — legal here because worker threads
+    // can't reach this point (refused above), so no self-join is possible.
     { std::lock_guard<std::mutex> wait(shutdownMutex_); }
-    joinAndClearThreadHandle(eventProcessingThread_);
-    joinAndClearThreadHandle(monitoringThread_);
+    eventWorker_.join();
+    monitoringWorker_.join();
 
     // Reset to uninitialized state
     // C7: FATAL_ERROR → UNINITIALIZED is already in the transition table.
@@ -1240,36 +1230,12 @@ bool AxonVexSystem::startComponents() {
     }
 }
 
-namespace {
-/**
- * C41: publishes the calling thread's id into `slot` on construction and
- * clears it (back to std::thread::id{}, the "no worker" sentinel
- * isOnWorkerThread() checks against) on destruction — every exit path of the
- * loop that owns the guard, including an exception escaping the loop body,
- * runs the clear. Ids are reusable once a thread exits, so a stale id left
- * behind after a loop ends could later alias an unrelated thread; the clear
- * is not optional cleanup, it is the correctness condition.
- */
-class WorkerThreadIdGuard {
-  public:
-    explicit WorkerThreadIdGuard(std::atomic<std::thread::id>& slot) : slot_(slot) {
-        slot_.store(std::this_thread::get_id());
-    }
-    ~WorkerThreadIdGuard() {
-        slot_.store(std::thread::id{});
-    }
-    WorkerThreadIdGuard(const WorkerThreadIdGuard&) = delete;
-    WorkerThreadIdGuard& operator=(const WorkerThreadIdGuard&) = delete;
-
-  private:
-    std::atomic<std::thread::id>& slot_;
-};
-} // namespace
-
 void AxonVexSystem::monitoringLoop() {
-    // C41: published first, cleared last (by the guard's destructor, on
-    // every exit path) so isOnWorkerThread() can identify this thread.
-    WorkerThreadIdGuard idGuard(monitoringThreadId_);
+    // C41: the thread-id publish (first act) / clear (last, every exit
+    // path) that used to be a local WorkerThreadIdGuard here now happens
+    // automatically inside detail::WorkerThread::start() -- see
+    // monitoringWorker_'s declaration comment (Phase 2 decomposition step
+    // 3). isOnWorkerThread() reads it via monitoringWorker_.isOnThisThread().
 
     auto lastUpdate = std::chrono::steady_clock::now();
     // Loop-local timer: the old unlocked read of lastHealth_.lastCheckTime raced
@@ -1422,21 +1388,7 @@ void AxonVexSystem::drainEventQueue() noexcept {
     }
 }
 
-void AxonVexSystem::joinAndClearThreadHandle(std::unique_ptr<std::thread>& handle) {
-    // C41: callers must not run on the thread the handle names; initialize()
-    // guarantees this via isOnWorkerThread() refusal. This helper used to
-    // carry a self-join guard (detach instead of join) for exactly the
-    // reinit-from-callback path initialize()'s refusal now closes before
-    // ever reaching here — nothing else relied on it, so it is gone rather
-    // than kept as unreachable defense-in-depth.
-    if (handle && handle->joinable()) {
-        handle->join();
-    }
-    handle.reset();
-}
-
 bool AxonVexSystem::isOnWorkerThread() const noexcept {
-    const std::thread::id self = std::this_thread::get_id();
     // C42: extends coverage to the scheduler thread. Reading timingController_
     // (a unique_ptr the lifecycle methods replace/reset) without a lock is
     // safe here: every caller of isOnWorkerThread() is either a lifecycle
@@ -1449,7 +1401,7 @@ bool AxonVexSystem::isOnWorkerThread() const noexcept {
     // executeTask(), which is running inside the very TimingController this
     // thread belongs to, so it cannot have been reset out from under its own
     // live call stack.
-    return self == eventThreadId_.load() || self == monitoringThreadId_.load() ||
+    return eventWorker_.isOnThisThread() || monitoringWorker_.isOnThisThread() ||
            (timingController_ && timingController_->isOnSchedulerThread());
 }
 
@@ -1486,9 +1438,11 @@ void AxonVexSystem::publishEvent(const SystemEvent& event) {
 }
 
 void AxonVexSystem::eventProcessingLoop() {
-    // C41: published first, cleared last (by the guard's destructor, on
-    // every exit path) so isOnWorkerThread() can identify this thread.
-    WorkerThreadIdGuard idGuard(eventThreadId_);
+    // C41: the thread-id publish (first act) / clear (last, every exit
+    // path) that used to be a local WorkerThreadIdGuard here now happens
+    // automatically inside detail::WorkerThread::start() -- see
+    // eventWorker_'s declaration comment (Phase 2 decomposition step 3).
+    // isOnWorkerThread() reads it via eventWorker_.isOnThisThread().
 
     while (eventProcessingRunning_.load() && !isShuttingDown_.load()) {
         // Guard against accessing resources during shutdown
