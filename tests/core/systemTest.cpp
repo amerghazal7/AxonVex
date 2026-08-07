@@ -82,7 +82,7 @@ class MockProcessingUnit : public ProcessingUnit {
         processingTime_ = time;
     }
 
-    std::atomic<int> getProcessCallCount() const {
+    int getProcessCallCount() const {
         return processCallCount_.load();
     }
     int getInitializeCallCount() const {
@@ -271,6 +271,309 @@ TEST_F(AxonVexSystemTest, SystemReset) {
     EXPECT_EQ(system_->getProcessingUnitCount(), 0);
 }
 
+// C39 guard: an e-stop initiated FROM an event callback runs emergencyShutdown
+// on the event thread itself, whose self-join guard (C33/C36) leaves the
+// thread handle set. Re-initialization must join-and-clear stale handles
+// before assigning new threads over them (~std::thread on a joinable thread
+// is std::terminate). The throw-mid-initialize shape of C39 has no
+// deterministic seam; this locks the nearest reachable lifecycle.
+TEST_F(AxonVexSystemTest, ReinitializeAfterCallbackInitiatedEmergencyShutdown) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto fired = std::make_shared<std::atomic<bool>>(false);
+    AxonVexSystem* sys = system_.get();
+    system_->registerEventCallback([sys, fired](const SystemEvent&) {
+        if (!fired->exchange(true)) {
+            sys->emergencyShutdown(); // runs on the event thread
+        }
+    });
+    // STATE_CHANGE events (published under start()'s own transitionState calls)
+    // trigger the callback asynchronously on the event thread, racing this
+    // thread's own transitionState(RUNNING): the e-stop may land before or
+    // after start() reaches RUNNING, so start()'s return value is not
+    // deterministic here — only that FATAL_ERROR is eventually reached
+    // (asserted below) matters for this guard.
+    system_->start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (system_->getState() != SystemState::FATAL_ERROR &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(system_->getState(), SystemState::FATAL_ERROR);
+
+    system_->reset();
+    EXPECT_TRUE(system_->initialize()); // must not terminate on a stale handle
+    EXPECT_TRUE(system_->start());
+    EXPECT_TRUE(system_->stop());
+}
+
+// C41 regression: initialize() called from an event callback runs ON the
+// event-processing thread. Pre-fix, the C39 helper detached the self-handle
+// and initializeComponents() then replaced eventPool_/eventQueue_/logger_
+// under the detached loop's live stack — a cross-pool free and a duplicate
+// queue consumer (pre-C39 this was a std::terminate; the detach made it
+// silent). initialize() now refuses on a worker thread.
+TEST_F(AxonVexSystemTest, InitializeFromEventCallbackIsRefused) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    auto result = std::make_shared<std::atomic<bool>>(true);
+    AxonVexSystem* sys = system_.get();
+    system_->registerEventCallback([sys, attempted, result, finished](const SystemEvent&) {
+        if (!attempted->exchange(true)) {
+            result->store(sys->initialize()); // must be refused, not honored
+            // Set only after the call returns: the poller below must never
+            // observe a "done" signal before result actually holds the
+            // outcome, or it can race the store and read a stale `true`.
+            finished->store(true);
+        }
+    });
+    EXPECT_TRUE(system_->start()); // STATE_CHANGE events drive the callback
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(finished->load());
+    EXPECT_FALSE(result->load()) << "initialize() on the event thread must refuse";
+    // The system must still be intact and stoppable from the outside.
+    EXPECT_TRUE(system_->stop());
+}
+
+// C40 regression: stop() from an event callback self-joined, threw
+// resource_deadlock_would_occur into its own catch, and silently escalated a
+// graceful stop to FATAL_ERROR. It now refuses up front, before the
+// STOPPING transition, so the system stays RUNNING.
+TEST_F(AxonVexSystemTest, StopFromEventCallbackIsRefusedWithoutEscalation) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    auto stopResult = std::make_shared<std::atomic<bool>>(true);
+    AxonVexSystem* sys = system_.get();
+    system_->registerEventCallback([sys, attempted, stopResult, finished](const SystemEvent&) {
+        if (!attempted->exchange(true)) {
+            stopResult->store(sys->stop());
+            // Set only after the call returns: see InitializeFromEventCallbackIsRefused.
+            finished->store(true);
+        }
+    });
+    EXPECT_TRUE(system_->start());
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(finished->load());
+    EXPECT_FALSE(stopResult->load());
+    // Pre-fix the swallowed self-join escalated to FATAL_ERROR; post-fix the
+    // refusal happens before the STOPPING transition, so state stays RUNNING.
+    EXPECT_EQ(system_->getState(), SystemState::RUNNING);
+    EXPECT_TRUE(system_->stop()); // a real stop from outside still works
+}
+
+// C40 regression, reset() variant. reset() from an event callback ran
+// emergencyShutdown() + a destructive teardown (timingController_/
+// configuration_/logger_.reset()) on the very event thread invoking it — the
+// callback's own call stack was using those objects underneath it. It now
+// refuses up front and returns without touching anything. reset() returns
+// void, so the refusal is observed indirectly: the system must still be
+// intact (not UNINITIALIZED) and a subsequent external stop() must succeed.
+TEST_F(AxonVexSystemTest, ResetFromEventCallbackIsRefused) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    AxonVexSystem* sys = system_.get();
+    system_->registerEventCallback([sys, attempted, finished](const SystemEvent&) {
+        if (!attempted->exchange(true)) {
+            sys->reset();
+            // Set only after reset() returns: see
+            // InitializeFromEventCallbackIsRefused. Without this, polling on
+            // `attempted` lets the main thread race ahead of reset() itself
+            // (which returns void, so there is no result to observe) and the
+            // post-assertions below could run before reset() ever executes.
+            finished->store(true);
+        }
+    });
+    EXPECT_TRUE(system_->start());
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(finished->load());
+    EXPECT_NE(system_->getState(), SystemState::UNINITIALIZED);
+    EXPECT_TRUE(system_->stop());
+}
+
+// C42 regression: a ProcessingUnit task body runs on RealTimeScheduler's own
+// thread, which batch-4's refusal predicate (isOnWorkerThread(), C41) did not
+// know about. Pre-fix: stop() from a task self-joined the scheduler thread
+// inside TimingController::stop() -> RealTimeScheduler::stop(), the
+// system_error was swallowed by stop()'s catch, and the graceful stop
+// silently escalated to FATAL_ERROR (C40's exact symptom, on a thread C40
+// never covered). isOnWorkerThread() now also covers the scheduler thread.
+class SelfStoppingProcessingUnit : public MockProcessingUnit {
+  public:
+    SelfStoppingProcessingUnit(const std::string& name, AxonVexSystem* sys,
+                               std::shared_ptr<std::atomic<bool>> attempted,
+                               std::shared_ptr<std::atomic<bool>> stopResult,
+                               std::shared_ptr<std::atomic<bool>> finished)
+        : MockProcessingUnit(name), sys_(sys), attempted_(std::move(attempted)),
+          stopResult_(std::move(stopResult)), finished_(std::move(finished)) {}
+
+    void processSync() override {
+        if (!attempted_->exchange(true)) {
+            stopResult_->store(sys_->stop()); // must be refused, not honored
+            // Set only after stop() returns: see
+            // InitializeFromEventCallbackIsRefused for why the gate flag and
+            // the finished flag must not be the same store (batch-4 lesson).
+            finished_->store(true);
+        }
+    }
+
+  private:
+    AxonVexSystem* sys_;
+    std::shared_ptr<std::atomic<bool>> attempted_;
+    std::shared_ptr<std::atomic<bool>> stopResult_;
+    std::shared_ptr<std::atomic<bool>> finished_;
+};
+
+TEST_F(AxonVexSystemTest, StopFromProcessingUnitTaskIsRefusedWithoutEscalation) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    auto stopResult = std::make_shared<std::atomic<bool>>(true);
+    AxonVexSystem* sys = system_.get();
+
+    auto unit = std::make_unique<SelfStoppingProcessingUnit>("SelfStopper", sys, attempted,
+                                                             stopResult, finished);
+    system_->registerProcessingUnit(std::move(unit));
+
+    EXPECT_TRUE(system_->start()); // schedules the unit onto the scheduler thread
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(finished->load());
+    EXPECT_FALSE(stopResult->load()) << "stop() on the scheduler thread must refuse";
+    // Pre-fix the swallowed self-join escalated to FATAL_ERROR; post-fix the
+    // refusal happens before the STOPPING transition, so state stays RUNNING.
+    EXPECT_EQ(system_->getState(), SystemState::RUNNING);
+    EXPECT_TRUE(system_->stop()); // a real stop from outside still works
+}
+
+// C7 regression: emergencyShutdown/reset used to write currentState_ directly,
+// bypassing transitionState — no validation, no statistics, no STATE_CHANGE
+// event. The transition counter is the observable: a bypassed store leaves it
+// unchanged.
+TEST_F(AxonVexSystemTest, EmergencyShutdownIsAValidatedStateTransition) {
+    EXPECT_TRUE(system_->initialize());
+    EXPECT_TRUE(system_->start());
+
+    const uint64_t before = system_->getStatistics().totalStateTransitions.load();
+    system_->emergencyShutdown();
+
+    EXPECT_EQ(system_->getState(), SystemState::FATAL_ERROR);
+    EXPECT_EQ(system_->getStatistics().totalStateTransitions.load(), before + 1);
+}
+
+// C7 regression, reset() variant. reset() = emergencyShutdown() (→ FATAL_ERROR,
+// +1 transition), a wait for in-flight teardown, then transitionState(→
+// UNINITIALIZED) (+1 more) — but reset()'s own statistics_.reset() call runs
+// immediately after that second transition and zeroes totalStateTransitions
+// back to 0 as part of its documented job (see SystemStatistics::reset()).
+// Reading the counter after reset() returns is therefore 0 either way and
+// can't distinguish the fix from the bypass it replaces. Run reset() on a
+// background thread and poll for the counter moving off `before` instead.
+//
+// C40 removed reset()'s sleep_for(100ms) guess in favor of blocking on
+// shutdownMutex_ — on this system (no concurrent teardown owner) that wait is
+// near-instant, so the discriminating window is no longer a fabricated
+// delay. It is real anyway: this test's reset() call runs on a plain
+// std::thread (not a system worker), so emergencyShutdown() actually joins
+// eventProcessingThread_ and monitoringThread_ here rather than skipping via
+// the self-join guard — and each of those loops only re-checks its shutdown
+// flag once per ~100ms poll cadence (eventProcessingLoop's tryDequeue
+// timeout, monitoringLoop's sleep_for). That join time is the window: it
+// elapses between the FATAL_ERROR transition (immediate) and the
+// UNINITIALIZED transition + statistics_.reset() (after both joins return),
+// and it is bounded below by zero only in the measure-zero case where both
+// loops happen to be at their top-of-loop check at the exact instant the
+// flags flip.
+//
+// Decision record (whole-branch review, evidence-based): 20 consecutive
+// serial runs observed the bump every time, but 6-way parallel load
+// (6 processes x 6 repeats = 36 runs) missed it once — the 5ms poll cadence
+// against a sub-5ms window is not reliably wide enough under contention, and
+// this remains true even after the C40 follow-up fix added extra
+// joinAndClearThreadHandle() calls to reset() (those only close the
+// deferred-self-join gap; they don't run on this test's plain-thread path,
+// where emergencyShutdown() already joins directly, so they don't widen this
+// particular window). Per the documented fallback, the sawBump assertion is
+// dropped rather than chasing a tighter poll: the invariant it was trying to
+// verify (reset() routes through transitionState() instead of bypassing it)
+// is already covered without a race by
+// EmergencyShutdownIsAValidatedStateTransition, which asserts the FATAL_ERROR
+// half of reset()'s path (reset() == emergencyShutdown() + transition to
+// UNINITIALIZED) directly and synchronously. This test keeps its
+// non-racy post-conditions: reset() actually completes, and the system ends
+// up UNINITIALIZED with statistics zeroed.
+TEST_F(AxonVexSystemTest, ResetIsAValidatedStateTransition) {
+    EXPECT_TRUE(system_->initialize());
+    EXPECT_TRUE(system_->start());
+
+    std::atomic<bool> done{false};
+    std::thread worker([this, &done]() {
+        system_->reset();
+        done.store(true);
+    });
+
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(5ms);
+    }
+
+    if (!done.load()) {
+        worker.detach();
+    } else {
+        worker.join();
+    }
+
+    ASSERT_TRUE(done.load()) << "reset() did not complete";
+    EXPECT_EQ(system_->getState(), SystemState::UNINITIALIZED);
+    // reset()'s statistics_.reset() zeroes the counter — documented behavior,
+    // not evidence either way for the C7 fix (see EmergencyShutdownIsAValidatedStateTransition
+    // for the assertion that actually exercises it).
+    EXPECT_EQ(system_->getStatistics().totalStateTransitions.load(), 0u);
+}
+
+// FATAL_ERROR must be reachable from ANY state — an e-stop is always legal.
+// Pre-fix the transition table only allowed it from STOPPING.
+TEST_F(AxonVexSystemTest, EmergencyShutdownFromInitializedIsValidated) {
+    EXPECT_TRUE(system_->initialize());
+
+    const uint64_t before = system_->getStatistics().totalStateTransitions.load();
+    system_->emergencyShutdown();
+
+    EXPECT_EQ(system_->getState(), SystemState::FATAL_ERROR);
+    EXPECT_EQ(system_->getStatistics().totalStateTransitions.load(), before + 1);
+}
+
+// Guard test for the trap the C7 fix opens: e-stop on a NEVER-initialized
+// system now reaches publishEvent, whose eventPool_/eventQueue_ are null.
+// Passes trivially pre-fix; crashes post-fix if the null guard is missing.
+TEST_F(AxonVexSystemTest, EmergencyShutdownOnUninitializedSystemIsSafe) {
+    TestAxonVexSystem s;
+    s.emergencyShutdown();
+    EXPECT_EQ(s.getState(), SystemState::FATAL_ERROR);
+}
+
 // =================================================================
 // PROCESSING UNIT MANAGEMENT TESTS
 // =================================================================
@@ -386,8 +689,8 @@ TEST_F(AxonVexSystemTest, SystemConfigurationAccess) {
 }
 
 TEST_F(AxonVexSystemTest, SystemConfigurationUpdate) {
-    EXPECT_TRUE(system_->initialize());
-
+    // C25: config is immutable once initialization begins — worker threads
+    // read systemConfig_ unlocked, so live updates were a data race.
     SystemConfiguration newConfig = config_;
     newConfig.systemName = "UpdatedSystem";
     newConfig.logLevel = LogLevel::Warning;
@@ -397,6 +700,12 @@ TEST_F(AxonVexSystemTest, SystemConfigurationUpdate) {
     const auto& updatedConfig = system_->getSystemConfiguration();
     EXPECT_EQ(updatedConfig.systemName, "UpdatedSystem");
     EXPECT_EQ(updatedConfig.logLevel, LogLevel::Warning);
+
+    // After initialize() the update must be rejected
+    EXPECT_TRUE(system_->initialize());
+    newConfig.systemName = "TooLate";
+    EXPECT_FALSE(system_->updateSystemConfiguration(newConfig));
+    EXPECT_EQ(system_->getSystemConfiguration().systemName, "UpdatedSystem");
 }
 
 TEST_F(AxonVexSystemTest, FrameworkConfigurationAccess) {
@@ -526,22 +835,69 @@ TEST_F(AxonVexSystemTest, BasicHealthCheck) {
 TEST_F(AxonVexSystemTest, HealthCheckCallbacks) {
     EXPECT_TRUE(system_->initialize());
 
-    bool healthCheckCalled = false;
+    // Captured by value (shared_ptr): the monitoring thread may invoke this callback
+    // after the test body returns — a stack-local captured by reference dangles (C18 crash).
+    auto healthCheckCalled = std::make_shared<std::atomic<bool>>(false);
 
     // Register health check callback
-    uint32_t callbackId = system_->registerHealthCheckCallback([&]() -> SystemHealth {
-        healthCheckCalled = true;
-        SystemHealth customHealth;
-        customHealth.overallStatus = SystemHealth::Status::HEALTHY;
-        return customHealth;
-    });
+    uint32_t callbackId =
+        system_->registerHealthCheckCallback([healthCheckCalled]() -> SystemHealth {
+            healthCheckCalled->store(true);
+            SystemHealth customHealth;
+            customHealth.overallStatus = SystemHealth::Status::HEALTHY;
+            return customHealth;
+        });
 
     EXPECT_GT(callbackId, 0);
 
     // Perform health check
     system_->performHealthCheck();
 
-    EXPECT_TRUE(healthCheckCalled);
+    EXPECT_TRUE(healthCheckCalled->load());
+}
+
+// Regression test for C18: user callbacks must not be invoked while callbacksMutex_
+// is held — a callback that re-enters the callback API would deadlock.
+TEST_F(AxonVexSystemTest, HealthCheckCallbackReentrantRegistration) {
+    EXPECT_TRUE(system_->initialize());
+
+    auto innerId = std::make_shared<std::atomic<uint32_t>>(0);
+    AxonVexSystem* sys = system_.get();
+
+    system_->registerHealthCheckCallback([sys, innerId]() -> SystemHealth {
+        // Re-entrant use of the callback API from inside a callback
+        uint32_t id = sys->registerHealthCheckCallback([]() -> SystemHealth {
+            SystemHealth h;
+            h.overallStatus = SystemHealth::Status::HEALTHY;
+            return h;
+        });
+        innerId->store(id);
+        SystemHealth h;
+        h.overallStatus = SystemHealth::Status::HEALTHY;
+        return h;
+    });
+
+    std::atomic<bool> done{false};
+    std::thread worker([&done, sys] {
+        sys->performHealthCheck();
+        done.store(true);
+    });
+
+    // Poll with timeout: before the C18 fix this deadlocks and never completes.
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(10ms);
+    }
+
+    // Detach on the failure path: destroying a joinable thread calls std::terminate,
+    // which would abort the whole binary instead of reporting this test's failure.
+    if (!done.load()) {
+        worker.detach();
+    }
+    ASSERT_TRUE(done.load())
+        << "performHealthCheck deadlocked: callbacks invoked under callbacksMutex_ (C18)";
+    worker.join();
+    EXPECT_GT(innerId->load(), 0u);
 }
 
 // =================================================================
@@ -1018,6 +1374,111 @@ TEST_F(AxonVexSystemTest, SystemPortThreadSafety) {
     EXPECT_EQ(successCount.load(), 10); // 5 inputs + 5 outputs
     EXPECT_EQ(system_->getSystemInputPortNames().size(), 5);
     EXPECT_EQ(system_->getSystemOutputPortNames().size(), 5);
+}
+
+namespace {
+// Registers a MockProcessingUnit on `sys` and exposes its ports as system
+// ports "out"/"in". Returns false on any setup failure.
+bool exposeSystemPorts(AxonVexSystem& sys) {
+    auto unit = std::make_unique<MockProcessingUnit>("PortUnit");
+    MockProcessingUnit* unitPtr = unit.get();
+    sys.registerProcessingUnit(std::move(unit));
+    return sys.assignSystemOutputPort("out", unitPtr, 1000) &&
+           sys.assignSystemInputPort("in", unitPtr, 1001);
+}
+} // namespace
+
+// C9 regression: connectToSystem/disconnectFromSystem locked the two systems'
+// systemPortsMutex_ in ARGUMENT order, so a→b concurrent with b→a acquired
+// them in opposite orders — AB/BA deadlock. Deadline-guarded: a regression
+// hangs rather than fails.
+TEST_F(AxonVexSystemTest, OpposingCrossSystemConnectsDoNotDeadlock) {
+    TestAxonVexSystem a, b;
+    ASSERT_TRUE(a.initialize());
+    ASSERT_TRUE(b.initialize());
+    ASSERT_TRUE(exposeSystemPorts(a));
+    ASSERT_TRUE(exposeSystemPorts(b));
+
+    auto doneA = std::make_shared<std::atomic<bool>>(false);
+    auto doneB = std::make_shared<std::atomic<bool>>(false);
+
+    std::thread ta([&a, &b, doneA]() {
+        for (int i = 0; i < 500; ++i) {
+            a.connectToSystem<double>("out", &b, "in");
+            a.disconnectFromSystem<double>("out", &b, "in");
+        }
+        doneA->store(true);
+    });
+    std::thread tb([&a, &b, doneB]() {
+        for (int i = 0; i < 500; ++i) {
+            b.connectToSystem<double>("out", &a, "in");
+            b.disconnectFromSystem<double>("out", &a, "in");
+        }
+        doneB->store(true);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!(doneA->load() && doneB->load()) && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!doneA->load() || !doneB->load()) {
+        ta.detach(); // wedged; leak them rather than hang the suite
+        tb.detach();
+        FAIL() << "opposing cross-system connects deadlocked";
+    }
+    ta.join();
+    tb.join();
+}
+
+// C9, second shape: targetSystem == this locked the same non-recursive mutex
+// twice (UB, hangs in practice). Self-connection is legitimate — an output
+// port looped back to an input port of the same system.
+TEST_F(AxonVexSystemTest, ConnectSystemToItselfDoesNotSelfDeadlock) {
+    TestAxonVexSystem a;
+    ASSERT_TRUE(a.initialize());
+    ASSERT_TRUE(exposeSystemPorts(a));
+
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    auto connected = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([&a, done, connected]() {
+        connected->store(a.connectToSystem<double>("out", &a, "in"));
+        a.disconnectFromSystem<double>("out", &a, "in");
+        done->store(true);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!done->load()) {
+        worker.detach();
+        FAIL() << "self-connection deadlocked on systemPortsMutex_";
+    }
+    worker.join();
+    EXPECT_TRUE(connected->load());
+}
+
+// C38 regression: isShuttingDown_ (set by stop/emergencyShutdown) was never
+// cleared, so a system re-initialized after reset() had a dead event pipeline:
+// eventProcessingLoop's guard saw the stale flag and exited immediately, and
+// publishEvent dropped every event — with the state machine reporting healthy.
+TEST_F(AxonVexSystemTest, EventPipelineIsAliveAfterResetAndReinitialize) {
+    EXPECT_TRUE(system_->initialize());
+    EXPECT_TRUE(system_->start());
+    EXPECT_TRUE(system_->stop());
+    system_->reset();
+
+    EXPECT_TRUE(system_->initialize());
+    auto sawEvent = std::make_shared<std::atomic<bool>>(false);
+    system_->registerEventCallback([sawEvent](const SystemEvent&) { sawEvent->store(true); });
+    EXPECT_TRUE(system_->start()); // publishes STATE_CHANGE events
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!sawEvent->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(sawEvent->load()) << "re-initialized system's event pipeline is dead";
+    EXPECT_TRUE(system_->stop());
 }
 
 } // anonymous namespace

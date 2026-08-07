@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -25,13 +24,11 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <typeinfo>
 #include <vector>
 
 namespace axonvex::core {
-
-// Bring utils containers into core namespace for convenience
-using axonvex::utils::containers::MemoryPool;
 
 // Forward declarations
 class ProcessingUnit;
@@ -92,13 +89,15 @@ class BasePort {
         return description_;
     }
 
-    // Thread safety control
-    virtual void setThreadSafe(bool threadSafe) = 0;
+    // Thread safety is fixed at construction and cannot be changed afterwards.
+    //
+    // It used to be settable, which was unsound: the flag selects between a
+    // locked and an unlocked access discipline, so flipping it while producers
+    // and consumers were live let a writer that read `true` take the mutex path
+    // concurrently with a reader that read `false` taking the unlocked one, both
+    // on the same payload. An atomic flag makes the read safe, not the switch.
+    // Pass the mode to the port's constructor instead (C31).
     virtual bool isThreadSafe() const noexcept = 0;
-
-    // MemoryPool support for thread-safe data storage
-    virtual void setMemoryPoolSize(size_t poolSize) = 0;
-    virtual size_t getMemoryPoolSize() const noexcept = 0;
 
     // Reset functionality
     virtual void reset() = 0;
@@ -120,6 +119,35 @@ class BasePort {
     template <typename T>
     bool validateData(const T& data);
 
+    /// Reject a callback registration once the port has carried traffic (C32).
+    ///
+    /// The dispatch path reads these `std::function` members with no lock, and
+    /// it must stay that way: a lock there would run user code under a port
+    /// lock (the C12/C18 bug class), and copying the function out to call it
+    /// unlocked would allocate on the port hot path. Both are banned. So
+    /// registration is setup-only — and rather than leave that as a comment
+    /// nobody reads, a late registration fails loudly here instead of silently
+    /// racing a concurrent dispatch. Costs nothing on the hot path: setters are
+    /// not hot.
+    ///
+    /// Two limits this deliberately does not close, so it is not mistaken for
+    /// more than it is. The load is relaxed against a seq_cst increment, so a
+    /// setter racing the *very first* dispatch can still read 0 and slip
+    /// through — that is already a violation of the setup-only contract, which
+    /// no runtime check can repair. And the trigger is "the port carried a
+    /// message", not "this particular callback was read", so a message rejected
+    /// by NaN validation before the callback is ever consulted still latches
+    /// the port. Erring toward rejection is the safe direction.
+    void requireNoTrafficYet(const char* what) const {
+        if (totalMessages_.load(std::memory_order_relaxed) != 0) {
+            throw std::logic_error(std::string(what) +
+                                   " must be called before the port carries traffic: the dispatch "
+                                   "path reads callbacks unlocked, so late registration would race "
+                                   "it (port '" +
+                                   name_ + "')");
+        }
+    }
+
     void incrementTotalMessages() {
         totalMessages_++;
     }
@@ -140,7 +168,8 @@ class InputPort : public BasePort {
     using ValidationCallback = std::function<bool(const T&)>;
     using DataCallback = std::function<void(const T&)>;
 
-    explicit InputPort(int id, const std::string& name, ProcessingUnit* owner);
+    explicit InputPort(int id, const std::string& name, ProcessingUnit* owner,
+                       bool threadSafe = false);
     ~InputPort() override = default;
 
     // Data access
@@ -171,14 +200,9 @@ class InputPort : public BasePort {
     }
 
     // Thread safety
-    void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override {
         return isThreadSafe_;
     }
-
-    // MemoryPool support
-    void setMemoryPoolSize(size_t poolSize) override;
-    size_t getMemoryPoolSize() const noexcept override;
 
     // Reset
     void reset() override;
@@ -187,12 +211,7 @@ class InputPort : public BasePort {
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> hasNewData_{false};
-    std::atomic<bool> isThreadSafe_{false};
-
-    // MemoryPool for thread-safe data storage
-    std::unique_ptr<MemoryPool<T>> memoryPool_;
-    std::atomic<T*> pooledData_{nullptr};
-    size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
+    const bool isThreadSafe_;
 
     // Callbacks
     ValidationCallback validationCallback_;
@@ -215,7 +234,8 @@ class OutputPort : public BasePort {
   public:
     using OutputCallback = std::function<void(const T&)>;
 
-    explicit OutputPort(int id, const std::string& name, ProcessingUnit* owner);
+    explicit OutputPort(int id, const std::string& name, ProcessingUnit* owner,
+                        bool threadSafe = false);
     ~OutputPort() override = default;
 
     // Data output
@@ -243,31 +263,42 @@ class OutputPort : public BasePort {
     }
 
     // Thread safety
-    void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override {
         return isThreadSafe_;
     }
-
-    // MemoryPool support
-    void setMemoryPoolSize(size_t poolSize) override;
-    size_t getMemoryPoolSize() const noexcept override;
 
     // Reset
     void reset() override;
 
   private:
+    // Copy-on-write connection list (C35). write() must dispatch to the
+    // connected ports with no lock held — those calls run user callbacks, and
+    // holding connectionMutex_ across them is the C12/C18 bug class. Copying the
+    // vector per write would fix that but allocates on the port path, which is
+    // also banned. A shared_ptr snapshot costs one refcount bump on the write
+    // path and keeps the list alive for the dispatch even if a concurrent
+    // disconnect replaces it; the allocation moves to connect/disconnect, which
+    // are setup operations.
+    using ConnectionList = std::vector<InputPort<T>*>;
+    using ConnectionSnapshot = std::shared_ptr<const ConnectionList>;
+
+    ConnectionSnapshot snapshotConnections() const {
+        std::lock_guard<std::mutex> lock(connectionMutex_);
+        return connections_;
+    }
+
+    /// Caller must hold connectionMutex_.
+    ConnectionList copyForUpdateLocked() const {
+        return connections_ ? ConnectionList(*connections_) : ConnectionList();
+    }
+
     mutable std::mutex connectionMutex_;
-    std::vector<InputPort<T>*> connectedPorts_;
-    std::atomic<bool> isThreadSafe_{false};
+    ConnectionSnapshot connections_;
+    const bool isThreadSafe_;
 
     // Current data for thread-safe access
     mutable std::mutex dataMutex_;
     T currentData_;
-
-    // MemoryPool for thread-safe data storage
-    std::unique_ptr<MemoryPool<T>> memoryPool_;
-    std::atomic<T*> pooledData_{nullptr};
-    size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
 
     OutputCallback outputCallback_;
     bool hasNanWarned_{false};
@@ -282,7 +313,8 @@ class AsyncInputPort : public BasePort {
     using ValidationCallback = std::function<bool(const T&)>;
     using DataCallback = std::function<void(const T&)>;
 
-    explicit AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner);
+    explicit AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner,
+                            bool threadSafe = false);
     ~AsyncInputPort() override = default;
 
     // Async data operations
@@ -311,14 +343,9 @@ class AsyncInputPort : public BasePort {
     }
 
     // Thread safety
-    void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override {
         return isThreadSafe_;
     }
-
-    // MemoryPool support
-    void setMemoryPoolSize(size_t poolSize) override;
-    size_t getMemoryPoolSize() const noexcept override;
 
     // Reset
     void reset() override;
@@ -327,12 +354,7 @@ class AsyncInputPort : public BasePort {
     mutable std::mutex dataMutex_;
     T data_;
     std::atomic<bool> wasUpdated_{false};
-    std::atomic<bool> isThreadSafe_{false};
-
-    // MemoryPool for thread-safe data storage
-    std::unique_ptr<MemoryPool<T>> memoryPool_;
-    std::atomic<T*> pooledData_{nullptr};
-    size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
+    const bool isThreadSafe_;
 
     // Callbacks
     ValidationCallback validationCallback_;
@@ -352,7 +374,8 @@ class AsyncOutputPort : public BasePort {
   public:
     using OutputCallback = std::function<void(const T&)>;
 
-    explicit AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner);
+    explicit AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner,
+                             bool threadSafe = false);
     ~AsyncOutputPort() override = default;
 
     // Async data operations
@@ -380,14 +403,9 @@ class AsyncOutputPort : public BasePort {
     }
 
     // Thread safety
-    void setThreadSafe(bool threadSafe) override;
     bool isThreadSafe() const noexcept override {
         return isThreadSafe_;
     }
-
-    // MemoryPool support
-    void setMemoryPoolSize(size_t poolSize) override;
-    size_t getMemoryPoolSize() const noexcept override;
 
     // Reset
     void reset() override;
@@ -401,13 +419,26 @@ class AsyncOutputPort : public BasePort {
     }
 
   private:
-    mutable std::mutex connectionMutex_;
-    std::vector<AsyncInputPort<T>*> connectedPorts_;
-    std::atomic<bool> isThreadSafe_{false};
-    std::atomic<bool> logAsyncWriteEvent_{false};
+    // Copy-on-write connection list — see OutputPort for the rationale (C35).
+    // This also retires C30's two-critical-section dance: the emptiness check
+    // and the dispatch now read one immutable snapshot, so they cannot disagree.
+    using ConnectionList = std::vector<AsyncInputPort<T>*>;
+    using ConnectionSnapshot = std::shared_ptr<const ConnectionList>;
 
-    // MemoryPool for consistency (AsyncOutput doesn't store data but maintains interface)
-    size_t poolSize_{MemoryPool<T>::DEFAULT_POOL_SIZE};
+    ConnectionSnapshot snapshotConnections() const {
+        std::lock_guard<std::mutex> lock(connectionMutex_);
+        return connections_;
+    }
+
+    /// Caller must hold connectionMutex_.
+    ConnectionList copyForUpdateLocked() const {
+        return connections_ ? ConnectionList(*connections_) : ConnectionList();
+    }
+
+    mutable std::mutex connectionMutex_;
+    ConnectionSnapshot connections_;
+    const bool isThreadSafe_;
+    std::atomic<bool> logAsyncWriteEvent_{false};
 
     OutputCallback outputCallback_;
 };
@@ -415,22 +446,14 @@ class AsyncOutputPort : public BasePort {
 // Template implementations
 
 template <typename T>
-InputPort<T>::InputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, PortType::SYNC_INPUT, owner) {
+InputPort<T>::InputPort(int id, const std::string& name, ProcessingUnit* owner, bool threadSafe)
+    : BasePort(id, name, PortType::SYNC_INPUT, owner), isThreadSafe_(threadSafe) {
     data_ = T{};
 }
 
 template <typename T>
 T InputPort<T>::read() const {
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for thread-safe access
-        T* pooled = pooledData_.load(std::memory_order_acquire);
-        if (pooled) {
-            return *pooled;
-        }
-        return T{}; // Default value if no data in pool
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         return data_;
     }
@@ -466,22 +489,7 @@ void InputPort<T>::writeData(const T& data) {
     incrementValidMessages();
 
     // Store data
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for high-performance thread-safe storage
-        T* pooled = memoryPool_->allocateObject(data);
-        if (pooled) {
-            // Atomically update the pointer and deallocate old data
-            T* old = pooledData_.exchange(pooled, std::memory_order_acq_rel);
-            if (old) {
-                memoryPool_->deallocateObject(old);
-            }
-        } else {
-            // Pool exhausted, fallback to mutex-based storage
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            data_ = data;
-        }
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data_ = data;
     } else {
@@ -508,11 +516,13 @@ void InputPort<T>::writeData(const T& data) {
 
 template <typename T>
 void InputPort<T>::setValidationCallback(ValidationCallback callback) {
+    requireNoTrafficYet("setValidationCallback");
     validationCallback_ = std::move(callback);
 }
 
 template <typename T>
 void InputPort<T>::setDataCallback(DataCallback callback) {
+    requireNoTrafficYet("setDataCallback");
     dataCallback_ = std::move(callback);
 }
 
@@ -540,50 +550,8 @@ void InputPort<T>::removeBridgedPort(InputPort<T>* bridgedPort) {
 }
 
 template <typename T>
-void InputPort<T>::setThreadSafe(bool threadSafe) {
-    if (threadSafe && !isThreadSafe_) {
-        // Initialize MemoryPool when enabling thread safety
-        if (!memoryPool_) {
-            memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-        }
-    } else if (!threadSafe && isThreadSafe_) {
-        // Clean up when disabling thread safety
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old && memoryPool_) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_.reset();
-    }
-    isThreadSafe_ = threadSafe;
-}
-
-template <typename T>
-void InputPort<T>::setMemoryPoolSize(size_t poolSize) {
-    poolSize_ = std::max(static_cast<size_t>(16), poolSize);
-    if (isThreadSafe_ && memoryPool_) {
-        // Recreate memory pool with new size
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-    }
-}
-
-template <typename T>
-size_t InputPort<T>::getMemoryPoolSize() const noexcept {
-    return poolSize_;
-}
-
-template <typename T>
 void InputPort<T>::reset() {
-    if (isThreadSafe_ && memoryPool_) {
-        // Reset MemoryPool data
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-    } else if (isThreadSafe_) {
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data_ = T{};
     } else {
@@ -593,22 +561,27 @@ void InputPort<T>::reset() {
     hasNanWarned_ = false;
 }
 
+namespace detail {
+template <typename U>
+typename std::enable_if<std::is_floating_point<U>::value, bool>::type nanCheck(const U& data) {
+    return !std::isnan(data);
+}
+template <typename U>
+typename std::enable_if<!std::is_floating_point<U>::value, bool>::type nanCheck(const U&) {
+    return true;
+}
+} // namespace detail
+
 // Helper function for NaN validation
 template <typename T>
 bool BasePort::validateData(const T& data) {
-    if constexpr (std::is_floating_point_v<T>) {
-        if (std::isnan(data)) {
-            // Log warning only once per port
-            return false;
-        }
-    }
-    return true;
+    return detail::nanCheck(data);
 }
 
 // OutputPort template implementations
 template <typename T>
-OutputPort<T>::OutputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, PortType::SYNC_OUTPUT, owner) {
+OutputPort<T>::OutputPort(int id, const std::string& name, ProcessingUnit* owner, bool threadSafe)
+    : BasePort(id, name, PortType::SYNC_OUTPUT, owner), isThreadSafe_(threadSafe) {
     currentData_ = T{};
 }
 
@@ -626,22 +599,7 @@ void OutputPort<T>::write(const T& data) {
     }
 
     // Store current data for thread-safe access
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for high-performance thread-safe storage
-        T* pooled = memoryPool_->allocateObject(data);
-        if (pooled) {
-            // Atomically update the pointer and deallocate old data
-            T* old = pooledData_.exchange(pooled, std::memory_order_acq_rel);
-            if (old) {
-                memoryPool_->deallocateObject(old);
-            }
-        } else {
-            // Pool exhausted, fallback to mutex-based storage
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            currentData_ = data;
-        }
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         currentData_ = data;
     } else {
@@ -653,9 +611,13 @@ void OutputPort<T>::write(const T& data) {
         outputCallback_(data);
     }
 
-    // Send to all connected input ports
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    for (auto* inputPort : connectedPorts_) {
+    // Send to all connected input ports, with no lock held: writeData runs the
+    // receiving port's user callbacks (C35).
+    ConnectionSnapshot targets = snapshotConnections();
+    if (!targets) {
+        return;
+    }
+    for (auto* inputPort : *targets) {
         if (inputPort) {
             inputPort->writeData(data);
         }
@@ -668,95 +630,57 @@ void OutputPort<T>::connect(InputPort<T>* inputPort) {
         return;
 
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it == connectedPorts_.end()) {
-        connectedPorts_.push_back(inputPort);
+    ConnectionList updated = copyForUpdateLocked();
+    if (std::find(updated.begin(), updated.end(), inputPort) == updated.end()) {
+        updated.push_back(inputPort);
+        connections_ = std::make_shared<const ConnectionList>(std::move(updated));
     }
 }
 
 template <typename T>
 void OutputPort<T>::disconnect(InputPort<T>* inputPort) {
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it != connectedPorts_.end()) {
-        connectedPorts_.erase(it);
+    ConnectionList updated = copyForUpdateLocked();
+    auto it = std::find(updated.begin(), updated.end(), inputPort);
+    if (it != updated.end()) {
+        updated.erase(it);
+        connections_ = std::make_shared<const ConnectionList>(std::move(updated));
     }
 }
 
 template <typename T>
 void OutputPort<T>::disconnectAll() {
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    connectedPorts_.clear();
+    connections_.reset();
 }
 
 template <typename T>
 bool OutputPort<T>::isConnected() const noexcept {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return !connectedPorts_.empty();
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets && !targets->empty();
 }
 
 template <typename T>
 size_t OutputPort<T>::getConnectionCount() const noexcept {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return connectedPorts_.size();
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets ? targets->size() : 0;
 }
 
 template <typename T>
 std::vector<InputPort<T>*> OutputPort<T>::getConnectedPorts() const {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return connectedPorts_;
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets ? *targets : std::vector<InputPort<T>*>();
 }
 
 template <typename T>
 void OutputPort<T>::setOutputCallback(OutputCallback callback) {
+    requireNoTrafficYet("setOutputCallback");
     outputCallback_ = std::move(callback);
 }
 
 template <typename T>
-void OutputPort<T>::setThreadSafe(bool threadSafe) {
-    if (threadSafe && !isThreadSafe_) {
-        // Initialize MemoryPool when enabling thread safety
-        if (!memoryPool_) {
-            memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-        }
-    } else if (!threadSafe && isThreadSafe_) {
-        // Clean up when disabling thread safety
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old && memoryPool_) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_.reset();
-    }
-    isThreadSafe_ = threadSafe;
-}
-
-template <typename T>
-void OutputPort<T>::setMemoryPoolSize(size_t poolSize) {
-    poolSize_ = std::max(static_cast<size_t>(16), poolSize);
-    if (isThreadSafe_ && memoryPool_) {
-        // Recreate memory pool with new size
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-    }
-}
-
-template <typename T>
-size_t OutputPort<T>::getMemoryPoolSize() const noexcept {
-    return poolSize_;
-}
-
-template <typename T>
 void OutputPort<T>::reset() {
-    if (isThreadSafe_ && memoryPool_) {
-        // Reset MemoryPool data
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-    } else if (isThreadSafe_) {
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         currentData_ = T{};
     } else {
@@ -767,8 +691,9 @@ void OutputPort<T>::reset() {
 
 // AsyncInputPort template implementations
 template <typename T>
-AsyncInputPort<T>::AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, PortType::ASYNC_INPUT, owner) {
+AsyncInputPort<T>::AsyncInputPort(int id, const std::string& name, ProcessingUnit* owner,
+                                  bool threadSafe)
+    : BasePort(id, name, PortType::ASYNC_INPUT, owner), isThreadSafe_(threadSafe) {
     data_ = T{};
 }
 
@@ -791,22 +716,7 @@ void AsyncInputPort<T>::update(const T& data) {
     incrementValidMessages();
 
     // Store data
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for high-performance thread-safe storage
-        T* pooled = memoryPool_->allocateObject(data);
-        if (pooled) {
-            // Atomically update the pointer and deallocate old data
-            T* old = pooledData_.exchange(pooled, std::memory_order_acq_rel);
-            if (old) {
-                memoryPool_->deallocateObject(old);
-            }
-        } else {
-            // Pool exhausted, fallback to mutex-based storage
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            data_ = data;
-        }
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data_ = data;
     } else {
@@ -846,16 +756,7 @@ void AsyncInputPort<T>::read(T& data) {
 
     wasUpdated_.store(false);
 
-    if (isThreadSafe_ && memoryPool_) {
-        // Use MemoryPool for thread-safe access
-        T* pooled = pooledData_.load(std::memory_order_acquire);
-        if (pooled) {
-            data = *pooled;
-        } else {
-            data = T{}; // Default value if no data in pool
-        }
-    } else if (isThreadSafe_) {
-        // Fallback to mutex-based thread safety
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data = data_;
     } else {
@@ -872,11 +773,13 @@ T AsyncInputPort<T>::read() {
 
 template <typename T>
 void AsyncInputPort<T>::setValidationCallback(ValidationCallback callback) {
+    requireNoTrafficYet("setValidationCallback");
     validationCallback_ = std::move(callback);
 }
 
 template <typename T>
 void AsyncInputPort<T>::setDataCallback(DataCallback callback) {
+    requireNoTrafficYet("setDataCallback");
     dataCallback_ = std::move(callback);
 }
 
@@ -904,50 +807,8 @@ void AsyncInputPort<T>::removeBridgedPort(AsyncInputPort<T>* bridgedPort) {
 }
 
 template <typename T>
-void AsyncInputPort<T>::setThreadSafe(bool threadSafe) {
-    if (threadSafe && !isThreadSafe_) {
-        // Initialize MemoryPool when enabling thread safety
-        if (!memoryPool_) {
-            memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-        }
-    } else if (!threadSafe && isThreadSafe_) {
-        // Clean up when disabling thread safety
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old && memoryPool_) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_.reset();
-    }
-    isThreadSafe_ = threadSafe;
-}
-
-template <typename T>
-void AsyncInputPort<T>::setMemoryPoolSize(size_t poolSize) {
-    poolSize_ = std::max(static_cast<size_t>(16), poolSize);
-    if (isThreadSafe_ && memoryPool_) {
-        // Recreate memory pool with new size
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-        memoryPool_ = std::make_unique<MemoryPool<T>>(poolSize_);
-    }
-}
-
-template <typename T>
-size_t AsyncInputPort<T>::getMemoryPoolSize() const noexcept {
-    return poolSize_;
-}
-
-template <typename T>
 void AsyncInputPort<T>::reset() {
-    if (isThreadSafe_ && memoryPool_) {
-        // Reset MemoryPool data
-        T* old = pooledData_.exchange(nullptr, std::memory_order_acq_rel);
-        if (old) {
-            memoryPool_->deallocateObject(old);
-        }
-    } else if (isThreadSafe_) {
+    if (isThreadSafe_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
         data_ = T{};
     } else {
@@ -958,14 +819,18 @@ void AsyncInputPort<T>::reset() {
 
 // AsyncOutputPort template implementations
 template <typename T>
-AsyncOutputPort<T>::AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner)
-    : BasePort(id, name, PortType::ASYNC_OUTPUT, owner) {}
+AsyncOutputPort<T>::AsyncOutputPort(int id, const std::string& name, ProcessingUnit* owner,
+                                    bool threadSafe)
+    : BasePort(id, name, PortType::ASYNC_OUTPUT, owner), isThreadSafe_(threadSafe) {}
 
 template <typename T>
 void AsyncOutputPort<T>::write(const T& data) {
     incrementTotalMessages();
 
-    if (connectedPorts_.empty()) {
+    // One snapshot serves both the emptiness check and the dispatch, so they
+    // always agree, and neither runs under connectionMutex_ (C30, C35).
+    ConnectionSnapshot targets = snapshotConnections();
+    if (!targets || targets->empty()) {
         // Log warning about unconnected port
         return;
     }
@@ -976,8 +841,7 @@ void AsyncOutputPort<T>::write(const T& data) {
     }
 
     // Send to all connected async input ports
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    for (auto* inputPort : connectedPorts_) {
+    for (auto* inputPort : *targets) {
         if (inputPort) {
             inputPort->update(data);
         }
@@ -990,65 +854,52 @@ void AsyncOutputPort<T>::connect(AsyncInputPort<T>* inputPort) {
         return;
 
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it == connectedPorts_.end()) {
-        connectedPorts_.push_back(inputPort);
+    ConnectionList updated = copyForUpdateLocked();
+    if (std::find(updated.begin(), updated.end(), inputPort) == updated.end()) {
+        updated.push_back(inputPort);
+        connections_ = std::make_shared<const ConnectionList>(std::move(updated));
     }
 }
 
 template <typename T>
 void AsyncOutputPort<T>::disconnect(AsyncInputPort<T>* inputPort) {
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    auto it = std::find(connectedPorts_.begin(), connectedPorts_.end(), inputPort);
-    if (it != connectedPorts_.end()) {
-        connectedPorts_.erase(it);
+    ConnectionList updated = copyForUpdateLocked();
+    auto it = std::find(updated.begin(), updated.end(), inputPort);
+    if (it != updated.end()) {
+        updated.erase(it);
+        connections_ = std::make_shared<const ConnectionList>(std::move(updated));
     }
 }
 
 template <typename T>
 void AsyncOutputPort<T>::disconnectAll() {
     std::lock_guard<std::mutex> lock(connectionMutex_);
-    connectedPorts_.clear();
+    connections_.reset();
 }
 
 template <typename T>
 bool AsyncOutputPort<T>::isConnected() const noexcept {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return !connectedPorts_.empty();
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets && !targets->empty();
 }
 
 template <typename T>
 size_t AsyncOutputPort<T>::getConnectionCount() const noexcept {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return connectedPorts_.size();
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets ? targets->size() : 0;
 }
 
 template <typename T>
 std::vector<AsyncInputPort<T>*> AsyncOutputPort<T>::getConnectedPorts() const {
-    std::lock_guard<std::mutex> lock(connectionMutex_);
-    return connectedPorts_;
+    ConnectionSnapshot targets = snapshotConnections();
+    return targets ? *targets : std::vector<AsyncInputPort<T>*>();
 }
 
 template <typename T>
 void AsyncOutputPort<T>::setOutputCallback(OutputCallback callback) {
+    requireNoTrafficYet("setOutputCallback");
     outputCallback_ = std::move(callback);
-}
-
-template <typename T>
-void AsyncOutputPort<T>::setThreadSafe(bool threadSafe) {
-    isThreadSafe_ = threadSafe;
-    // AsyncOutputPort doesn't store data, so no MemoryPool needed
-}
-
-template <typename T>
-void AsyncOutputPort<T>::setMemoryPoolSize(size_t poolSize) {
-    poolSize_ = std::max(static_cast<size_t>(16), poolSize);
-    // AsyncOutputPort doesn't store data, just maintain size for interface consistency
-}
-
-template <typename T>
-size_t AsyncOutputPort<T>::getMemoryPoolSize() const noexcept {
-    return poolSize_;
 }
 
 template <typename T>

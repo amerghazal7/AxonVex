@@ -6,6 +6,7 @@
  * @date 2025
  */
 
+#include <algorithm>
 #include <atomic>
 #include <axonvex_core/precisionTimer.hpp>
 #include <chrono>
@@ -290,11 +291,13 @@ TEST_F(PrecisionTimerTest, ClearSamples) {
 TEST_F(PrecisionTimerTest, ErrorHandling) {
     PrecisionTimer timer;
 
-    // Test getting elapsed time without starting
-    EXPECT_THROW(timer.getElapsedNanoseconds(), std::runtime_error);
-    EXPECT_THROW(timer.getElapsedMicroseconds(), std::runtime_error);
-    EXPECT_THROW(timer.getElapsedMilliseconds(), std::runtime_error);
-    EXPECT_THROW(timer.getElapsedSeconds(), std::runtime_error);
+    // C19 contract change: elapsed getters must not throw before the timer has
+    // ever been started — they return zero instead (see
+    // ElapsedGettersReturnZeroBeforeStart below).
+    EXPECT_EQ(timer.getElapsedNanoseconds().count(), 0);
+    EXPECT_EQ(timer.getElapsedMicroseconds(), 0.0);
+    EXPECT_EQ(timer.getElapsedMilliseconds(), 0.0);
+    EXPECT_EQ(timer.getElapsedSeconds(), 0.0);
 
     // Test getting statistics without samples
     EXPECT_THROW(timer.getStatistics(), std::runtime_error);
@@ -447,4 +450,61 @@ TEST_F(PrecisionTimerTest, MultipleStartStopCycles) {
     EXPECT_GT(stats.min.count(), 0);
     EXPECT_GT(stats.max.count(), 0);
     EXPECT_EQ(stats.sample_count, 10);
+}
+
+// C19: eviction at capacity used vector::erase(begin()) — O(n) shift under the
+// mutex per measured execution. Now a ring-write. Contract check: at capacity,
+// the retained samples are the most recent max_samples_ (oldest evicted).
+TEST_F(PrecisionTimerTest, SampleEvictionKeepsMostRecentSamples) {
+    const size_t max_samples = 5;
+    PrecisionTimer timer(max_samples);
+    timer.enableStatistics(true);
+    timer.start();
+
+    // First 3 laps: cheap work -> short durations. These must be evicted once
+    // the ring fills up with the more expensive laps that follow.
+    std::vector<PrecisionTimer::DurationType> evicted_laps;
+    for (int i = 0; i < 3; ++i) {
+        simulateCPUWork(20);
+        evicted_laps.push_back(timer.lap());
+    }
+
+    // Next max_samples laps: expensive work -> long durations. These must
+    // survive since they are the most recent max_samples measurements.
+    std::vector<PrecisionTimer::DurationType> retained_laps;
+    for (size_t i = 0; i < max_samples; ++i) {
+        simulateCPUWork(20000);
+        retained_laps.push_back(timer.lap());
+    }
+    // Note: no trailing stop() here — lap() already records a measurement per
+    // call, and stop() would add a spurious extra sample for the tiny
+    // interval since the last lap, contaminating the ring under test.
+
+    // Ring-write must cap retained count at max_samples, not grow unbounded.
+    EXPECT_EQ(timer.getSampleCount(), max_samples);
+    EXPECT_EQ(timer.getTotalMeasurements(), 3 + max_samples);
+
+    auto stats = timer.getStatistics();
+    EXPECT_TRUE(stats.isValid());
+    EXPECT_EQ(stats.sample_count, max_samples);
+
+    // Every retained sample must come from the expensive-work batch: the
+    // smallest retained duration must still exceed the largest evicted
+    // (cheap) duration. This would fail if eviction kept the wrong end of
+    // the sample history.
+    auto largest_evicted = *std::max_element(evicted_laps.begin(), evicted_laps.end());
+    EXPECT_GT(stats.min.count(), largest_evicted.count());
+}
+
+// C19: getters must not throw pre-start — they return zero now.
+TEST_F(PrecisionTimerTest, ElapsedGettersReturnZeroBeforeStart) {
+    PrecisionTimer timer;
+    EXPECT_EQ(timer.getElapsedNanoseconds().count(), 0);
+    EXPECT_EQ(timer.getElapsedMicroseconds(), 0);
+}
+
+// C19: the timing clock must be steady — wall-clock adjustments must not
+// corrupt measurements.
+TEST_F(PrecisionTimerTest, ClockIsSteady) {
+    EXPECT_TRUE(PrecisionTimer::isClockSteady());
 }

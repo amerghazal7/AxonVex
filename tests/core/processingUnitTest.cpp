@@ -11,9 +11,21 @@
 #include <gtest/gtest.h>
 #include <string>
 #include <thread>
+#include <type_traits>
 
 namespace axonvex::core::test {
 namespace {
+
+// C8: ProcessingUnit must stay non-movable — ports and the system hold raw
+// pointers to it with a stable-reference contract. These asserts lock that
+// in at compile time (the old '= default' moves were silently deleted; these
+// fail loudly if anyone tries to reintroduce movability).
+static_assert(!std::is_move_constructible<axonvex::core::ProcessingUnit>::value,
+              "ProcessingUnit is non-movable: ports/system hold raw pointers to it (C8)");
+static_assert(!std::is_move_assignable<axonvex::core::ProcessingUnit>::value,
+              "ProcessingUnit is non-movable: ports/system hold raw pointers to it (C8)");
+static_assert(!std::is_copy_constructible<axonvex::core::ProcessingUnit>::value,
+              "ProcessingUnit is non-copyable (C8)");
 
 // Test implementation of ProcessingUnit
 class TestProcessingUnit : public ProcessingUnit {
@@ -324,17 +336,35 @@ TEST_F(ProcessingUnitTest, InstanceDescription) {
     EXPECT_EQ(unit->getInstanceDescription(), "Updated Test Description");
 }
 
-TEST_F(ProcessingUnitTest, ThreadSafety) {
-    // Test thread safety setting for all ports
-    unit->setPortsThreadSafe(true);
-    EXPECT_TRUE(unit->getTestInputPort()->isThreadSafe());
-    EXPECT_TRUE(unit->getTestOutputPort()->isThreadSafe());
-    EXPECT_TRUE(unit->getTestAsyncPort()->isThreadSafe());
-
-    unit->setPortsThreadSafe(false);
+// Thread safety is chosen when the port is created and cannot be toggled
+// afterwards (C31), so it is createXPort's argument that this pins down.
+TEST_F(ProcessingUnitTest, ThreadSafetyIsFixedAtPortCreation) {
     EXPECT_FALSE(unit->getTestInputPort()->isThreadSafe());
     EXPECT_FALSE(unit->getTestOutputPort()->isThreadSafe());
     EXPECT_FALSE(unit->getTestAsyncPort()->isThreadSafe());
+
+    class SafePortUnit : public axonvex::core::ProcessingUnit {
+      public:
+        SafePortUnit() : ProcessingUnit("SafePortUnit") {
+            in_ = createInputPort<int>(0, "in", /*threadSafe=*/true);
+            out_ = createOutputPort<int>(1, "out", /*threadSafe=*/true);
+        }
+        void processSync() override {}
+        void processAsync() override {}
+        void initialize() override {}
+        void finalize() override {}
+        void reset() override {}
+        std::string getTypeDescription() override {
+            return "SafePortUnit";
+        }
+
+        axonvex::core::InputPort<int>* in_{nullptr};
+        axonvex::core::OutputPort<int>* out_{nullptr};
+    };
+
+    SafePortUnit safeUnit;
+    EXPECT_TRUE(safeUnit.in_->isThreadSafe());
+    EXPECT_TRUE(safeUnit.out_->isThreadSafe());
 }
 
 TEST_F(ProcessingUnitTest, ResetFunctionality) {

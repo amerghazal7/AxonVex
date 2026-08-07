@@ -4,15 +4,15 @@
 **Real-time C++ framework for typed processing pipelines, deterministic scheduling, and extensible protocol adapters**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Build Status](https://img.shields.io/badge/Build-Pending-orange.svg)]()
-[![Documentation](https://img.shields.io/badge/Documentation-Available-green.svg)](AxonVex_Documentation_Index.md)
+[![AxonVex CI/CD Pipeline](https://github.com/amerghazal7/AxonVex/actions/workflows/ci.yml/badge.svg)](https://github.com/amerghazal7/AxonVex/actions/workflows/ci.yml)
+[![Documentation](https://img.shields.io/badge/Documentation-Available-green.svg)](docs/)
 [![Version](https://img.shields.io/badge/Version-1.0.0--dev-red.svg)]()
 
 ---
 
 ## Project Status
 
-AxonVex is in active development. Current strongest capability is the core runtime and test harness.
+AxonVex is in active development. The strongest capability today is the core runtime and its test harness. The full v1.0 vision — visualization platform, enterprise security, hardware watchdog, cross-platform support, published performance benchmarks — is scoped and sequenced in the [v1.0 Release Plan](docs/v1_release_plan.md); features below are marked accordingly.
 
 ## Mission Statement
 
@@ -26,21 +26,27 @@ AxonVex is a comprehensive real-time framework built upon proven hierarchical bl
 
 ### Key Features
 
-- 🎯 **Precision Execution**: Deterministic timing with <1 microsecond accuracy
-- 📈 **Scalable Architecture**: From single-node to distributed systems (10,000+ processing blocks)
-- 🧩 **Modular Design**: Hierarchical block-based architecture with plugin system
-- 🔍 **Real-time Visualization**: Interactive dashboards, 3D visualization, VR/AR support
-- 🛡️ **Mission-Critical Safety**: Multi-layer safety systems with hardware/software watchdogs
-- 🔒 **Enterprise Security**: Multi-factor authentication, role-based access, end-to-end encryption
-- ⚡ **High Performance**: Sub-millisecond latency, 1M+ messages/second throughput
-- 🔧 **Developer-Friendly**: Intuitive APIs, comprehensive tooling, extensive documentation
+Legend: plain claims are shipped and backed by code/tests; 🔄 items are **in development — v1.0 roadmap**, each mapped to a workstream (WS-*) in [v1.0 Release Plan §6](docs/v1_release_plan.md).
+
+- 🧩 **Modular Design**: Hierarchical block-based architecture — processing units, typed ports, adapters, and dynamic plugin loading (Linux)
+- 🛡️ **Safety Envelope**: `SafetyManager` policy registry with e-stop and a software watchdog — 🔄 hardware watchdog and wired scheduler-halt path in development, v1.0 roadmap (WS-SAFE)
+- 🎯 **Precision Execution**: Deterministic scheduling via `TimingController` — 🔄 sub-microsecond-class timing is a v1.0 target with CI-gated benchmarks, in development (WS-PERF); performance targets, see [docs/v1_release_plan.md](docs/v1_release_plan.md)
+- ⚡ **High Performance**: 🔄 in development — v1.0 roadmap (WS-PERF); throughput/latency targets will be published as benchmarks, none exist yet — see [docs/v1_release_plan.md](docs/v1_release_plan.md)
+- 📈 **Scalable Architecture**: Single-node pipelines today — 🔄 distributed multi-node composition and 10,000+ block soak validation in development, v1.0 roadmap (WS-SCALE)
+- 🔍 **Real-time Visualization**: Telemetry pub/sub bus shipped — 🔄 Angular 17+ web dashboard, WebSocket gateway, 3D scene, and topology views in development, v1.0 roadmap (WS-VIZ)
+- 🔒 **Enterprise Security**: 🔄 in development — v1.0 roadmap (WS-SEC): TLS, MFA, and role-based access control; not implemented yet
+- 🖥️ **Cross-Platform**: Linux supported — 🔄 Windows and macOS support in development, v1.0 roadmap (WS-PLAT)
+- 🔧 **Developer-Friendly**: Typed C++ APIs, extensive test suite, architecture and requirements docs — 🔄 API reference, tutorials, and packaging in development (WS-DX)
 
 ---
 
 ## Documentation Suite
 
 ### 📚 [Complete Documentation Index](docs/)
-Your starting point for all AxonVex documentation, including quick start guides, examples, and community resources.
+Your starting point for all AxonVex documentation, including quick start guides, examples, and the release plan.
+
+### 🗺️ [v1.0 Release Plan](docs/v1_release_plan.md)
+The audited roadmap: defect inventory, workstream table, phased milestones (alpha/beta/rc), and quality gates.
 
 ### 🔧 [Technical Specification](docs/software_requirements_specification.md)
 
@@ -48,11 +54,10 @@ Comprehensive technical specification covering:
 - Core architecture philosophy and design principles
 - Advanced real-time visual monitoring and control systems
 - System architecture and component specifications
-- Performance specifications and benchmarks
+- Performance requirements (targets; benchmarks pending per the release plan)
 - Implementation technology stack and APIs
 - Safety and security features
 - Development and integration guidelines
-- Complete API reference and deployment guides
 
 ### 🏗️ [Architecture Diagram](docs/architecture_and_design.md)
 Visual representation of the system architecture including:
@@ -71,59 +76,77 @@ Visual representation of the system architecture including:
 
 - **CPU**: Multi-core processor (Intel Core i7 or AMD Ryzen 7 recommended)
 - **RAM**: Minimum 8GB, recommended 16GB+ for complex systems
-- **OS**: Linux (Ubuntu 20.04+), Windows 10+, macOS 10.15+
-- **Compiler**: GCC 9+, Clang 10+, or MSVC 2019+
+- **OS**: Linux (Ubuntu 20.04+). Windows 10+ and macOS 10.15+ are 🔄 in development — v1.0 roadmap (WS-PLAT)
+- **Compiler**: GCC 9+ or Clang 10+
 
-### Installation
+### Dependencies
+
+- [Conan 2](https://conan.io/) package manager
+- [CMake 3.20+](https://cmake.org/)
+
+### Build
 
 ```bash
-# Clone the repository
-git clone https://github.com/axonvex/axonvex-framework.git
-cd axonvex-framework
+git clone https://github.com/amerghazal7/AxonVex.git
+cd AxonVex
 
-# Build and install
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-sudo make install
+# Install dependencies via Conan
+conan install . --output-folder=build --build=missing
+
+# Configure and build
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+      -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DBUILD_EXAMPLES=ON
+cmake --build build -j$(nproc)
+
+# Run tests
+ctest --test-dir build --output-on-failure
 ```
 
 ---
 
-## API Usage (Current Pattern)
+## API Usage
 
-The system class is abstract and intended to be derived to define block layout.
+Derive from `AxonVexSystem` to define your processing pipeline, then drive it through the standard lifecycle.
 
 ```cpp
-#include <axonvex/axonvex.hpp>
+#include <axonvex_core/axonvex.hpp>
 
-class MySystem final : public axonvex::core::AxonVexSystem {
+using namespace axonvex;
+
+class MySystem final : public AxonVexSystem {
   protected:
     bool initializeBlocksLayout() override {
-        // registerProcessingUnit(...), assign ports, etc.
+        auto unit = std::make_unique<MyProcessingUnit>("sensor");
+        registerProcessingUnit(std::move(unit));
         return true;
     }
 };
 
 int main() {
-    MySystem system;
+    SystemConfig cfg;
+    cfg.name = "Example";
+    cfg.enableStatistics = true;
+
+    AxonVexSystem system(cfg);
     if (!system.initialize()) return 1;
     if (!system.start()) return 1;
-    // ...
+    // ... run ...
     system.stop();
     return 0;
 }
 ```
 
+See `examples/` for complete working demos.
+
 ---
 
 ## Testing
 
-Primary suites live under `tests/` and are executed through CTest.
+All tests live under `tests/` and compile into a single `test_core` binary discovered by CTest.
 
 ```bash
-ctest --output-on-failure
-ctest -L unit --output-on-failure
+cmake --build build -j8
+ctest --test-dir build --output-on-failure
 ```
 
 ---
@@ -159,109 +182,85 @@ ctest -L unit --output-on-failure
 ## Technology Stack
 
 ### Core System
-- **Language**: C++17/20 with real-time optimizations
-- **Build System**: CMake 3.20+ with cross-platform support
-- **Threading**: Custom thread pool with real-time scheduling
-- **Networking**: High-performance networking with zero-copy operations
+- **Language**: C++14 (ISO/IEC 14882:2014). The tree avoids C++17-only features so the project stays portable on older toolchains.
+- **Filesystem**: Path and file utilities use `std::experimental::filesystem` under a small compatibility layer. On **Linux** with GCC or **non-Apple Clang**, link `axonvex_core` with **`stdc++fs`** (handled in `src/libs/axonvex_core/CMakeLists.txt`). libc++ on macOS generally provides experimental filesystem in the main C++ library; adjust if your SDK requires a separate `-lc++fs`-style link flag.
+- **Build System**: CMake 3.20+ with Conan 2 dependency management
+- **Dependencies**: oneTBB (concurrency), nlohmann_json (configuration), GoogleTest (testing)
+- **Threading**: Custom thread pool with real-time scheduling via `TimingController`
 
-### Web Interface
-- **Frontend**: React 18 with TypeScript
-- **Real-time Communication**: WebSocket with binary message support
-- **Visualization**: Three.js with WebGL acceleration
-- **State Management**: Redux Toolkit for efficient state management
+### Communication Protocols (Current)
+- **Protocol Abstraction**: `ProtocolInterface` base with lifecycle, stats, and error reporting
+- **TCP Client**: BSD socket implementation (Linux) with simulation fallback
+- **UDP Socket**: BSD socket implementation (Linux) with simulation fallback
+- **WebSocket**: Placeholder implementation (production server + telemetry gateway planned — WS-VIZ)
 
-### Communication Protocols
-- **WebSocket**: Ultra-low latency bidirectional communication
-- **HTTP REST API**: Configuration and batch operations
-- **GraphQL API**: Flexible, efficient data querying
-- **MQTT Support**: Scalable IoT device integration
-- **Custom Protocols**: Plugin-based protocol extensions
-
----
-
-## Safety and Security
-
-### Multi-Layer Safety System
-- **Hardware Safety**: Hardware interlocks, watchdog timers, emergency stops
-- **Software Safety**: Software watchdogs, parameter validation, range checking
-- **Application Safety**: Mission safety, state validation, behavior monitoring
-- **Human Safety**: Operator interfaces, manual overrides, monitoring dashboards
-
-### Security Framework
-- **Authentication**: Multi-factor authentication, certificate-based auth
-- **Authorization**: Role-based access control, permission management
-- **Encryption**: TLS/SSL transport security, data encryption at rest
-- **Audit**: Comprehensive audit logging, security event monitoring
+### Visualization Stack (Planned — v1.0 roadmap, WS-VIZ)
+- **Dashboard**: Angular 17+ (standalone components, signals, new control flow)
+- **Charts**: ngx-charts / D3.js for real-time telemetry visualization
+- **3D Rendering**: Three.js for spatial data (poses, point clouds, trajectories)
+- **Transport**: WebSocket gateway bridging C++ `TelemetryBus` to Angular clients (JSON + MessagePack/CBOR)
+- **Layout**: Configurable drag-and-drop panel system with session persistence
 
 ---
 
-## Development and Integration
+## Library Architecture
 
-### Developer Experience
-- **Intuitive APIs**: Clean, well-documented interfaces
-- **Code Generation**: Tools for generating boilerplate code
-- **Testing Framework**: Comprehensive testing and simulation tools
-- **Plugin Architecture**: Extensible plugin system for custom functionality
+AxonVex is split into libraries under `src/libs/`:
 
-### Integration Support
-- **Protocol Abstraction**: Support for ROS, MAVLink, WebSocket, MQTT
-- **Configuration Management**: Dynamic configuration with validation
-- **Deployment Options**: Single-node and distributed deployment models
-- **Monitoring Tools**: Real-time performance monitoring and debugging
+| Library | Type | Role |
+|---------|------|------|
+| `axonvex_core` | Shared | Runtime, orchestration, ports, timing, configuration, logging, interface units |
+| `axonvex_interfaces` | Interface | Protocol contract (`ProtocolInterface`, dispatch barrier); WebSocket placeholder, compile-gated until WS-VIZ |
+| `axonvex_net` | Shared | TCP and UDP transports (magic + length-prefixed framing, hostname/IPv6 resolution, dead-connection lifecycle) |
+| `axonvex_adapters` | Interface | Adapter contract (AdapterInterface, AdapterBase, MockAdapter) |
+| `axonvex_ros2` | Interface | ROS 2 plugin — ROS2Adapter with typed unit creation (optional, requires rclcpp) |
+| `axonvex_plugins` | Interface | Plugin API and dynamic loading |
+| `axonvex_safety` | Interface | Safety primitives (Watchdog) |
+| `axonvex_io` | Interface | Filesystem helpers |
+| `axonvex_visualization` | Interface | `TelemetryBus`: bounded lock-free publish, dedicated egress thread, framed JSON envelope (WebSocket gateway + Angular 17+ dashboard planned — WS-VIZ) |
+
+All interface libraries depend only on `axonvex_core`. See [Architecture](docs/architecture_and_design.md) for the full design.
 
 ---
 
 ## Implementation Status
 
-> **Note**: AxonVex is currently in the design and specification phase. The framework is being developed based on the comprehensive technical specifications provided in this documentation suite.
+### Implemented
+- ✅ **Core Runtime**: System orchestration, processing units, typed ports, timing controller
+- ✅ **Configuration**: JSON-backed runtime configuration with typed access
+- ✅ **Logging**: Asynchronous logger with `LOG_*`/`LOGF_*` macros and `{}` placeholder formatting
+- ✅ **Utilities**: Thread-safe queue, ring buffer, memory pool, JSON serializer
+- ✅ **Types**: UUID, Point2D/3D, Quaternion geometry types
+- ✅ **Transports**: Compiled `axonvex_net` TCP/UDP with framed wire protocol and `ProtocolInterface` contract (the WebSocket placeholder is compile-gated — the real gateway is WS-VIZ)
+- ✅ **Plugin System**: Dynamic plugin loading (Linux) with `PluginManager`
+- ✅ **Safety Primitives**: Watchdog timer with configurable callbacks
+- ✅ **Safety Envelope**: `SafetyManager` with policy registry, e-stop, periodic evaluation, and event notification
+- ✅ **I/O**: Filesystem helpers via `FileManager`
+- ✅ **Telemetry**: Keyed pub/sub bus for visualization data
+- ✅ **Test Suite**: 373 tests across all modules, CTest/GTest integrated
 
-### Current Status
-- ✅ **Architecture Design**: Complete system architecture and component specifications
-- ✅ **Technical Specification**: Comprehensive technical documentation
-- ✅ **API Design**: Detailed API specifications and interfaces
-- 🔄 **Core Implementation**: In development phase
-- 🔄 **Visualization System**: In development phase
-- 🔄 **Testing Framework**: In development phase
+### In Progress
+- 🔄 **Correctness Pass**: Fixing the audited defect inventory (C1–C24) with regression tests — [plan §3](docs/v1_release_plan.md)
+- 🔄 **Adapter Contract Layer**: ROS and MAVLink adapter shells
+- 🔄 **Mission Runtime**: `MissionElement` and `MissionPipeline` abstractions
 
-### Next Steps
-1. **Core Runtime Engine**: Implement processing units and timing controller
-2. **Subsystem Layer**: Develop control, estimation, and mission subsystems
-3. **Visualization System**: Build real-time dashboard and 3D visualization
-4. **Safety Systems**: Implement multi-layer safety and security framework
-5. **Testing and Validation**: Comprehensive testing and performance validation
+### Planned (v1.0) — see [v1.0 Release Plan §6](docs/v1_release_plan.md)
+- ⬚ **WS-PERF**: Reworked scheduler, RT deployment profile, published jitter/throughput/latency benchmarks (CI-gated)
+- ⬚ **WS-SCALE**: 10,000-block soak testing, multi-node composition over hardened transports
+- ⬚ **WS-ECO**: Real MODULE `.so` plugins with ABI handshake, complete ROS 2 plugin, MAVLink adapter (SITL-validated)
+- ⬚ **WS-VIZ**: Production WebSocket gateway, telemetry recording/playback, Angular 17+ dashboard
+- ⬚ **WS-SAFE**: SafetyManager wired to scheduler halt, Linux `/dev/watchdog` hardware watchdog
+- ⬚ **WS-SEC**: TLS everywhere, TOTP-based MFA, role-based access control, audit log
+- ⬚ **WS-PLAT**: Windows and macOS ports, three-OS CI without simulated-success fallbacks
+- ⬚ **WS-DX**: Doxygen API reference, tutorials, verified quick start, Conan package
 
-For detailed implementation plans and roadmaps, see the [Technical Specification](AxonVex_Technical_Specification.md).
-
----
-
-## Community and Support
-
-### Development Resources
-- **GitHub Repository**: [https://github.com/axonvex/axonvex-framework](https://github.com/axonvex/axonvex-framework)
-- **Documentation**: [https://docs.axonvex.framework.io](https://docs.axonvex.framework.io)
-- **API Reference**: [https://api.axonvex.framework.io](https://api.axonvex.framework.io)
-
-### Community Support
-- **Discussion Forum**: [https://forum.axonvex.framework.io](https://forum.axonvex.framework.io)
-- **Discord Server**: [https://discord.gg/axonvex](https://discord.gg/axonvex)
-- **Stack Overflow**: Tag `axonvex` for technical questions
-
-### Professional Services
-- **Training Programs**: Comprehensive training for developers and engineers
-- **Consulting Services**: Expert guidance for system design and implementation
-- **Enterprise Support**: 24/7 technical support for mission-critical deployments
+For the detailed roadmap, see [v1.0 Release Plan](docs/v1_release_plan.md) and [Implementation Plan](docs/implementation_plan.md).
 
 ---
 
 ## Contributing
 
-We welcome contributions from the community! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details on how to get involved.
-
-### Development Guidelines
-- Follow the coding standards outlined in the technical specification
-- Ensure all code includes comprehensive tests
-- Maintain real-time performance requirements
-- Document all APIs and interfaces thoroughly
+We welcome contributions! Please see the [Contributing Guidelines](CONTRIBUTING.md) for build/test commands, coding standards, and the PR checklist.
 
 ---
 
@@ -276,8 +275,7 @@ AxonVex Framework is released under the [Apache 2.0 License](LICENSE), allowing 
 For questions, support, or collaboration opportunities:
 
 - **Email**: [info@amerghazal.me](mailto:info@amerghazal.me)
-- **Website**: [https://axonvex.framework.io](https://axonvex.framework.io)
-- **GitHub Issues**: [Report bugs or request features](https://github.com/axonvex/axonvex-framework/issues)
+- **GitHub Issues**: [Report bugs or request features](https://github.com/amerghazal7/AxonVex/issues)
 
 ---
 
@@ -286,4 +284,3 @@ For questions, support, or collaboration opportunities:
 ---
 
 *Copyright © 2026 AxonVex Framework. All rights reserved.*
-

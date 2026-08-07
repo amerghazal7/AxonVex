@@ -1,9 +1,10 @@
 # Prerequisites
 *.d
-build/
+build*/
+install/
 *.log
 .cache/
-.vscode/*.db
+.vscode/*.db*
 
 # Compiled Object files
 *.slo
@@ -43,3 +44,10 @@ build/
 
 # debug information files
 *.dwo
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
+
+graphify-out/
+test_trace.txt

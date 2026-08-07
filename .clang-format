@@ -1,7 +1,7 @@
 ---
 # AxonVex Framework Code Style Configuration
 Language: Cpp
-Standard: c++17
+Standard: c++14
 
 # Basic formatting
 TabWidth: 4

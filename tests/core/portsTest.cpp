@@ -153,15 +153,17 @@ TEST_F(InputPortTest, BridgePortFunctionality) {
     EXPECT_FALSE(port->isBridgePort());
 }
 
+// Thread safety is a construction-time property (C31): a port that could be
+// switched between a locked and an unlocked discipline while in use raced on its
+// own payload.
 TEST_F(InputPortTest, ThreadSafety) {
-    port->setThreadSafe(true);
-    EXPECT_TRUE(port->isThreadSafe());
-
-    port->writeData(50);
-    EXPECT_EQ(port->read(), 50);
-
-    port->setThreadSafe(false);
     EXPECT_FALSE(port->isThreadSafe());
+
+    auto* safePort = unit->createInputPort<int>(99, "SafeInput", /*threadSafe=*/true);
+    EXPECT_TRUE(safePort->isThreadSafe());
+
+    safePort->writeData(50);
+    EXPECT_EQ(safePort->read(), 50);
 }
 
 TEST_F(InputPortTest, Reset) {

@@ -32,7 +32,11 @@
 
 using namespace axonvex;
 using namespace axonvex::core;
-using namespace axonvex::Log;
+#include "exampleLog.hpp"
+
+using examplelog::Error;
+using examplelog::Info;
+using examplelog::Warn;
 
 // =================================================================
 // SPECIALIZED PROCESSING UNITS FOR EACH SUBSYSTEM
@@ -557,9 +561,6 @@ std::unique_ptr<AxonVexSystem> createAnalyticsSystem() {
 // =================================================================
 
 int main() {
-    // Initialize framework logger
-    Log::setLevel(LogLevel::Info);
-
     Info() << "🚀 AxonVex Subsystem Composition - Advanced Architecture Demonstration";
     Info() << "   Showcasing hierarchical system design and cross-system data flow";
 

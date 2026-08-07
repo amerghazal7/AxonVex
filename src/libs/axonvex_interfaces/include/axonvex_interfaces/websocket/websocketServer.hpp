@@ -1,7 +1,15 @@
 #pragma once
 
-#include <axonvex_interfaces/protocolInterface.hpp>
+// Plan §7: this placeholder must never silently satisfy ProtocolInterface. It fakes
+// send() by echoing into its own callbacks and never touches a socket. WS-VIZ replaces
+// it with the real Boost.Beast implementation; until then any include is a hard error.
+#ifndef AXONVEX_ALLOW_PLACEHOLDER_WS
+#error                                                                                             \
+    "websocketServer.hpp is a non-functional placeholder (no real WebSocket I/O). It is compile-gated until the real implementation lands (WS-VIZ). Define AXONVEX_ALLOW_PLACEHOLDER_WS only if you explicitly want the fake echo behavior."
+#endif
+
 #include <atomic>
+#include <axonvex_interfaces/protocolInterface.hpp>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -18,7 +26,8 @@ class WebSocketServer : public axonvex::interfaces::ProtocolInterface {
         : address_(std::move(address)), port_(port) {}
 
     bool start() override {
-        if (running_.load()) return true;
+        if (running_.load())
+            return true;
         running_.store(true);
         // Placeholder: spawn a thread that simulates receive loop
         worker_ = std::thread([this]() {
@@ -31,17 +40,21 @@ class WebSocketServer : public axonvex::interfaces::ProtocolInterface {
     }
 
     void stop() override {
-        if (!running_.load()) return;
+        if (!running_.load())
+            return;
         running_.store(false);
-        if (worker_.joinable()) worker_.join();
+        if (worker_.joinable())
+            worker_.join();
     }
 
-    bool isRunning() const override { return running_.load(); }
+    bool isRunning() const override {
+        return running_.load();
+    }
 
     bool send(const std::vector<uint8_t>& data) override {
         // Placeholder send: echo back through callback(s)
-        stats_.messagesSent++;
-        stats_.bytesSent += data.size();
+        stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
+        stats_.bytesSent.fetch_add(data.size(), std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(cbMutex_);
         this->callCallbacksByKey(defaultKey(), data);
         return true;
@@ -86,7 +99,10 @@ class WebSocketServer : public axonvex::interfaces::ProtocolInterface {
             struct FnAdapter : public ErrorHandler {
                 ErrorCallback fn;
                 explicit FnAdapter(ErrorCallback f) : fn(std::move(f)) {}
-                void callbackPerform(const std::string s) override { if (fn) fn(s); }
+                void callbackPerform(const std::string s) override {
+                    if (fn)
+                        fn(s);
+                }
             };
             errorAdapter_ = std::make_unique<FnAdapter>(std::move(cb));
             this->registerErrorHandler(defaultKey(), errorAdapter_.get());
@@ -109,20 +125,31 @@ class WebSocketServer : public axonvex::interfaces::ProtocolInterface {
     }
 
     bool configure(const std::string& key, const std::string& value) override {
-        if (key == "address") { address_ = value; return true; }
+        if (key == "address") {
+            address_ = value;
+            return true;
+        }
         if (key == "port") {
-            try { port_ = static_cast<uint16_t>(std::stoul(value)); return true; }
-            catch (...) { return false; }
+            try {
+                port_ = static_cast<uint16_t>(std::stoul(value));
+                return true;
+            } catch (...) { return false; }
         }
         return false;
     }
 
-    ProtocolStatistics getStatistics() const override { return stats_; }
+    ProtocolStatistics getStatistics() const override {
+        return stats_.snapshot();
+    }
 
-    std::string url() const { return "ws://" + address_ + ":" + std::to_string(port_); }
+    std::string url() const {
+        return "ws://" + address_ + ":" + std::to_string(port_);
+    }
 
   private:
-    static constexpr const char* defaultKey() { return "default"; }
+    static constexpr const char* defaultKey() {
+        return "default";
+    }
 
     std::string address_;
     uint16_t port_;
@@ -136,7 +163,7 @@ class WebSocketServer : public axonvex::interfaces::ProtocolInterface {
     std::unique_ptr<ErrorHandler> errorAdapter_;
 
     mutable std::mutex cbMutex_;
-    ProtocolStatistics stats_{};
+    AtomicProtocolStatistics stats_{};
 };
 
 } // namespace axonvex::interfaces::websocket

@@ -2,7 +2,9 @@
 
 ## Project Overview
 
-AxonVex is a C++17 real-time processing framework built around a modular library architecture. The system design, requirements, and roadmap live in `docs/` — always consult them before making architectural decisions.
+AxonVex is a **C++14** real-time processing framework built around a modular library architecture. The system design, requirements, and roadmap live in `docs/` — always consult them before making architectural decisions.
+
+**Language baseline:** `CMAKE_CXX_STANDARD` is **14** in the root `CMakeLists.txt`. Do not introduce C++17-only features (e.g. `std::optional`, `std::filesystem`, `if constexpr`, structured bindings, inline variables for ODR-used `static constexpr` data members) without an explicit standard bump. Path/file code uses `std::experimental::filesystem` via `axonvex_core/detail/filesystem_compat.hpp`; on Linux/GNU and non-Apple Clang, `axonvex_core` links **`stdc++fs`**.
 
 | Document | Purpose |
 |----------|---------|
@@ -21,9 +23,11 @@ CMake 3.20+, Conan for dependencies. Six libraries under `src/libs/`:
 | `axonvex_core` | SHARED | Runtime, orchestration, ports, timing |
 | `axonvex_interfaces` | INTERFACE | Protocol abstractions |
 | `axonvex_plugins` | INTERFACE | Plugin API |
-| `axonvex_safety` | INTERFACE | Safety abstractions |
+| `axonvex_safety` | INTERFACE | Safety abstractions (Watchdog, SafetyPolicy, SafetyManager) |
 | `axonvex_io` | INTERFACE | I/O abstractions |
-| `axonvex_visualization` | INTERFACE | Visualization abstractions |
+| `axonvex_visualization` | INTERFACE | Visualization abstractions + WebSocket gateway |
+| `axonvex_adapters` | INTERFACE | Adapter contract (AdapterInterface, AdapterBase, MockAdapter) |
+| `axonvex_ros2` | INTERFACE | ROS 2 plugin (ROS2Adapter, type caster registry) — optional |
 
 All interface libraries depend only on `axonvex_core`. Exported under the `axonvex::` CMake namespace.
 
@@ -104,6 +108,25 @@ Follow `docs/STYLE_GUIDE.md`. Key rules:
 
 Use RAII, smart pointers (`std::unique_ptr` / `std::shared_ptr`), and `std::optional`. Avoid raw `new`/`delete`.
 
+## Visualization Stack (Angular 17+)
+
+The web visualization layer is a separate build artifact from the C++ framework:
+
+- **Dashboard**: Angular 17+ project using standalone components, signals, and new control flow (`@if`, `@for`).
+- **Transport**: WebSocket service with auto-reconnect, per-channel subscription API, and binary/JSON negotiation.
+- **Charts**: ngx-charts or D3.js wrappers for real-time telemetry.
+- **3D**: Three.js integrated via Angular component for spatial data (poses, point clouds, trajectories).
+- **Layout**: Configurable drag-and-drop panel grid with session persistence.
+- **Theming**: Light/dark mode, responsive for desktop and tablet.
+
+The C++ side provides a WebSocket gateway that bridges `TelemetryBus` channels and framework state to web clients. The Angular dashboard connects exclusively through this gateway — never link to C++ internals.
+
+When working on visualization code:
+- Follow Angular style guide and use strict TypeScript.
+- Prefer signals over BehaviorSubject for new state.
+- Keep WebSocket message schemas documented in `docs/` or co-located `*.schema.json` files.
+- Dashboard must be buildable and servable independently (`ng serve` / `ng build`).
+
 ## Architecture Rules
 
 These are hard constraints from the system design — do not violate them:
@@ -114,6 +137,7 @@ These are hard constraints from the system design — do not violate them:
 4. **Safety separation**: Safety checks belong in the safety framework layer, not scattered as ad-hoc application logic.
 5. **No singletons**: Avoid singleton patterns for system-wide control. Use dependency injection.
 6. **No global state**: Configuration, logging, and system state flow through explicit objects, not globals.
+7. **Dashboard isolation**: The Angular dashboard communicates only through the WebSocket gateway — no direct C++ linkage or shared-memory shortcuts.
 
 ## Include Paths
 

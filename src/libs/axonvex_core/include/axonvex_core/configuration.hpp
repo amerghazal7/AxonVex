@@ -1,24 +1,19 @@
 #pragma once
 
 #include <atomic>
-#include <filesystem>
+#include <axonvex_core/utils/optional.hpp>
 #include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <optional>
 #include <shared_mutex>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
 namespace axonvex::core {
-
-// Forward declarations
-class ConfigurationValidator;
-class ConfigurationMonitor;
-class TemplateManager;
 
 /**
  * @brief Configuration value variant type supporting common types
@@ -100,33 +95,15 @@ struct ConfigurationSchema {
 };
 
 /**
- * @brief Configuration template for presets
- */
-struct ConfigurationTemplate {
-    std::string name;
-    std::string description;
-    nlohmann::json config;
-    std::vector<std::string> tags;
-
-    ConfigurationTemplate() = default;
-    ConfigurationTemplate(const std::string& n, const nlohmann::json& c,
-                          const std::string& desc = "")
-        : name(n), description(desc), config(c) {}
-};
-
-/**
  * @brief High-performance configuration management system for AxonVex Framework
  *
  * Features:
- * - JSON/YAML parsing with schema validation
+ * - JSON parsing with schema validation
  * - Runtime configuration updates with change notifications
- * - Configuration templates and presets
  * - Environment variable integration
  * - Hierarchical configuration merging
  * - Thread-safe operations with minimal locking
  * - Comprehensive validation and error reporting
- * - Configuration versioning and rollback
- * - File watching for automatic reloading
  *
  * Performance characteristics:
  * - Configuration lookup: O(1) average case
@@ -145,7 +122,7 @@ struct ConfigurationTemplate {
  * config.set("logging.level", "info");
  *
  * config.registerCallback("execution.*", [](const auto& key, const auto& old, const auto& new_val)
- * { Log::Info() << "Execution config changed: " << key;
+ * { std::cout << "Execution config changed: " << key << std::endl;
  * });
  * @endcode
  */
@@ -196,6 +173,15 @@ class Configuration {
     bool loadFromString(const std::string& json_string, bool merge_with_existing = false);
 
     /**
+     * @brief Load configuration from an already-parsed JSON value
+     *
+     * @param json_data Parsed JSON configuration
+     * @param merge_with_existing If true, merge with current config
+     * @return true if loaded successfully
+     */
+    bool loadFromJson(const nlohmann::json& json_data, bool merge_with_existing = false);
+
+    /**
      * @brief Load configuration from environment variables
      *
      * @param prefix Environment variable prefix (e.g., "AXONVEX_")
@@ -235,7 +221,13 @@ class Configuration {
      * @return Configuration value or default
      */
     template <typename T>
-    T get(const std::string& key, const T& default_value = T{}) const;
+    typename std::enable_if<std::is_same<typename std::decay<T>::type, std::string>::value, T>::type
+    get(const std::string& key, const T& default_value = T{}) const;
+
+    template <typename T>
+    typename std::enable_if<!std::is_same<typename std::decay<T>::type, std::string>::value,
+                            T>::type
+    get(const std::string& key, const T& default_value = T{}) const;
 
     /**
      * @brief Get optional configuration value
@@ -245,7 +237,7 @@ class Configuration {
      * @return Optional value (empty if not found)
      */
     template <typename T>
-    std::optional<T> getOptional(const std::string& key) const;
+    axonvex::optional<T> getOptional(const std::string& key) const;
 
     /**
      * @brief Set configuration value
@@ -368,83 +360,6 @@ class Configuration {
      */
     bool applyUpdates(const nlohmann::json& updates, bool validate = true);
 
-    /**
-     * @brief Enable file watching for automatic reloading
-     *
-     * @param enable If true, watch config file for changes
-     */
-    void enableFileWatching(bool enable);
-
-    //==========================================================================
-    // Configuration Templates
-    //==========================================================================
-
-    /**
-     * @brief Load configuration template
-     *
-     * @param template_name Name of template to load
-     * @return true if loaded successfully
-     */
-    bool loadTemplate(const std::string& template_name);
-
-    /**
-     * @brief Save current configuration as template
-     *
-     * @param template_name Name for the template
-     * @param description Optional description
-     * @return true if saved successfully
-     */
-    bool saveTemplate(const std::string& template_name, const std::string& description = "");
-
-    /**
-     * @brief Get available template names
-     *
-     * @return Vector of available template names
-     */
-    std::vector<std::string> getAvailableTemplates() const;
-
-    /**
-     * @brief Get template information
-     *
-     * @param template_name Name of template
-     * @return Optional template object
-     */
-    std::optional<ConfigurationTemplate> getTemplate(const std::string& template_name) const;
-
-    //==========================================================================
-    // Versioning and Rollback
-    //==========================================================================
-
-    /**
-     * @brief Create configuration snapshot
-     *
-     * @param name Optional name for snapshot
-     * @return Snapshot ID
-     */
-    std::string createSnapshot(const std::string& name = "");
-
-    /**
-     * @brief Rollback to configuration snapshot
-     *
-     * @param snapshot_id ID of snapshot to rollback to
-     * @return true if rollback successful
-     */
-    bool rollbackToSnapshot(const std::string& snapshot_id);
-
-    /**
-     * @brief Get available snapshots
-     *
-     * @return Vector of snapshot IDs
-     */
-    std::vector<std::string> getAvailableSnapshots() const;
-
-    /**
-     * @brief Remove configuration snapshot
-     *
-     * @param snapshot_id ID of snapshot to remove
-     */
-    void removeSnapshot(const std::string& snapshot_id);
-
     //==========================================================================
     // Status and Statistics
     //==========================================================================
@@ -460,13 +375,6 @@ class Configuration {
      * @brief Reset configuration statistics
      */
     void resetStatistics() noexcept;
-
-    /**
-     * @brief Get configuration size in bytes
-     *
-     * @return Approximate memory usage
-     */
-    size_t getMemoryUsage() const;
 
     /**
      * @brief Get number of configuration keys
@@ -487,17 +395,10 @@ class Configuration {
      */
     void clear();
 
-    /**
-     * @brief Get configuration performance metrics
-     *
-     * @return Performance metrics string
-     */
-    std::string getPerformanceMetrics() const;
-
   private:
     // Core configuration data
     nlohmann::json config_data_;
-    mutable std::shared_mutex config_mutex_;
+    mutable std::shared_timed_mutex config_mutex_;
 
     // Schema and validation
     std::unique_ptr<ConfigurationSchema> schema_;
@@ -509,17 +410,6 @@ class Configuration {
     std::atomic<size_t> next_callback_id_;
     std::atomic<bool> monitoring_enabled_;
 
-    // Templates and snapshots
-    std::unordered_map<std::string, ConfigurationTemplate> templates_;
-    std::unordered_map<std::string, nlohmann::json> snapshots_;
-    std::mutex templates_mutex_;
-    std::mutex snapshots_mutex_;
-
-    // File watching
-    std::atomic<bool> file_watching_enabled_;
-    std::string watched_file_;
-    std::filesystem::file_time_type last_write_time_;
-
     // Statistics
     mutable ConfigurationStatistics stats_;
 
@@ -529,17 +419,13 @@ class Configuration {
     static constexpr std::memory_order release = std::memory_order_release;
 
     // Helper methods
-    bool loadFromJson(const nlohmann::json& json_data, bool merge_with_existing);
     std::vector<ValidationError> validateInternal(const nlohmann::json& data) const;
     void notifyCallbacks(const std::string& key, const ConfigValue& old_value,
                          const ConfigValue& new_value);
-    std::vector<std::string> expandKeyPattern(const std::string& pattern) const;
     bool matchesPattern(const std::string& key, const std::string& pattern) const;
-    std::string generateSnapshotId() const;
     nlohmann::json* getJsonPointer(const std::string& key, bool create_if_missing = false);
     const nlohmann::json* getJsonPointer(const std::string& key) const;
     std::vector<std::string> splitKey(const std::string& key) const;
-    void updateFileWatcher();
 };
 
 //==============================================================================
@@ -547,8 +433,10 @@ class Configuration {
 //==============================================================================
 
 template <typename T>
-inline T Configuration::get(const std::string& key, const T& default_value) const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+inline
+    typename std::enable_if<std::is_same<typename std::decay<T>::type, std::string>::value, T>::type
+    Configuration::get(const std::string& key, const T& default_value) const {
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         const auto* json_ptr = getJsonPointer(key);
@@ -556,14 +444,10 @@ inline T Configuration::get(const std::string& key, const T& default_value) cons
             return default_value;
         }
 
-        if constexpr (std::is_same_v<T, std::string>) {
-            if (json_ptr->is_string()) {
-                return json_ptr->get<T>();
-            } else if (json_ptr->is_number() || json_ptr->is_boolean()) {
-                return std::to_string(json_ptr->get<double>());
-            }
-        } else {
+        if (json_ptr->is_string()) {
             return json_ptr->get<T>();
+        } else if (json_ptr->is_number() || json_ptr->is_boolean()) {
+            return std::to_string(json_ptr->get<double>());
         }
 
         return default_value;
@@ -571,22 +455,38 @@ inline T Configuration::get(const std::string& key, const T& default_value) cons
 }
 
 template <typename T>
-inline std::optional<T> Configuration::getOptional(const std::string& key) const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+inline typename std::enable_if<!std::is_same<typename std::decay<T>::type, std::string>::value,
+                               T>::type
+Configuration::get(const std::string& key, const T& default_value) const {
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         const auto* json_ptr = getJsonPointer(key);
         if (json_ptr == nullptr) {
-            return std::nullopt;
+            return default_value;
         }
 
         return json_ptr->get<T>();
-    } catch (const std::exception&) { return std::nullopt; }
+    } catch (const std::exception&) { return default_value; }
+}
+
+template <typename T>
+inline axonvex::optional<T> Configuration::getOptional(const std::string& key) const {
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
+
+    try {
+        const auto* json_ptr = getJsonPointer(key);
+        if (json_ptr == nullptr) {
+            return axonvex::nullopt;
+        }
+
+        return json_ptr->get<T>();
+    } catch (const std::exception&) { return axonvex::nullopt; }
 }
 
 template <typename T>
 inline bool Configuration::set(const std::string& key, const T& value, bool validate) {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
+    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         // Get old value for callback

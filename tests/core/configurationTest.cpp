@@ -17,6 +17,7 @@
  * - Thread safety testing
  */
 
+#include <atomic>
 #include <axonvex_core/configuration.hpp>
 #include <chrono>
 #include <cstdlib>
@@ -24,8 +25,23 @@
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace axonvex::core;
+
+namespace {
+long testProcessId() {
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(getpid());
+#endif
+}
+} // namespace
 
 class ConfigurationTest : public ::testing::Test {
   protected:
@@ -72,9 +88,10 @@ class ConfigurationTest : public ::testing::Test {
             }
         })";
 
-        // Test file paths
-        test_config_file = "test_config.json";
-        test_schema_file = "test_schema.json";
+        // Unique per process so parallel ctest does not clobber shared filenames in CWD
+        const std::string pid = std::to_string(testProcessId());
+        test_config_file = "test_config_" + pid + ".json";
+        test_schema_file = "test_schema_" + pid + ".json";
     }
 
     void TearDown() override {
@@ -305,99 +322,6 @@ TEST_F(ConfigurationTest, ApplyUpdatesTest) {
 }
 
 //==============================================================================
-// Template Tests
-//==============================================================================
-
-TEST_F(ConfigurationTest, TemplateTest) {
-    EXPECT_TRUE(config->loadFromString(test_config_json));
-
-    // Save current config as template
-    EXPECT_TRUE(config->saveTemplate("test_template", "Test template description"));
-
-    // Verify template was saved
-    auto templates = config->getAvailableTemplates();
-    EXPECT_GT(templates.size(), 0);
-
-    bool found_template = false;
-    for (const auto& name : templates) {
-        if (name == "test_template") {
-            found_template = true;
-            break;
-        }
-    }
-    EXPECT_TRUE(found_template);
-
-    // Get template information
-    auto template_info = config->getTemplate("test_template");
-    EXPECT_TRUE(template_info.has_value());
-    EXPECT_EQ(template_info->name, "test_template");
-    EXPECT_EQ(template_info->description, "Test template description");
-
-    // Clear config and load template
-    config->clear();
-    EXPECT_TRUE(config->isEmpty());
-
-    EXPECT_TRUE(config->loadTemplate("test_template"));
-    EXPECT_FALSE(config->isEmpty());
-
-    // Verify values were restored
-    EXPECT_EQ(config->get<std::string>("system.name"), "TestSystem");
-    EXPECT_EQ(config->get<double>("system.execution.frequency"), 1000.0);
-}
-
-//==============================================================================
-// Snapshot and Rollback Tests
-//==============================================================================
-
-TEST_F(ConfigurationTest, SnapshotRollbackTest) {
-    EXPECT_TRUE(config->loadFromString(test_config_json));
-
-    // Create snapshot
-    std::string snapshot_id = config->createSnapshot("initial_state");
-    EXPECT_FALSE(snapshot_id.empty());
-
-    // Verify snapshot exists
-    auto snapshots = config->getAvailableSnapshots();
-    EXPECT_GT(snapshots.size(), 0);
-
-    bool found_snapshot = false;
-    for (const auto& id : snapshots) {
-        if (id == snapshot_id) {
-            found_snapshot = true;
-            break;
-        }
-    }
-    EXPECT_TRUE(found_snapshot);
-
-    // Modify configuration
-    EXPECT_TRUE(config->set("system.execution.frequency", 2000.0));
-    EXPECT_TRUE(config->set("new.key", std::string("new_value")));
-
-    // Verify changes
-    EXPECT_EQ(config->get<double>("system.execution.frequency"), 2000.0);
-    EXPECT_EQ(config->get<std::string>("new.key"), "new_value");
-
-    // Rollback to snapshot
-    EXPECT_TRUE(config->rollbackToSnapshot(snapshot_id));
-
-    // Verify rollback
-    EXPECT_EQ(config->get<double>("system.execution.frequency"), 1000.0);
-    EXPECT_FALSE(config->has("new.key"));
-
-    // Clean up snapshot
-    config->removeSnapshot(snapshot_id);
-    snapshots = config->getAvailableSnapshots();
-    found_snapshot = false;
-    for (const auto& id : snapshots) {
-        if (id == snapshot_id) {
-            found_snapshot = true;
-            break;
-        }
-    }
-    EXPECT_FALSE(found_snapshot);
-}
-
-//==============================================================================
 // Statistics and Performance Tests
 //==============================================================================
 
@@ -423,33 +347,20 @@ TEST_F(ConfigurationTest, StatisticsTest) {
     // Save to file
     EXPECT_TRUE(config->saveToFile(test_config_file));
     EXPECT_EQ(stats.getTotalSaves(), 1);
-
-    // Get performance metrics
-    std::string metrics = config->getPerformanceMetrics();
-    EXPECT_FALSE(metrics.empty());
-    EXPECT_NE(metrics.find("Total loads:"), std::string::npos);
-    EXPECT_NE(metrics.find("Total saves:"), std::string::npos);
 }
 
-TEST_F(ConfigurationTest, MemoryUsageTest) {
+TEST_F(ConfigurationTest, KeyCountTest) {
     EXPECT_TRUE(config->loadFromString(test_config_json));
-
-    size_t memory_usage = config->getMemoryUsage();
-    EXPECT_GT(memory_usage, 0);
 
     size_t key_count = config->getKeyCount();
     EXPECT_GT(key_count, 0);
 
-    // Add more data and verify memory usage increases
+    // Add more data and verify key count increases
     for (int i = 0; i < 100; ++i) {
         config->set("bulk.key" + std::to_string(i), i);
     }
 
-    size_t new_memory_usage = config->getMemoryUsage();
-    size_t new_key_count = config->getKeyCount();
-
-    EXPECT_GT(new_memory_usage, memory_usage);
-    EXPECT_GT(new_key_count, key_count);
+    EXPECT_GT(config->getKeyCount(), key_count);
 }
 
 //==============================================================================
@@ -577,10 +488,6 @@ TEST_F(ConfigurationTest, ErrorHandlingTest) {
     // Test invalid schema
     EXPECT_FALSE(config->loadSchema("nonexistent_schema.json"));
 
-    // Test invalid operations
-    EXPECT_FALSE(config->rollbackToSnapshot("nonexistent_snapshot"));
-    EXPECT_FALSE(config->loadTemplate("nonexistent_template"));
-
     // Verify configuration remains stable
     EXPECT_TRUE(config->isEmpty());
 }
@@ -607,4 +514,99 @@ TEST_F(ConfigurationTest, EnvironmentVariableTest) {
     unsetenv("AXONVEX_SYSTEM_NAME");
     unsetenv("AXONVEX_SYSTEM_EXECUTION_FREQUENCY");
     unsetenv("AXONVEX_SYSTEM_EXECUTION_ENABLED");
+}
+
+// C5 regression. applyUpdates used to unlock config_mutex_ mid-merge to notify
+// callbacks while the recursive merge still held nlohmann::json references into
+// config_data_. Anything that mutated the tree during the notification — a
+// concurrent writer, or the callback itself — could destroy the node those
+// references pointed into, and the merge then resumed writing through them
+// (ASan: heap-use-after-free). Updates are now merged fully under the lock and
+// callbacks are notified afterwards from a collected change list, so callbacks
+// observe the completed update and may freely mutate the configuration.
+TEST_F(ConfigurationTest, CallbackMayMutateConfigDuringUpdateNotification) {
+    ASSERT_TRUE(
+        config->loadFromJson(nlohmann::json::parse(R"({"a": {"x": 1, "y": 2, "z": 3}})"), false));
+
+    std::atomic<int> fired{0};
+    config->registerCallback(
+        "*", [this, &fired](const std::string&, const ConfigValue&, const ConfigValue&) {
+            if (fired.fetch_add(1) == 0) {
+                // Destroys the subtree the old merge still held references into.
+                config->remove("a");
+            }
+        });
+
+    // Multi-key nested update: pre-fix the merge wrote the remaining keys
+    // through dangling references after the callback removed "a".
+    EXPECT_TRUE(config->applyUpdates(nlohmann::json::parse(R"({"a": {"x": 10, "y": 20, "z": 30}})"),
+                                     false));
+    EXPECT_GT(fired.load(), 0);
+}
+
+// C5 regression, second shape. notifyCallbacks invoked user callbacks while
+// holding callbacks_mutex_ — the same mutex registerCallback/unregisterCallback
+// take — so a callback touching the registration API deadlocked on a
+// non-recursive mutex. Deadline-guarded: a regression hangs rather than fails.
+TEST_F(ConfigurationTest, CallbackMayReenterCallbackRegistration) {
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    auto cfg = config.get();
+
+    std::thread worker([cfg, done]() {
+        ASSERT_TRUE(cfg->loadFromJson(nlohmann::json::parse(R"({"k": 1})"), false));
+        std::atomic<int> fired{0};
+        cfg->registerCallback(
+            "*", [cfg, &fired](const std::string&, const ConfigValue&, const ConfigValue&) {
+                ++fired;
+                const size_t id = cfg->registerCallback(
+                    "other.*", [](const std::string&, const ConfigValue&, const ConfigValue&) {});
+                cfg->unregisterCallback(id);
+            });
+        EXPECT_TRUE(cfg->applyUpdates(nlohmann::json::parse(R"({"k": 2})"), false));
+        EXPECT_GT(fired.load(), 0);
+        done->store(true);
+    });
+
+    // Polled, not condition-variable based: GCC 11's libtsan does not intercept
+    // pthread_cond_clockwait and reports bogus races for wait_for.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!done->load()) {
+        worker.detach(); // wedged; leak it rather than hang the suite
+        FAIL() << "callback re-entering the registration API deadlocked";
+    }
+    worker.join();
+}
+
+// C5: concurrent writers must be safe against an in-flight update's
+// notifications. TSan is the real assertion here.
+TEST_F(ConfigurationTest, ConcurrentUpdatesAndWritesAreRaceFree) {
+    ASSERT_TRUE(
+        config->loadFromJson(nlohmann::json::parse(R"({"a": {"x": 1}, "b": {"y": 2}})"), false));
+
+    std::atomic<int> fired{0};
+    config->registerCallback(
+        "*", [&fired](const std::string&, const ConfigValue&, const ConfigValue&) { ++fired; });
+
+    std::atomic<bool> stop{false};
+    std::thread writer([this, &stop]() {
+        int i = 0;
+        while (!stop.load()) {
+            config->set("b.y", ++i, false);
+            config->remove("b.tmp");
+            config->set("b.tmp", i, false);
+        }
+    });
+
+    for (int i = 0; i < 200; ++i) {
+        nlohmann::json update;
+        update["a"]["x"] = i;
+        update["a"]["nested"]["k"] = i * 2;
+        EXPECT_TRUE(config->applyUpdates(update, false));
+    }
+    stop.store(true);
+    writer.join();
+    EXPECT_GT(fired.load(), 0);
 }

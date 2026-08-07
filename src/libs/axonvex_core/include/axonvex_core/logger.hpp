@@ -167,20 +167,23 @@ class FileOutput : public LogOutput {
  * @brief High-performance real-time logger for AxonVex Framework
  *
  * Features:
- * - Asynchronous logging with <500ns per log entry target
+ * - Asynchronous logging: the hot call path enqueues to a pre-allocated
+ *   message pool but builds std::strings (allocates); do not log on RT paths
  * - Lock-free design using ThreadSafeQueue and MemoryPool
  * - Multiple output targets (console, file, custom)
  * - Configurable log levels and filtering
- * - Real-time safe (no dynamic allocation during logging)
+ * - NOT RT-safe: logging allocates (see note above); a convenience API, not a hot-path one
  * - Thread-safe multi-producer design
  * - Comprehensive statistics and monitoring
- * - High-performance formatting with minimal overhead
+ * - {}-placeholder formatting via ostringstream (see formatImpl); no benchmark
+ *   in tree, see the performance note below
  *
  * Performance characteristics:
- * - Logging overhead: <500ns per entry (target)
+ * - Logging overhead: dominated by the per-call std::string allocations in
+ *   LogMessage/formatString; not a fixed-latency guarantee, see the note above
  * - Queue capacity: Configurable (default 16K messages)
- * - Memory usage: Pre-allocated, no runtime allocation
- * - Throughput: 1M+ messages per second
+ * - Memory usage: message slots are pool-allocated; the strings they carry are not
+ * - Throughput: not benchmarked; do not cite a number until docs/benchmarks.md has one
  * - Thread safety: Lock-free multi-producer, single consumer
  *
  * @example Basic usage:
@@ -191,7 +194,7 @@ class FileOutput : public LogOutput {
  * logger.start();
  *
  * LOG_INFO(logger, "System", "Application started successfully");
- * LOG_ERROR(logger, "Network", "Connection failed: {}", error_msg);
+ * LOGF_ERROR(logger, "Network", "Connection failed: {}", error_msg);
  * @endcode
  */
 class Logger {
@@ -389,6 +392,19 @@ class Logger {
     // String formatting helper
     template <typename... Args>
     std::string formatString(const std::string& format, Args&&... args);
+
+    // C14: {} placeholders substituted in order via operator<<. Extra
+    // placeholders stay literal; extra arguments are ignored. Deliberately
+    // hand-rolled (no fmt dependency) and NOT RT-safe: allocates — logf is
+    // a convenience API, not a hot-path one. Values stream via
+    // ostringstream's default formatting, not fmt-style precision: double
+    // prints at the default ~6 significant digits, bool as 1/0 (not
+    // true/false).
+    static void formatImpl(std::ostringstream& stream, const std::string& format, size_t pos);
+
+    template <typename T, typename... Rest>
+    static void formatImpl(std::ostringstream& stream, const std::string& format, size_t pos,
+                           T&& value, Rest&&... rest);
 };
 
 // Implementation
@@ -629,11 +645,27 @@ inline void Logger::deallocateMessage(LogMessage* message) {
     }
 }
 
+inline void Logger::formatImpl(std::ostringstream& stream, const std::string& format, size_t pos) {
+    stream << format.substr(pos); // no args left: remainder verbatim (incl. any literal {})
+}
+
+template <typename T, typename... Rest>
+inline void Logger::formatImpl(std::ostringstream& stream, const std::string& format, size_t pos,
+                               T&& value, Rest&&... rest) {
+    const size_t placeholder = format.find("{}", pos);
+    if (placeholder == std::string::npos) {
+        stream << format.substr(pos); // more args than placeholders: extras ignored
+        return;
+    }
+    stream << format.substr(pos, placeholder - pos) << std::forward<T>(value);
+    formatImpl(stream, format, placeholder + 2, std::forward<Rest>(rest)...);
+}
+
 template <typename... Args>
 inline std::string Logger::formatString(const std::string& format, Args&&... args) {
-    // Simple placeholder-based formatting
-    // In a production system, you might want to use fmt library or similar
-    return format; // Simplified for now
+    std::ostringstream stream;
+    formatImpl(stream, format, 0, std::forward<Args>(args)...);
+    return stream.str();
 }
 
 // Console Output Implementation
@@ -746,8 +778,20 @@ inline std::string LogOutput::defaultFormat(const LogMessage& message) const {
             break;
     }
 
+    // C37: std::localtime returns a pointer into a shared static buffer and is
+    // not reentrant/thread-safe (glibc's tzset_internal can even reallocate
+    // its internal state under it) — two Logger worker threads calling this
+    // concurrently race on libc-internal state, not just the output. Use the
+    // reentrant POSIX/Windows variants which write into a caller-owned
+    // std::tm instead of a shared static.
+    std::tm local_tm{};
+#ifdef _WIN32
+    localtime_s(&local_tm, &time_t);
+#else
+    localtime_r(&time_t, &local_tm);
+#endif
     char time_buf[100];
-    std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", std::localtime(&time_t));
+    std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &local_tm);
 
     std::string formatted =
         std::string(time_buf) + " [" + level_str + "] " + message.category + ": " + message.message;
@@ -760,297 +804,6 @@ inline std::string LogOutput::defaultFormat(const LogMessage& message) const {
 }
 
 } // namespace axonvex::core
-
-//==============================================================================
-// STREAM-BASED LOGGING INTERFACE
-// User-friendly logging with automatic timestamps, colors, and easy syntax
-//==============================================================================
-
-namespace axonvex::core {
-/**
- * @brief Global Logger singleton for stream-based logging
- *
- * Provides high-performance async logging with user-friendly stream interface
- */
-class GlobalLogger {
-  private:
-    Logger logger_;
-    std::shared_ptr<ConsoleOutput> console_output_;
-    std::shared_ptr<FileOutput> file_output_;
-
-  public:
-    GlobalLogger() : logger_(8192, 16384) {
-        console_output_ = std::make_shared<ConsoleOutput>();
-        logger_.addOutput(console_output_);
-        logger_.setLevel(LogLevel::Info);
-        logger_.start();
-    }
-
-    ~GlobalLogger() {
-        logger_.stop();
-    }
-
-    Logger& getLogger() {
-        return logger_;
-    }
-
-    void addFileOutput(const std::string& filename) {
-        file_output_ = std::make_shared<FileOutput>(filename);
-        logger_.addOutput(file_output_);
-    }
-
-    void setLevel(LogLevel level) {
-        logger_.setLevel(level);
-    }
-
-    // Non-copyable, non-moveable
-    GlobalLogger(const GlobalLogger&) = delete;
-    GlobalLogger& operator=(const GlobalLogger&) = delete;
-    GlobalLogger(GlobalLogger&&) = delete;
-    GlobalLogger& operator=(GlobalLogger&&) = delete;
-};
-
-/**
- * @brief Get or create the global logger instance
- */
-inline GlobalLogger& getGlobalLogger() {
-    static GlobalLogger instance;
-    return instance;
-}
-
-} // namespace axonvex::core
-
-// Stream output operator for vectors and containers
-namespace axonvex::core {
-
-template <typename T>
-std::ostream& operator<<(std::ostream& os, const std::vector<T>& vec) {
-    os << "[";
-    for (size_t i = 0; i < vec.size(); ++i) {
-        if (i > 0)
-            os << ", ";
-        os << vec[i];
-    }
-    os << "]";
-    return os;
-}
-
-template <typename T, size_t N>
-std::ostream& operator<<(std::ostream& os, const std::array<T, N>& arr) {
-    os << "[";
-    for (size_t i = 0; i < N; ++i) {
-        if (i > 0)
-            os << ", ";
-        os << arr[i];
-    }
-    os << "]";
-    return os;
-}
-
-} // namespace axonvex::core
-
-//==============================================================================
-// STREAM-BASED LOGGING CLASSES
-//==============================================================================
-
-namespace axonvex::Log {
-
-using namespace axonvex::core;
-
-/**
- * @brief ANSI color codes for terminal output
- */
-namespace Colors {
-constexpr const char* RESET = "\033[0m";
-constexpr const char* RED = "\033[1;31m";
-constexpr const char* GREEN = "\033[1;32m";
-constexpr const char* YELLOW = "\033[1;33m";
-constexpr const char* BLUE = "\033[1;34m";
-constexpr const char* MAGENTA = "\033[1;35m";
-constexpr const char* CYAN = "\033[1;36m";
-constexpr const char* WHITE = "\033[1;37m";
-constexpr const char* GRAY = "\033[1;30m";
-} // namespace Colors
-
-
-/**
- * @brief Colored console logger that outputs immediately
- */
-template <LogLevel Level, const char* ColorCode>
-class ColoredStreamLogger {
-  private:
-    std::ostringstream stream_;
-
-  public:
-    ColoredStreamLogger() = default;
-
-    // Move constructor for chaining
-    ColoredStreamLogger(ColoredStreamLogger&& other) noexcept : stream_(std::move(other.stream_)) {}
-
-    // Destructor logs with color and timestamp
-    ~ColoredStreamLogger() {
-        if (stream_.tellp() > 0) { // Only log if there's content
-            std::string message = stream_.str();
-            if (!message.empty()) {
-                // Create timestamp
-                // auto now = std::chrono::system_clock::now();
-                // auto time_t = std::chrono::system_clock::to_time_t(now);
-                // auto ms =
-                //     std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) %
-                //     1000;
-
-                // std::ostringstream colored_output;
-                // colored_output << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S.")
-                //                << std::setfill('0') << std::setw(3) << ms.count() << "    "
-                //                << ColorCode << message << Colors::RESET;
-
-                std::ostringstream colored_output;
-                colored_output << " "
-                               << ColorCode << message << Colors::RESET;
-
-
-
-
-                // Also log to async logger without color codes
-                auto& logger = getGlobalLogger().getLogger();
-                logger.log(Level, "[Global]", colored_output.str());
-            }
-        }
-    }
-
-    // Stream operator for any type
-    template <typename T>
-    ColoredStreamLogger& operator<<(const T& value) {
-        stream_ << value;
-        return *this;
-    }
-
-    // Handle stream manipulators
-    ColoredStreamLogger& operator<<(std::ostream& (*manip)(std::ostream&)) {
-        stream_ << manip;
-        return *this;
-    }
-
-    // Non-copyable to prevent issues
-    ColoredStreamLogger(const ColoredStreamLogger&) = delete;
-    ColoredStreamLogger& operator=(const ColoredStreamLogger&) = delete;
-    ColoredStreamLogger& operator=(ColoredStreamLogger&&) = delete;
-};
-
-// Define color constants for template parameters
-namespace {
-constexpr const char DEBUG_COLOR[] = "\033[1;30m";    // Gray
-constexpr const char INFO_COLOR[] = "\033[1;34m";     // Blue
-constexpr const char WARN_COLOR[] = "\033[1;33m";     // Yellow
-constexpr const char ERROR_COLOR[] = "\033[1;31m";    // Red
-constexpr const char CRITICAL_COLOR[] = "\033[1;35m"; // Magenta
-} // namespace
-
-// Type aliases for different log levels
-using DebugLogger = ColoredStreamLogger<LogLevel::Debug, DEBUG_COLOR>;
-using InfoLogger = ColoredStreamLogger<LogLevel::Info, INFO_COLOR>;
-using WarnLogger = ColoredStreamLogger<LogLevel::Warning, WARN_COLOR>;
-using ErrorLogger = ColoredStreamLogger<LogLevel::Error, ERROR_COLOR>;
-using CriticalLogger = ColoredStreamLogger<LogLevel::Critical, CRITICAL_COLOR>;
-
-/**
- * @brief File logging stream class
- */
-class FileLogger {
-  private:
-    std::ostringstream stream_;
-    static std::shared_ptr<FileOutput> file_output_;
-    static std::once_flag init_flag_;
-
-  public:
-    FileLogger() = default;
-
-    // Move constructor for chaining
-    FileLogger(FileLogger&& other) noexcept : stream_(std::move(other.stream_)) {}
-
-    // Destructor logs the accumulated message
-    ~FileLogger() {
-        if (stream_.tellp() > 0) {
-            std::string message = stream_.str();
-            if (!message.empty()) {
-                auto& logger = getGlobalLogger().getLogger();
-                logger.log(LogLevel::Info, "File", message);
-            }
-        }
-    }
-
-    // Stream operator for any type
-    template <typename T>
-    FileLogger& operator<<(const T& value) {
-        stream_ << value;
-        return *this;
-    }
-
-    // Handle stream manipulators
-    FileLogger& operator<<(std::ostream& (*manip)(std::ostream&)) {
-        stream_ << manip;
-        return *this;
-    }
-
-    // Initialize file output
-    static void initialize(const std::string& filename) {
-        std::call_once(init_flag_, [&filename]() { getGlobalLogger().addFileOutput(filename); });
-    }
-
-    // Non-copyable to prevent issues
-    FileLogger(const FileLogger&) = delete;
-    FileLogger& operator=(const FileLogger&) = delete;
-    FileLogger& operator=(FileLogger&&) = delete;
-};
-
-} // namespace axonvex::Log
-
-//==============================================================================
-// GLOBAL LOGGING INTERFACE
-// Usage: Log::Info << "Message: " << value;
-//==============================================================================
-
-namespace axonvex::Log {
-
-// Create temporary logger objects for stream-based logging
-inline DebugLogger Debug() {
-    return DebugLogger{};
-}
-inline InfoLogger Info() {
-    return InfoLogger{};
-}
-inline WarnLogger Warn() {
-    return WarnLogger{};
-}
-inline ErrorLogger Error() {
-    return ErrorLogger{};
-}
-inline CriticalLogger Critical() {
-    return CriticalLogger{};
-}
-inline FileLogger File() {
-    return FileLogger{};
-}
-
-// Utility functions for global logger configuration
-inline void setLevel(LogLevel level) {
-    getGlobalLogger().setLevel(level);
-}
-
-inline void addFileOutput(const std::string& filename) {
-    getGlobalLogger().addFileOutput(filename);
-}
-
-inline Logger& getLogger() {
-    return getGlobalLogger().getLogger();
-}
-
-// Initialize file logging
-inline void initializeFileLogging(const std::string& filename) {
-    FileLogger::initialize(filename);
-}
-
-} // namespace axonvex::Log
 
 // Convenience macros for logging with file/line information
 #define LOG_DEBUG(logger, category, message)                                                       \
@@ -1068,7 +821,9 @@ inline void initializeFileLogging(const std::string& filename) {
 #define LOG_CRITICAL(logger, category, message)                                                    \
     (logger).critical(category, message, __FILE__, __LINE__, __FUNCTION__)
 
-// Formatted logging macros
+// Formatted logging macros. C++14 has no __VA_OPT__, so the trailing
+// __VA_ARGS__ requires at least one argument after `format` — LOGF_*(logger,
+// category, "literal, no placeholders") will not compile; use LOG_* instead.
 #define LOGF_DEBUG(logger, category, format, ...)                                                  \
     (logger).logf(axonvex::core::LogLevel::Debug, category, format, __VA_ARGS__)
 
@@ -1082,5 +837,4 @@ inline void initializeFileLogging(const std::string& filename) {
     (logger).logf(axonvex::core::LogLevel::Error, category, format, __VA_ARGS__)
 
 #define LOGF_CRITICAL(logger, category, format, ...)                                               \
-    (logger).logf(axonvex::core::LogLevel::Critical, category, format, __VA_ARGS__)(logger).logf(  \
-        axonvex::core::LogLevel::Critical, category, format, __VA_ARGS__)
+    (logger).logf(axonvex::core::LogLevel::Critical, category, format, __VA_ARGS__)
