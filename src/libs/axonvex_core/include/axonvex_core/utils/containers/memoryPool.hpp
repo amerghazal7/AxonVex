@@ -133,7 +133,6 @@ class MemoryPool {
     }
 
     const size_t pool_size_;
-    const size_t pool_mask_;
     std::unique_ptr<Block[]> blocks_;
     alignas(64) std::atomic<uint64_t> free_head_{0};
     alignas(64) std::atomic<size_t> allocated_count_{0};
@@ -154,7 +153,7 @@ class MemoryPool {
 template <typename T>
 MemoryPool<T>::MemoryPool(size_t pool_size)
     : pool_size_(std::max(MIN_POOL_SIZE, std::min(MAX_POOL_SIZE, nextPowerOf2(pool_size)))),
-      pool_mask_(pool_size_ - 1), blocks_(std::make_unique<Block[]>(pool_size_)) {
+      blocks_(std::make_unique<Block[]>(pool_size_)) {
     for (size_t i = 0; i < pool_size_ - 1; ++i) {
         blocks_[i].next.store(static_cast<uint32_t>(i + 1), relaxed);
         blocks_[i].is_allocated.store(false, relaxed);

@@ -4,7 +4,6 @@
 #include <axonvex_core/callback.hpp>
 #include <axonvex_interfaces/tcp/tcpClient.hpp>
 #include <axonvex_interfaces/udp/udpSocket.hpp>
-#include <axonvex_interfaces/websocket/websocketServer.hpp>
 #include <chrono>
 #include <functional>
 #include <gtest/gtest.h>
@@ -56,26 +55,8 @@ class StringCallback final : public axonvex::core::Callback<std::string> {
 
 } // namespace
 
-TEST(ProtocolInterfacesContractTest, WebSocketPlaceholderLifecycleAndCallback) {
-    axonvex::interfaces::websocket::WebSocketServer ws("127.0.0.1", 9099);
-    VectorCallback cb;
-
-    ws.setMessageCallback(&cb);
-    EXPECT_TRUE(ws.start());
-    EXPECT_TRUE(ws.isRunning());
-
-    const std::vector<uint8_t> payload{1, 2, 3, 4};
-    EXPECT_TRUE(ws.send(payload));
-
-    auto stats = ws.getStatistics();
-    EXPECT_EQ(stats.messagesSent, 1);
-    EXPECT_EQ(stats.bytesSent, payload.size());
-    EXPECT_EQ(cb.count.load(), 1);
-    EXPECT_EQ(cb.last, payload);
-
-    ws.stop();
-    EXPECT_FALSE(ws.isRunning());
-}
+// The WebSocketServer placeholder is compile-gated (plan §7) and has no test:
+// it never performed real I/O, so a passing "contract" test was misleading.
 
 TEST(ProtocolInterfacesContractTest, UdpLifecycleAndStatsContract) {
     axonvex::interfaces::udp::UdpSocket udp("127.0.0.1", 0);

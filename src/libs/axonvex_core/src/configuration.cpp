@@ -13,7 +13,6 @@
 
 #include <algorithm>
 #include <axonvex_core/configuration.hpp>
-#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <regex>
@@ -26,7 +25,7 @@ namespace axonvex::core {
 
 Configuration::Configuration(bool enable_monitoring, bool enable_validation)
     : validation_enabled_(enable_validation), next_callback_id_(1),
-      monitoring_enabled_(enable_monitoring), file_watching_enabled_(false) {}
+      monitoring_enabled_(enable_monitoring) {}
 
 Configuration::~Configuration() {
     clearCallbacks();
@@ -47,10 +46,6 @@ bool Configuration::loadFromFile(const std::string& filename, bool merge_with_ex
         file >> json_data;
 
         if (loadFromJson(json_data, merge_with_existing)) {
-            watched_file_ = filename;
-            if (axonvex_fs::exists(filename)) {
-                last_write_time_ = axonvex_fs::last_write_time(filename);
-            }
             stats_.total_loads.fetch_add(1, relaxed);
             return true;
         }
@@ -379,99 +374,6 @@ bool Configuration::applyUpdates(const nlohmann::json& updates, bool validate) {
     return true;
 }
 
-void Configuration::enableFileWatching(bool enable) {
-    file_watching_enabled_.store(enable, relaxed);
-    if (enable && !watched_file_.empty()) {
-        updateFileWatcher();
-    }
-}
-
-//==============================================================================
-// Configuration Templates
-//==============================================================================
-
-bool Configuration::loadTemplate(const std::string& template_name) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
-
-    auto it = templates_.find(template_name);
-    if (it == templates_.end()) {
-        return false;
-    }
-
-    return loadFromJson(it->second.config, false);
-}
-
-bool Configuration::saveTemplate(const std::string& template_name, const std::string& description) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
-    std::shared_lock<std::shared_timed_mutex> config_lock(config_mutex_);
-
-    ConfigurationTemplate template_obj(template_name, config_data_, description);
-    templates_[template_name] = template_obj;
-
-    return true;
-}
-
-std::vector<std::string> Configuration::getAvailableTemplates() const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
-
-    std::vector<std::string> result;
-    for (const auto& pair : templates_) {
-        result.push_back(pair.first);
-    }
-    return result;
-}
-
-axonvex::optional<ConfigurationTemplate> Configuration::getTemplate(
-    const std::string& template_name) const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
-
-    auto it = templates_.find(template_name);
-    if (it != templates_.end()) {
-        return it->second;
-    }
-    return axonvex::nullopt;
-}
-
-//==============================================================================
-// Versioning and Rollback
-//==============================================================================
-
-std::string Configuration::createSnapshot(const std::string& name) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(snapshots_mutex_));
-    std::shared_lock<std::shared_timed_mutex> config_lock(config_mutex_);
-
-    std::string snapshot_id = name.empty() ? generateSnapshotId() : name;
-    snapshots_[snapshot_id] = config_data_;
-
-    return snapshot_id;
-}
-
-bool Configuration::rollbackToSnapshot(const std::string& snapshot_id) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(snapshots_mutex_));
-
-    auto it = snapshots_.find(snapshot_id);
-    if (it == snapshots_.end()) {
-        return false;
-    }
-
-    return loadFromJson(it->second, false);
-}
-
-std::vector<std::string> Configuration::getAvailableSnapshots() const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(snapshots_mutex_));
-
-    std::vector<std::string> result;
-    for (const auto& pair : snapshots_) {
-        result.push_back(pair.first);
-    }
-    return result;
-}
-
-void Configuration::removeSnapshot(const std::string& snapshot_id) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(snapshots_mutex_));
-    snapshots_.erase(snapshot_id);
-}
-
 //==============================================================================
 // Status and Statistics
 //==============================================================================
@@ -482,14 +384,6 @@ const ConfigurationStatistics& Configuration::getStatistics() const noexcept {
 
 void Configuration::resetStatistics() noexcept {
     stats_.reset();
-}
-
-size_t Configuration::getMemoryUsage() const {
-    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
-
-    // Approximate memory usage calculation
-    std::string json_str = config_data_.dump();
-    return json_str.size() + sizeof(Configuration);
 }
 
 size_t Configuration::getKeyCount() const {
@@ -518,23 +412,6 @@ void Configuration::clear() {
     std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
     config_data_.clear();
     stats_.total_updates.fetch_add(1, relaxed);
-}
-
-std::string Configuration::getPerformanceMetrics() const {
-    const auto& stats = getStatistics();
-
-    std::stringstream ss;
-    ss << "Configuration Performance Metrics:\n";
-    ss << "  Total loads: " << stats.getTotalLoads() << "\n";
-    ss << "  Total saves: " << stats.getTotalSaves() << "\n";
-    ss << "  Total updates: " << stats.getTotalUpdates() << "\n";
-    ss << "  Runtime updates: " << stats.getRuntimeUpdates() << "\n";
-    ss << "  Validation failures: " << stats.getValidationFailures() << "\n";
-    ss << "  Callback invocations: " << stats.getCallbackInvocations() << "\n";
-    ss << "  Memory usage: " << getMemoryUsage() << " bytes\n";
-    ss << "  Key count: " << getKeyCount() << "\n";
-
-    return ss.str();
 }
 
 //==============================================================================
@@ -605,11 +482,6 @@ void Configuration::notifyCallbacks(const std::string& key, const ConfigValue& o
     }
 }
 
-std::vector<std::string> Configuration::expandKeyPattern(const std::string& pattern) const {
-    // Simple pattern expansion - in a full implementation, this would support complex patterns
-    return {pattern};
-}
-
 bool Configuration::matchesPattern(const std::string& key, const std::string& pattern) const {
     if (pattern == "*") {
         return true;
@@ -628,15 +500,6 @@ bool Configuration::matchesPattern(const std::string& key, const std::string& pa
     }
 
     return key == pattern;
-}
-
-std::string Configuration::generateSnapshotId() const {
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
-
-    std::stringstream ss;
-    ss << "snapshot_" << time_t;
-    return ss.str();
 }
 
 nlohmann::json* Configuration::getJsonPointer(const std::string& key, bool create_if_missing) {
@@ -689,26 +552,6 @@ std::vector<std::string> Configuration::splitKey(const std::string& key) const {
     }
 
     return result;
-}
-
-void Configuration::updateFileWatcher() {
-    if (!file_watching_enabled_.load(relaxed) || watched_file_.empty()) {
-        return;
-    }
-
-    try {
-        if (axonvex_fs::exists(watched_file_)) {
-            auto current_write_time = axonvex_fs::last_write_time(watched_file_);
-            if (current_write_time != last_write_time_) {
-                // File has been modified - reload it
-                loadFromFile(watched_file_, false);
-                last_write_time_ = current_write_time;
-            }
-        }
-    } catch (const std::exception&) {
-        // File watching failed - disable it
-        file_watching_enabled_.store(false, relaxed);
-    }
 }
 
 } // namespace axonvex::core
