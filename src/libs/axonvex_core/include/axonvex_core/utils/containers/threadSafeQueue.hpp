@@ -83,6 +83,12 @@ class ThreadSafeQueue {
         AXONVEX_ALIGNED_NEW(Slot)
 
         std::atomic<uint64_t> sequence{0};
+        // Aligned-storage idiom: this is a byte buffer sized to hold one T,
+        // and T is legitimately a pointer-to-aggregate for some
+        // instantiations. The check's "pointer where a pointee size was
+        // probably meant" heuristic doesn't apply to a template's storage
+        // buffer.
+        // NOLINTNEXTLINE(bugprone-sizeof-expression)
         alignas(T) char storage[sizeof(T)];
         Slot() = default;
         ~Slot() = default;
