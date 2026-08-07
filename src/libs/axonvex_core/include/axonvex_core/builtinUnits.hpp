@@ -13,6 +13,7 @@
 #include "processingUnit.hpp"
 #include "unitFactory.hpp"
 
+#include <atomic>
 #include <vector>
 
 namespace axonvex::core::builtin {
@@ -84,18 +85,32 @@ class StatsSink final : public ProcessingUnit {
         return "axonvex.StatsSink";
     }
 
+    // count_ is written by processSync() on whatever thread drives the unit
+    // (the RT scheduler thread in normal use) and legitimately read from any
+    // other thread through this accessor -- e.g. a monitoring/test thread
+    // polling for "has data flowed yet" while the system runs, exactly like
+    // ProcessingUnit's own execution-stats fields (V8: single writer, plain
+    // field would race a concurrent reader). atomic + relaxed ordering: it is
+    // a pure counter with no ordering role over sum_ or any other state.
     uint64_t sampleCount() const noexcept {
-        return count_;
+        return count_.load(std::memory_order_relaxed);
     }
+    // ponytail: sum_ has the identical shape of latent cross-thread issue if
+    // a caller ever reads mean() while the system is running -- no test
+    // exercises that today (TSan only caught count_, via sampleCount()), and
+    // std::atomic<double> has no fetch_add under C++14. Give it the same
+    // treatment (load/compare_exchange loop, or a mutex) if that read
+    // pattern becomes real.
     double mean() const noexcept {
-        return count_ == 0 ? 0.0 : sum_ / static_cast<double>(count_);
+        uint64_t n = count_.load(std::memory_order_relaxed);
+        return n == 0 ? 0.0 : sum_ / static_cast<double>(n);
     }
 
     static UnitTypeDescriptor describeType();
 
   private:
     InputPort<double>* in_;
-    uint64_t count_{0};
+    std::atomic<uint64_t> count_{0};
     double sum_{0.0};
 };
 
