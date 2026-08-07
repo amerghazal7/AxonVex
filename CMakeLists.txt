@@ -2,8 +2,27 @@ cmake_minimum_required(VERSION 3.20)
 
 set(PROJECT_NAME "axonvex")
 
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
-set(CMAKE_BUILD_TYPE Debug)
+# Only seed CMAKE_CXX_FLAGS_DEBUG when the user hasn't already customized it
+# via -DCMAKE_CXX_FLAGS_DEBUG=...; an unconditional plain set() would clobber
+# that override on every reconfigure (C49).
+if(NOT DEFINED CACHE{CMAKE_CXX_FLAGS_DEBUG})
+    set(CMAKE_CXX_FLAGS_DEBUG "-g -O0" CACHE STRING "Flags used by the CXX compiler during Debug builds.")
+endif()
+
+# Default build type when none was passed on the command line. Single-config
+# generators only (Makefiles/Ninja) -- CMAKE_BUILD_TYPE is empty by design on
+# multi-config generators (Visual Studio, Ninja Multi-Config) and must stay
+# that way. A plain set(CMAKE_BUILD_TYPE Debug) here creates a directory-scope
+# normal variable that SHADOWS the cache entry, silently discarding any
+# -DCMAKE_BUILD_TYPE=Release passed on the command line (C49). Guarding with
+# a CACHE set + NOT CMAKE_BUILD_TYPE lets an explicit -D win while still
+# defaulting to Debug.
+get_property(AXONVEX_MULTI_CONFIG_GENERATOR GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT AXONVEX_MULTI_CONFIG_GENERATOR AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Choose the type of build." FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+unset(AXONVEX_MULTI_CONFIG_GENERATOR)
 
 set(CMAKE_ENABLE_EXPORTS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
