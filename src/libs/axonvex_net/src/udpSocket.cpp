@@ -33,6 +33,17 @@ UdpSocket::~UdpSocket() {
 }
 
 bool UdpSocket::start() {
+    // Checked before lifecycleMutex_, same rationale as TcpClient::start():
+    // callbacks run ON the worker thread, and a start() below may have to
+    // reap (join) a dead worker — from a callback that join would be a
+    // self-join (std::terminate), and merely waiting on lifecycleMutex_ can
+    // deadlock against an external stop() that holds it while joining us. A
+    // callback-driven restart is therefore refused, loudly.
+    if (workerId_.load(std::memory_order_acquire) == std::this_thread::get_id()) {
+        reportError("udp: start() from inside a transport callback is not supported");
+        return false;
+    }
+
     // Failure messages are built under lifecycleMutex_ but dispatched only
     // after it is released (the C34/C12 rule): an error handler reacting to a
     // bind failure by calling start() or stop() would otherwise self-deadlock
@@ -44,17 +55,42 @@ bool UdpSocket::start() {
         // two concurrent stop() calls could both pass the guard and both reach
         // worker_.join(), and joining an already-joined thread is UB (C33).
         std::lock_guard<std::mutex> lifecycle(lifecycleMutex_);
-        if (running_.load())
-            return true;
+        if (running_.load() && connectionAlive_.load(std::memory_order_acquire))
+            return true; // already running on a live socket
 #if defined(AXONVEX_PLATFORM_LINUX)
+        // Reap a dead-but-unjoined worker (hard recvfrom error, or a deferred
+        // self-stop) before reassigning worker_: move-assigning over a
+        // joinable std::thread is std::terminate. The join is bounded — with
+        // running_ or connectionAlive_ false, recvLoop exits promptly (its
+        // loop condition is checked right after the current recvfrom, and
+        // that call is itself bounded by SO_RCVTIMEO).
+        if (worker_.joinable()) {
+            running_.store(false);
+            worker_.join();
+            workerId_.store(std::thread::id(), std::memory_order_release);
+        }
+        running_.store(false);
+        {
+            std::lock_guard<std::mutex> lock(sockMutex_);
+            if (sock_ >= 0) {
+                ::close(sock_);
+                sock_ = -1;
+            }
+        }
         if (!openAndBind(startErrors)) {
             startErrors.push_back("udp: failed to bind to " + bindAddress_ + ":" +
                                   std::to_string(port_));
         } else {
+            connectionAlive_.store(true, std::memory_order_release);
             running_.store(true);
             worker_ = std::thread([this]() {
                 workerId_.store(std::this_thread::get_id(), std::memory_order_release);
                 recvLoop();
+                // Terminal exits inside recvLoop already cleared
+                // connectionAlive_; this covers the ordinary stop()/self-stop
+                // path so "stopped" and "dead" are the same state for
+                // isRunning().
+                connectionAlive_.store(false, std::memory_order_release);
                 // Cleared by the worker itself on the way out. A thread::id is
                 // reusable once its thread has exited, so leaving a stale id here
                 // would let an unrelated future thread match it and wrongly skip
@@ -115,7 +151,12 @@ void UdpSocket::stop() {
 }
 
 bool UdpSocket::isRunning() const {
-    return running_.load();
+    // Both flags: running_ is the caller's intent (start()..stop()),
+    // connectionAlive_ is the receive path's actual state. A socket whose
+    // worker died under us (hard recvfrom error) must not keep reporting
+    // itself as running — that half-open lie was the same 2a-shaped bug
+    // already fixed for TcpClient.
+    return running_.load() && connectionAlive_.load(std::memory_order_acquire);
 }
 
 bool UdpSocket::send(const std::vector<uint8_t>& data) {
@@ -372,15 +413,18 @@ void UdpSocket::recvLoop() {
     // join, so both edges are ordered by the thread handoff itself.
     const int fd = sock_;
     std::array<uint8_t, 2048> buf{};
-    while (running_.load()) {
+    while (running_.load() && connectionAlive_.load(std::memory_order_acquire)) {
         sockaddr_storage peer{};
         socklen_t plen = sizeof(peer);
         ssize_t n =
             ::recvfrom(fd, buf.data(), buf.size(), 0, reinterpret_cast<sockaddr*>(&peer), &plen);
         if (n < 0) {
-            // SO_RCVTIMEO expiry: no packet, just re-check running_.
+            // SO_RCVTIMEO expiry: no packet, just re-check the loop condition.
             if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
                 continue;
+            // Dead before the report, so an error handler that immediately
+            // checks isRunning() already sees the dead state.
+            connectionAlive_.store(false, std::memory_order_release);
             reportError(std::string("udp: recvfrom error: ") + strerror(errno));
             break;
         }
@@ -421,6 +465,24 @@ void UdpSocket::dispatchMessage(const std::vector<uint8_t>& data) {
 }
 
 void UdpSocket::reportError(const std::string& msg) {
+    // Recursion ceiling: send()'s loud refusal (no destination, socket not
+    // open) reports through here, so a handler that reacts by calling send()
+    // again re-enters reportError() from inside this very dispatch —
+    // unbounded, that is reportError -> handler -> send -> reportError
+    // forever, i.e. a stack overflow. Same guard and same per-thread (not
+    // per-object) rationale as TcpClient::reportError.
+    static thread_local bool inDispatch = false;
+    if (inDispatch) {
+        return;
+    }
+    inDispatch = true;
+    struct DispatchGuard {
+        bool& flag;
+        ~DispatchGuard() {
+            flag = false;
+        }
+    } guard{inDispatch};
+
     std::vector<ErrorHandler*> targets;
     {
         std::lock_guard<std::mutex> lock(cbMutex_);
