@@ -38,9 +38,47 @@
  * error_code overloads or the handful of members that differ between the TS
  * and the standardized API are used, so both namespaces are drop-in
  * compatible for this codebase's surface (confirmed by grep, not assumed).
+ *
+ * Branch selection is platform-gated, not header-presence-gated, on Apple:
+ * __has_include(<experimental/filesystem>) is NOT a safe test there. libc++
+ * did not delete the header when it dropped the TS implementation — it
+ * ships a stub whose entire body is `#error "<experimental/filesystem> has
+ * been removed. Use <filesystem> instead."`. A presence check alone would
+ * see the stub, take the experimental branch, and hard-error via the
+ * stub's own #error — silently defeating this whole fallback. So on Apple
+ * (__APPLE__) this header never probes/includes <experimental/filesystem>
+ * at all; it goes straight to <filesystem>, gated on the compiled dialect
+ * (root CMakeLists.txt raises CMAKE_CXX_STANDARD to 17 if(APPLE), and
+ * axonvex_core's CMakeLists.txt exports that as a PUBLIC cxx_std_17
+ * compile-feature requirement so it also reaches downstream consumers).
+ * If that dialect requirement doesn't reach a given TU for any reason, the
+ * #error below names the actual cause instead of failing later with an
+ * opaque "'filesystem' is not a namespace-name".
+ *
+ * Every other platform (GNU libstdc++, non-Apple Clang) keeps the original
+ * header-presence check unchanged: libstdc++ ships a real, non-poisoned
+ * <experimental/filesystem> unconditionally regardless of -std=, and this
+ * codebase links two TUs (the ROS 2 plugin/smoke test) at -std=gnu++17 for
+ * unrelated (rclcpp) reasons while axonvex_core's own .so is still built at
+ * C++14 — picking <filesystem> there instead would give class Path (which
+ * stores an axonvex_fs::path member) two different, ABI-incompatible
+ * definitions of axonvex_fs::path depending on which TU's dialect happened
+ * to compile it, corrupting any Path object that crosses the .so boundary.
+ * Selecting on dialect instead of presence is only safe on Apple because
+ * the root CMakeLists.txt's if(APPLE) raises the *entire* build to C++17
+ * uniformly, so every TU (including this one) resolves to the same
+ * std::filesystem there — no such uniform guarantee exists on Linux.
  */
 #if defined(__has_include)
-#if __has_include(<experimental/filesystem>)
+#if defined(__APPLE__)
+#if __cplusplus >= 201703L && __has_include(<filesystem>)
+#include <filesystem>
+namespace axonvex_fs = std::filesystem;
+#else
+#error                                                                                             \
+    "axonvex_fs: on Apple, <experimental/filesystem> is a removed/poisoned header (AXONVEX_FS_NEEDS_CXX17_ON_APPLE) -- the <filesystem> fallback requires this TU to compile at C++17+; see the root CMakeLists.txt if(APPLE) block and axonvex_core's exported cxx_std_17 requirement."
+#endif
+#elif __has_include(<experimental/filesystem>)
 #include <experimental/filesystem>
 namespace axonvex_fs = std::experimental::filesystem;
 #elif __has_include(<filesystem>)
