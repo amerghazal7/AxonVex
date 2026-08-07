@@ -20,6 +20,7 @@ set(CMAKE_INSTALL_RPATH
     "${AXONVEX_INSTALL_PREFIX}/axonvex_core/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_plugins/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_interfaces/libs"
+    "${AXONVEX_INSTALL_PREFIX}/axonvex_net/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_safety/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_io/libs"
     "${AXONVEX_INSTALL_PREFIX}/axonvex_visualization/libs"
@@ -157,6 +158,9 @@ if(BUILD_TESTING)
             tests/safety/safetyManagerTest.cpp
             tests/safety/systemSafetyTest.cpp
             tests/interfaces/protocolInterfacesContractTest.cpp
+            tests/net/tcpConnectionLifecycleTest.cpp
+            tests/net/transportCallbackApiTest.cpp
+            tests/net/udpConnectionLifecycleTest.cpp
             tests/core/interfaceUnitsTest.cpp
             tests/core/missionTest.cpp
             tests/core/traceReplayTest.cpp
@@ -170,6 +174,7 @@ if(BUILD_TESTING)
                 axonvex_core
                 axonvex_plugins
                 axonvex_interfaces
+                axonvex_net
                 axonvex_safety
                 axonvex_io
                 axonvex_visualization
@@ -183,6 +188,8 @@ if(BUILD_TESTING)
         # target only exists when rclcpp is found.
         target_include_directories(test_core PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/plugins/axonvex_ros2/include
+            # Shared test fixtures (e.g. tests/net/transportTestUtils.hpp)
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
         )
         target_compile_definitions(test_core PRIVATE
             AXONVEX_TEST_PLUGIN_PATH="$<TARGET_FILE:axonvex_test_plugin>"
