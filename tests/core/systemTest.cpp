@@ -1214,6 +1214,43 @@ TEST_F(AxonVexSystemTest, SystemPortInfo) {
     EXPECT_NE(portInfo.find("Unit2"), std::string::npos);
 }
 
+// Regression: getSystemPortInfo() must never dereference a BasePort* after
+// the lock that protects the port registry has been released. The old
+// implementation called systemPorts_.inputNames() (lock/unlock) then
+// systemPorts_.input(name) (lock/unlock) and dereferenced the returned
+// pointer with no lock held; a concurrent unregisterProcessingUnit() erases
+// the registry entry and destroys the owning unit's ports right after, so
+// the dereference races a free. Under ASan this reliably surfaces as
+// heap-use-after-free within a few thousand racing iterations.
+TEST_F(AxonVexSystemTest, GetSystemPortInfoDoesNotRaceUnregisterProcessingUnit) {
+    EXPECT_TRUE(system_->initialize());
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> churnIterations{0};
+
+    std::thread churner([&] {
+        while (!stop.load()) {
+            auto unit = std::make_unique<MockProcessingUnit>("Churn");
+            MockProcessingUnit* unitPtr = unit.get();
+            uint32_t id = system_->registerProcessingUnit(std::move(unit));
+            system_->assignSystemInputPort("churn_in", unitPtr, 1001);
+            system_->assignSystemOutputPort("churn_out", unitPtr, 1000);
+            system_->unregisterProcessingUnit(id);
+            churnIterations.fetch_add(1);
+        }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::string info = system_->getSystemPortInfo();
+        (void)info;
+    }
+
+    stop.store(true);
+    churner.join();
+    EXPECT_GT(churnIterations.load(), 0);
+}
+
 TEST_F(AxonVexSystemTest, InvalidSystemPortOperations) {
     EXPECT_TRUE(system_->initialize());
 
