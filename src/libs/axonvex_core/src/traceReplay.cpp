@@ -1,5 +1,4 @@
 #include <axonvex_core/replay/traceReplay.hpp>
-
 #include <fstream>
 #include <sstream>
 
@@ -99,23 +98,24 @@ bool TraceRecorder::saveToFile(const Path& path) const {
         }
         path.parent().createDirectories();
         std::ofstream ofs(path.native().string(), std::ios::binary);
-        if (!ofs) return false;
+        if (!ofs)
+            return false;
         ofs << arr.dump(2);
         return ofs.good();
-    } catch (...) {
-        return false;
-    }
+    } catch (...) { return false; }
 }
 
 bool TraceReplayer::loadFromFile(const Path& path) {
     entries_.clear();
     try {
         std::ifstream ifs(path.native().string(), std::ios::binary);
-        if (!ifs) return false;
+        if (!ifs)
+            return false;
         std::ostringstream ss;
         ss << ifs.rdbuf();
         nlohmann::json arr = nlohmann::json::parse(ss.str());
-        if (!arr.is_array()) return false;
+        if (!arr.is_array())
+            return false;
         for (const auto& o : arr) {
             TraceRecordEntry e;
             e.sequence = o.at("sequence").get<uint64_t>();
@@ -135,7 +135,8 @@ bool TraceReplayer::loadFromFile(const Path& path) {
 }
 
 void TraceReplayer::replay(const std::function<void(const TraceRecordEntry&)>& callback) const {
-    if (!callback) return;
+    if (!callback)
+        return;
     for (const auto& e : entries_) {
         callback(e);
     }
@@ -144,9 +145,11 @@ void TraceReplayer::replay(const std::function<void(const TraceRecordEntry&)>& c
 bool TraceReplayer::sequencesMatch(const TraceRecorder& recorded, const TraceReplayer& loaded) {
     const auto& a = recorded.entries();
     const auto& b = loaded.entries();
-    if (a.size() != b.size()) return false;
+    if (a.size() != b.size())
+        return false;
     for (size_t i = 0; i < a.size(); ++i) {
-        if (!(a[i] == b[i])) return false;
+        if (!(a[i] == b[i]))
+            return false;
     }
     return true;
 }
