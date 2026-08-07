@@ -26,6 +26,7 @@ class AdapterInterface;
 #include <axonvex_core/processingUnit.hpp>
 #include <axonvex_core/systemPortRegistry.hpp>
 #include <axonvex_core/timingController.hpp>
+#include <axonvex_core/unitRegistry.hpp>
 #include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <axonvex_core/utils/containers/threadSafeQueue.hpp>
 #include <chrono>
@@ -749,11 +750,10 @@ class AxonVexSystem {
     std::unique_ptr<Configuration> configuration_;
     std::unique_ptr<Logger> logger_;
 
-    // Processing unit management
-    mutable std::mutex unitsMutex_;
-    std::unordered_map<uint32_t, std::unique_ptr<ProcessingUnit>> processingUnits_;
-    std::unordered_map<ProcessingUnit*, uint32_t> unitToIdMap_;
-    std::atomic<uint32_t> nextUnitId_{1};
+    // Processing unit management (Phase 2 decomposition step 2: extracted to
+    // UnitRegistry -- see unitRegistry.hpp for the ownership + id-lookup
+    // contract; orchestration (scheduling, events, rollback) stays here).
+    UnitRegistry unitRegistry_;
 
     // Adapter injection
     std::unordered_map<std::string, axonvex::adapters::AdapterInterface*> adapters_;
