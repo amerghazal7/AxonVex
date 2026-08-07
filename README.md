@@ -236,11 +236,14 @@ All interface libraries depend only on `axonvex_core`. See [Architecture](docs/a
 - ✅ **Safety Primitives**: Watchdog timer with configurable callbacks
 - ✅ **Safety Envelope**: `SafetyManager` with policy registry, e-stop, periodic evaluation, and event notification
 - ✅ **I/O**: Filesystem helpers via `FileManager`
-- ✅ **Telemetry**: Keyed pub/sub bus for visualization data
-- ✅ **Test Suite**: 373 tests across all modules, CTest/GTest integrated
+- ✅ **Telemetry**: `TelemetryBus` — bounded lock-free publish, dedicated egress thread, framed JSON envelope
+- ✅ **Composer foundations**: `UnitFactory` (units constructible by name), unit introspection metadata, and SystemSpec v1 `.axv.json` parsing + validation — [plan §11](docs/v1_release_plan.md)
+- ✅ **Test Suite**: 559 tests across all modules, CTest/GTest integrated, ASan/TSan/UBSan-gated in CI
 
 ### In Progress
-- 🔄 **Correctness Pass**: Fixing the audited defect inventory (C1–C24) with regression tests — [plan §3](docs/v1_release_plan.md)
+- 🔄 **Correctness Pass**: audited defect inventory C1–C47 — all closed; the RT-path and architecture work continues in [plan §8 Phase 2](docs/v1_release_plan.md)
+- 🔄 **Core decomposition**: dissolving the `AxonVexSystem` god class into collaborators (`SystemPortRegistry` done; UnitRegistry, EventBus, HealthMonitor, LifecycleController next)
+- 🔄 **Spec-driven systems**: `loadFromSpec()` so a system boots from `.axv.json` with zero subclass code
 - 🔄 **Adapter Contract Layer**: ROS and MAVLink adapter shells
 - 🔄 **Mission Runtime**: `MissionElement` and `MissionPipeline` abstractions
 
