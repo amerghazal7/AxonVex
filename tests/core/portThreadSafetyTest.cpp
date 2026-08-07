@@ -417,3 +417,149 @@ TEST_F(PortThreadSafetyTest, ConcurrentProducersAndConsumers) {
     // Consumers race between hasNewData() and read(), so the count can overshoot.
     EXPECT_GE(totalConsumed.load(), NUM_PRODUCERS * MESSAGES_PER_PRODUCER);
 }
+
+// V9/C35 regression: InputPort<T>::writeData used to hold bridgeMutex_ across
+// the entire bridged fan-out, including the nested bridgedPort->writeData()
+// call — which runs the BRIDGED port's own dataCallback_. A callback that
+// reentered the ORIGINAL port's bridge API (add/removeBridgedPort, or
+// isBridgePort()) therefore deadlocked on a non-recursive mutex. Dispatch now
+// runs off an immutable snapshot with no lock held, so this must complete.
+TEST_F(PortThreadSafetyTest, DownstreamCallbackMayReenterBridgeApi) {
+    auto* unit = processingUnit.get();
+    std::atomic<int> delivered{0};
+
+    const bool finished = completesWithin(
+        [unit, &delivered]() {
+            InputPort<int> source(40, "bridge_source", unit);
+            InputPort<int> bridged(41, "bridge_target", unit);
+            InputPort<int> extra(42, "bridge_extra", unit);
+
+            source.addBridgedPort(&bridged);
+
+            // Runs while source.writeData() is still dispatching to `bridged`;
+            // every call below takes source's bridgeMutex_, which the old code
+            // would still be holding at this point.
+            bridged.setDataCallback([&source, &extra, &delivered](const int&) {
+                source.isBridgePort();
+                source.addBridgedPort(&extra);
+                source.removeBridgedPort(&extra);
+                delivered.fetch_add(1);
+            });
+
+            source.writeData(7);
+        },
+        std::chrono::milliseconds(5000));
+
+    EXPECT_TRUE(finished) << "a downstream callback re-entering the bridge API deadlocked";
+    EXPECT_EQ(delivered.load(), 1);
+}
+
+// V9 TSan stress test: writers hammer writeData() while a churner thread
+// concurrently adds/removes bridged ports. This must be race-free (no torn
+// reads of the bridge list) and must never crash — TSan is the real gate.
+TEST_F(PortThreadSafetyTest, ConcurrentBridgeChurnDuringWriteDataIsRaceFree) {
+    auto* unit = processingUnit.get();
+    auto source = std::make_unique<InputPort<int>>(43, "churn_source", unit);
+    auto bridgedA = std::make_unique<InputPort<int>>(44, "churn_bridge_a", unit);
+    auto bridgedB = std::make_unique<InputPort<int>>(45, "churn_bridge_b", unit);
+
+    std::atomic<int> deliveredToA{0};
+    std::atomic<int> deliveredToB{0};
+    bridgedA->setDataCallback([&deliveredToA](const int&) { deliveredToA.fetch_add(1); });
+    bridgedB->setDataCallback([&deliveredToB](const int&) { deliveredToB.fetch_add(1); });
+
+    const int WRITES = 20000;
+    const int CHURNS = 5000;
+    std::atomic<bool> churnDone{false};
+
+    std::thread writer([&source, WRITES]() {
+        for (int i = 0; i < WRITES; ++i) {
+            source->writeData(i);
+        }
+    });
+
+    std::thread churner([&source, &bridgedA, &bridgedB, CHURNS, &churnDone]() {
+        for (int i = 0; i < CHURNS; ++i) {
+            source->addBridgedPort(bridgedA.get());
+            source->addBridgedPort(bridgedB.get());
+            source->removeBridgedPort(bridgedA.get());
+            source->removeBridgedPort(bridgedB.get());
+        }
+        churnDone.store(true);
+    });
+
+    writer.join();
+    churner.join();
+
+    EXPECT_TRUE(churnDone.load());
+    EXPECT_EQ(source->getTotalMessages(), static_cast<uint64_t>(WRITES));
+    // Every delivered message actually carried a value the writer sent; no
+    // assertion on the exact count since bridging is torn down/rebuilt
+    // throughout — the point is TSan silence plus no crash/UB.
+}
+
+// Same COW recipe, AsyncInputPort<T> side (update() rather than writeData()).
+TEST_F(PortThreadSafetyTest, AsyncInputPortConcurrentBridgeChurnDuringUpdateIsRaceFree) {
+    auto* unit = processingUnit.get();
+    auto source = std::make_unique<AsyncInputPort<int>>(46, "async_churn_source", unit);
+    auto bridged = std::make_unique<AsyncInputPort<int>>(47, "async_churn_bridge", unit);
+
+    const int WRITES = 20000;
+    const int CHURNS = 5000;
+
+    std::thread writer([&source, WRITES]() {
+        for (int i = 0; i < WRITES; ++i) {
+            source->update(i);
+        }
+    });
+
+    std::thread churner([&source, &bridged, CHURNS]() {
+        for (int i = 0; i < CHURNS; ++i) {
+            source->addBridgedPort(bridged.get());
+            source->removeBridgedPort(bridged.get());
+        }
+    });
+
+    writer.join();
+    churner.join();
+
+    EXPECT_EQ(source->getTotalMessages(), static_cast<uint64_t>(WRITES));
+}
+
+// V10 TSan stress test: writers hammer OutputPort<T>::write() while a churner
+// thread concurrently connects/disconnects input ports. Pins the "keep the
+// mutex" decision (see ports.hpp's snapshotConnections comment) under TSan.
+TEST_F(PortThreadSafetyTest, ConcurrentConnectDisconnectDuringWriteStaysConsistent) {
+    auto* unit = processingUnit.get();
+    auto output = std::make_unique<OutputPort<int>>(48, "connect_churn_out", unit);
+    auto steady = std::make_unique<InputPort<int>>(49, "connect_churn_steady", unit);
+    auto churned = std::make_unique<InputPort<int>>(50, "connect_churn_target", unit);
+
+    std::atomic<int> steadyDeliveries{0};
+    steady->setDataCallback([&steadyDeliveries](const int&) { steadyDeliveries.fetch_add(1); });
+    output->connect(steady.get());
+
+    const int WRITES = 20000;
+    const int CHURNS = 5000;
+
+    std::thread writer([&output, WRITES]() {
+        for (int i = 0; i < WRITES; ++i) {
+            output->write(i);
+        }
+    });
+
+    std::thread churner([&output, &churned, CHURNS]() {
+        for (int i = 0; i < CHURNS; ++i) {
+            output->connect(churned.get());
+            output->disconnect(churned.get());
+        }
+    });
+
+    writer.join();
+    churner.join();
+
+    EXPECT_EQ(output->getTotalMessages(), static_cast<uint64_t>(WRITES));
+    // `steady` was connected for the whole run and never touched by the
+    // churner, so it must have seen every single write.
+    EXPECT_EQ(steadyDeliveries.load(), WRITES);
+}

@@ -577,9 +577,25 @@ class ProcessingUnit {
     AsyncInputPort<int>* resetPort_{nullptr};
     AsyncInputPort<int>* disablePort_{nullptr};
 
-    // Performance statistics
-    mutable std::mutex statsMutex_;
-    ExecutionStats stats_;
+    // Performance statistics (V8): updateSyncExecutionStats/updateAsyncExecutionStats
+    // run ONLY on the scheduler thread (processSyncBase/processAsyncBase, called
+    // from timingController.cpp's executeTask() — see that file's comment). With
+    // a single writer there is no read-modify-write race to guard with a mutex;
+    // these are plain atomics purely so getExecutionStats()/resetExecutionStats()
+    // (callable from a monitoring/test thread while the unit may be executing)
+    // observe fresh values instead of racing on non-atomic memory. relaxed is
+    // sound because each field is published independently for visibility, not as
+    // part of a cross-field snapshot invariant: a concurrent reader may see e.g.
+    // a fresh count next to a one-update-stale total, which is acceptable for
+    // diagnostics data.
+    std::atomic<uint64_t> syncExecutionCount_{0};
+    std::atomic<uint64_t> asyncExecutionCount_{0};
+    std::atomic<int64_t> totalSyncTimeUs_{0};
+    std::atomic<int64_t> totalAsyncTimeUs_{0};
+    std::atomic<int64_t> avgSyncTimeUs_{0};
+    std::atomic<int64_t> avgAsyncTimeUs_{0};
+    std::atomic<int64_t> maxSyncTimeUs_{0};
+    std::atomic<int64_t> maxAsyncTimeUs_{0};
 
     // Port ownership (for automatic cleanup)
     std::vector<std::unique_ptr<BasePort>> ownedPorts_;
