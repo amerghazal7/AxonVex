@@ -171,19 +171,29 @@ TEST_F(UnitRegistryTest, ForEachSerializesAgainstConcurrentClear) {
     std::condition_variable cv;
     bool iterating = false;
     bool releaseIteration = false;
-    std::atomic<bool> forEachFinished{false};
+    // callbackRunning is set and cleared INSIDE the callback, i.e. while
+    // forEach() still holds the registry mutex. That ordering is the whole
+    // point: clearing it happens-before forEach() releases the mutex, which
+    // happens-before clear() acquires it, so the clearer's read below is
+    // properly ordered. An earlier version of this test instead set a flag
+    // *after* forEach() returned, outside the mutex — leaving a real race
+    // where clear() could legitimately acquire the mutex and finish before
+    // the iterator thread reached that store, failing the assertion against
+    // correct code. It passed on a fast box and failed on a loaded CI runner.
+    std::atomic<bool> callbackRunning{false};
     std::atomic<bool> clearSawForEachStillRunning{false};
     std::atomic<bool> iteratorDone{false};
     std::atomic<bool> clearerDone{false};
 
     std::thread iterator([&] {
         registry_.forEach([&](ProcessingUnit* /*u*/) {
+            callbackRunning.store(true);
             std::unique_lock<std::mutex> lk(gate);
             iterating = true;
             cv.notify_all();
             cv.wait(lk, [&] { return releaseIteration; });
+            callbackRunning.store(false);
         });
-        forEachFinished.store(true);
         iteratorDone.store(true);
     });
 
@@ -194,7 +204,7 @@ TEST_F(UnitRegistryTest, ForEachSerializesAgainstConcurrentClear) {
 
     std::thread clearer([&] {
         registry_.clear(); // must block on mutex_ until forEach() releases it
-        clearSawForEachStillRunning.store(!forEachFinished.load());
+        clearSawForEachStillRunning.store(callbackRunning.load());
         clearerDone.store(true);
     });
 
