@@ -13,6 +13,7 @@ add_library(axonvex_core SHARED
     src/precisionTimer.cpp
     src/processingUnit.cpp
     src/system.cpp
+    src/systemPortRegistry.cpp
     src/timingController.cpp
     src/traceReplay.cpp
 )

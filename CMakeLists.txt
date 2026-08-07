@@ -142,6 +142,7 @@ if(BUILD_TESTING)
             tests/core/pathTest.cpp
             tests/core/timingControllerTest.cpp
             tests/core/systemTest.cpp
+            tests/core/systemPortRegistryTest.cpp
             tests/core/callbackTest.cpp
             tests/core/portsTest.cpp
             tests/core/processingUnitTest.cpp
