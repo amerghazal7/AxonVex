@@ -14,7 +14,9 @@
 #include <axonvex_core/processingUnit.hpp>
 #include <axonvex_core/unitRegistry.hpp>
 #include <chrono>
+#include <condition_variable>
 #include <gtest/gtest.h>
+#include <mutex>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -111,6 +113,128 @@ TEST_F(UnitRegistryTest, AddThrowsWhenAtCapacity) {
     EXPECT_THROW(small.add(std::unique_ptr<ProcessingUnit>(new FixturePU("overflow"))),
                  std::runtime_error);
     EXPECT_EQ(small.count(), 1u);
+}
+
+TEST_F(UnitRegistryTest, AddAndRunCallbackSeesUnitAlreadyInsertedAndReturnsSameId) {
+    uint32_t observedId = 0;
+    ProcessingUnit* observedPtr = nullptr;
+
+    uint32_t id = registry_.addAndRun(std::unique_ptr<ProcessingUnit>(new FixturePU("a")),
+                                      [&](uint32_t cbId, ProcessingUnit* cbPtr) {
+                                          observedId = cbId;
+                                          observedPtr = cbPtr;
+                                          // Safe to dereference: still under mutex_, so no
+                                          // concurrent clear()/remove() could have freed it.
+                                          EXPECT_EQ(cbPtr->getName(), "a");
+                                      });
+
+    EXPECT_EQ(observedId, id);
+    EXPECT_EQ(registry_.find(id), observedPtr);
+}
+
+// Regression for the review fix: addAndRun's callback must run while mutex_
+// is held, closing the add()-then-use-the-pointer race registerProcessingUnit
+// used to have. Proven RED pre-fix at the AxonVexSystem level (ASan
+// heap-use-after-free); this pins the primitive addAndRun() is built on.
+TEST_F(UnitRegistryTest, AddAndRunRollsBackAndPropagatesOnCallbackThrow) {
+    EXPECT_THROW(registry_.addAndRun(std::unique_ptr<ProcessingUnit>(new FixturePU("a")),
+                                     [](uint32_t, ProcessingUnit*) {
+                                         throw std::runtime_error("schedule failed");
+                                     }),
+                 std::runtime_error);
+
+    EXPECT_EQ(registry_.count(), 0u);
+    EXPECT_TRUE(registry_.all().empty());
+}
+
+// Regression for the review fix (startComponents()): forEach() must hold
+// mutex_ for the WHOLE iteration, not just per-call, so a concurrent
+// clear() cannot free a unit out from under the caller mid-loop (this is
+// exactly the shape startComponents() used to have via an unlocked all()
+// snapshot). This is deterministic, not timing-dependent: forEach()'s
+// callback below parks on a condition_variable while still holding mutex_
+// (proven by ForEachVisitsEveryUnit/the class's locking contract), so any
+// concurrent clear() -- which takes the same mutex_ -- is *structurally*
+// blocked for as long as the callback runs, however the OS schedules the
+// threads. Uses cv.wait() (untimed) rather than wait_for(): the timed
+// overload trips a known ThreadSanitizer/libstdc++ interceptor false
+// positive on pthread_cond_timedwait ("double lock of a mutex" + a phantom
+// data race), reproduced in isolation with zero AxonVex/UnitRegistry code
+// involved -- not a real bug, but avoided here since this project runs
+// TSan as a gate. The join loop below is this test's own deadline/hang
+// guard (project rule: no fixed sleeps, hang-mode tests need a deadline),
+// same detach-and-FAIL pattern as RemoveDestroysUnitAfterReleasingLock.
+TEST_F(UnitRegistryTest, ForEachSerializesAgainstConcurrentClear) {
+    registry_.add(std::unique_ptr<ProcessingUnit>(new FixturePU("a")));
+
+    std::mutex gate;
+    std::condition_variable cv;
+    bool iterating = false;
+    bool releaseIteration = false;
+    std::atomic<bool> forEachFinished{false};
+    std::atomic<bool> clearSawForEachStillRunning{false};
+    std::atomic<bool> iteratorDone{false};
+    std::atomic<bool> clearerDone{false};
+
+    std::thread iterator([&] {
+        registry_.forEach([&](ProcessingUnit* /*u*/) {
+            std::unique_lock<std::mutex> lk(gate);
+            iterating = true;
+            cv.notify_all();
+            cv.wait(lk, [&] { return releaseIteration; });
+        });
+        forEachFinished.store(true);
+        iteratorDone.store(true);
+    });
+
+    {
+        std::unique_lock<std::mutex> lk(gate);
+        cv.wait(lk, [&] { return iterating; });
+    }
+
+    std::thread clearer([&] {
+        registry_.clear(); // must block on mutex_ until forEach() releases it
+        clearSawForEachStillRunning.store(!forEachFinished.load());
+        clearerDone.store(true);
+    });
+
+    {
+        std::lock_guard<std::mutex> lk(gate);
+        releaseIteration = true;
+    }
+    cv.notify_all();
+
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while ((!iteratorDone.load() || !clearerDone.load()) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (!iteratorDone.load() || !clearerDone.load()) {
+        iterator.detach();
+        clearer.detach();
+        FAIL() << "forEach()/clear() appear wedged (self-deadlock or missed "
+                  "notify) -- mutual exclusion via mutex_ should never hang.";
+        return;
+    }
+    iterator.join();
+    clearer.join();
+
+    // If forEach() ever released mutex_ before running its callback (the
+    // pre-fix all()-then-iterate-unlocked shape), clear() could complete
+    // while the callback was still parked -- this would be false.
+    EXPECT_FALSE(clearSawForEachStillRunning.load());
+}
+
+TEST_F(UnitRegistryTest, ForEachVisitsEveryUnit) {
+    registry_.add(std::unique_ptr<ProcessingUnit>(new FixturePU("a")));
+    registry_.add(std::unique_ptr<ProcessingUnit>(new FixturePU("b")));
+
+    std::vector<std::string> names;
+    registry_.forEach([&](ProcessingUnit* u) { names.push_back(u->getName()); });
+
+    ASSERT_EQ(names.size(), 2u);
+    EXPECT_NE(std::find(names.begin(), names.end(), "a"), names.end());
+    EXPECT_NE(std::find(names.begin(), names.end(), "b"), names.end());
 }
 
 TEST_F(UnitRegistryTest, RemoveReturnsOwnershipAndErasesEntry) {

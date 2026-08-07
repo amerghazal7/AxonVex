@@ -24,6 +24,42 @@ uint32_t UnitRegistry::add(std::unique_ptr<ProcessingUnit> unit) {
     return unitId;
 }
 
+uint32_t UnitRegistry::addAndRun(std::unique_ptr<ProcessingUnit> unit,
+                                 const std::function<void(uint32_t, ProcessingUnit*)>& onAdded) {
+    if (!unit) {
+        throw std::invalid_argument("Processing unit cannot be null");
+    }
+
+    // Destroyed after lock.unlock() below on the rollback path, so a
+    // finalize()-calling destructor never runs under mutex_ (same
+    // C18-avoidance contract as remove()/clear()).
+    std::unique_ptr<ProcessingUnit> rollback;
+    uint32_t unitId;
+    std::unique_lock<std::mutex> lock(mutex_);
+
+    if (units_.size() >= maxUnits_) {
+        throw std::runtime_error("Maximum number of processing units exceeded");
+    }
+
+    unitId = nextUnitId_++;
+    ProcessingUnit* unitPtr = unit.get();
+    units_[unitId] = std::move(unit);
+    unitToId_[unitPtr] = unitId;
+
+    try {
+        onAdded(unitId, unitPtr);
+    } catch (...) {
+        auto it = units_.find(unitId);
+        rollback = std::move(it->second);
+        units_.erase(it);
+        unitToId_.erase(unitPtr);
+        lock.unlock();
+        throw; // rollback destructs here, unlocked
+    }
+
+    return unitId;
+}
+
 std::unique_ptr<ProcessingUnit> UnitRegistry::remove(uint32_t id) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -71,6 +107,13 @@ std::vector<ProcessingUnit*> UnitRegistry::all() const {
         units.push_back(pair.second.get());
     }
     return units;
+}
+
+void UnitRegistry::forEach(const std::function<void(ProcessingUnit*)>& fn) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& pair : units_) {
+        fn(pair.second.get());
+    }
 }
 
 size_t UnitRegistry::count() const noexcept {
