@@ -4,10 +4,11 @@ against the just-packaged axonvex, via the CMakeLists.txt in this directory
 (the same CMakeLists.txt that also works standalone against a plain `cmake
 --install` tree — see this directory's README.md).
 
-NOT VERIFIED IN THIS ENVIRONMENT: conan is not installed here; only the
-plain-CMake path (test_package/CMakeLists.txt against a manual `cmake
---install`) was actually run and confirmed working. A maintainer with conan
-must run `conan create ..` from the repo root and report the real output.
+Verified: `conan create .. --build=missing -s build_type=Release` from the
+repo root runs this file, builds downstream_consumer against the packaged
+axonvex, and executes it successfully (Conan 2.31.2 / gcc 11.4, default
+profile). The plain-CMake path (this directory's README.md, against a
+manual `cmake --install`) was also run and confirmed working.
 """
 import os
 
