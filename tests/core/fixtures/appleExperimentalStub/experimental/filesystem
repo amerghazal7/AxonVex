@@ -1,0 +1,10 @@
+// Regression fixture for filesystem_compat.hpp's Apple branch (see
+// tests/core/fixtures/appleExperimentalStub and cmake/filesystemCompatAppleDialectCheck.cmake).
+//
+// Stands in for the real Apple libc++ <experimental/filesystem>: that header
+// was not deleted when libc++ dropped the TS implementation, it was replaced
+// with a stub whose entire body is this #error. Any code path that includes
+// <experimental/filesystem> on the strength of __has_include() alone (true
+// here, since this file exists) hits this and fails -- exactly what
+// filesystem_compat.hpp must never do on Apple.
+#error "<experimental/filesystem> has been removed. Use <filesystem> instead."

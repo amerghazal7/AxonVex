@@ -356,6 +356,19 @@ if(BUILD_TESTING)
         DISCOVERY_TIMEOUT 30
     )
 
+    # Regression check for filesystem_compat.hpp's Apple branch selection
+    # (host-independent: forces __APPLE__ itself, no Mac needed). Plain
+    # cmake -P rather than a GTest case, since it's about preprocessor
+    # branch selection under -D/-std combinations, not runtime behavior.
+    add_test(NAME filesystem_compat_apple_dialect_regression
+        COMMAND ${CMAKE_COMMAND}
+            -DAXONVEX_CXX=${CMAKE_CXX_COMPILER}
+            -DAXONVEX_CORE_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src/libs/axonvex_core/include
+            -DAXONVEX_STUB_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/tests/core/fixtures/appleExperimentalStub
+            -DAXONVEX_PROBE_SRC=${CMAKE_CURRENT_SOURCE_DIR}/tests/core/fixtures/appleExperimentalStub/probe.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/filesystemCompatAppleDialectCheck.cmake
+    )
+
     # ROS2 adapter smoke test (C20): only when axonvex_ros2 itself
     # built (rclcpp found) — a separate executable from test_core so a
     # missing rclcpp/BUILD_PLUGINS=OFF never breaks the main suite.

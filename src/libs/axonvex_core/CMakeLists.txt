@@ -68,6 +68,23 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT APPLE)
     target_link_libraries(axonvex_core PUBLIC stdc++fs)
 endif()
+# Apple libc++ has no std::experimental::filesystem to link a *fs lib for
+# (see filesystem_compat.hpp); it lives in libc++ proper from macOS 10.15,
+# needing only the raised dialect below, not an extra -l flag. Below that
+# deployment target it needs -lc++fs -- unverified here (no Apple toolchain
+# available), left as a floor for whoever first ships below 10.15.
+
+# The root CMakeLists.txt raises CMAKE_CXX_STANDARD to 17 under if(APPLE),
+# but CMAKE_CXX_STANDARD only affects this directory's own targets, not
+# consumers of the *installed* axonvex_core (its INTERFACE_COMPILE_FEATURES
+# is otherwise empty). Export the requirement so it propagates through
+# find_package(axonvex)/axonvex::core to every downstream consumer -- e.g.
+# the conan test_package and examples/apps/axonvex_bridge_app, both pinned
+# at cxx_std_14 -- forcing their compile to widen far enough for
+# filesystem_compat.hpp's <filesystem> fallback to actually define anything.
+if(APPLE)
+    target_compile_features(axonvex_core PUBLIC cxx_std_17)
+endif()
 
 install(TARGETS axonvex_core
         EXPORT axonvexTargets
