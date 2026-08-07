@@ -271,7 +271,10 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             if (logger_) {
                 logger_->error("System", "Block layout initialization failed");
             }
-            logStateTransition(SystemState::INITIALIZING, SystemState::ERROR);
+            // Must actually transition (not just log) -- isHealthy() reads
+            // currentState_, and a failed spec/blocks-layout deploy must not
+            // leave the system reporting itself healthy while INITIALIZING.
+            transitionState(SystemState::ERROR);
             cleanupComponents();
             return false;
         }
@@ -1864,6 +1867,14 @@ std::string AxonVexSystem::getSystemReport() const {
 void AxonVexSystem::cleanupComponents() {
     // Clear system port assignments first
     systemPorts_.clear();
+
+    // Unconditional, same as emergencyShutdown()'s drainEventQueue() call:
+    // events can be queued before the event thread ever starts (e.g.
+    // registerProcessingUnit() during a failed initializeBlocksLayout()) and
+    // would otherwise leak (C25) when the next initialize() call's
+    // initializeComponents() replaces eventPool_/eventQueue_ without ever
+    // having destructed the SystemEvent objects still sitting in the old ones.
+    drainEventQueue();
 
     // Reset components
     timingController_.reset();

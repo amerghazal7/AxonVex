@@ -110,18 +110,18 @@ StatsSink::StatsSink(const std::string& name, const nlohmann::json& /*params*/)
     : ProcessingUnit(name), in_(createInputPort<double>(kInputIndex, "in")) {}
 
 void StatsSink::initialize() {
-    count_ = 0;
+    count_.store(0, std::memory_order_relaxed);
     sum_ = 0.0;
     setState(ExecutionState::INITIALIZED);
 }
 
 void StatsSink::processSync() {
     sum_ += in_->read();
-    ++count_;
+    count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void StatsSink::reset() {
-    count_ = 0;
+    count_.store(0, std::memory_order_relaxed);
     sum_ = 0.0;
 }
 

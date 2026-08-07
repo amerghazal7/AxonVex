@@ -92,6 +92,52 @@ void splitPortRef(const std::string& ref, std::string& unitName, std::string& po
     portName = ref.substr(pos + 1);
 }
 
+/// Reverse lookup by name across a ProcessingUnit's four port maps (which are
+/// indexed by int, not name -- validate() resolves references against
+/// UnitTypeDescriptor::ports, but the loader needs the live BasePort* on the
+/// just-instantiated instance). BasePort::getId() equals the int index the
+/// port was created with, which is exactly what
+/// assignSystemInputPort/OutputPort need.
+BasePort* findPortByName(ProcessingUnit* unit, const std::string& portName) {
+    for (const auto& kv : unit->getInputPorts()) {
+        if (kv.second && kv.second->getName() == portName) {
+            return kv.second;
+        }
+    }
+    for (const auto& kv : unit->getOutputPorts()) {
+        if (kv.second && kv.second->getName() == portName) {
+            return kv.second;
+        }
+    }
+    for (const auto& kv : unit->getAsyncInputPorts()) {
+        if (kv.second && kv.second->getName() == portName) {
+            return kv.second;
+        }
+    }
+    for (const auto& kv : unit->getAsyncOutputPorts()) {
+        if (kv.second && kv.second->getName() == portName) {
+            return kv.second;
+        }
+    }
+    return nullptr;
+}
+
+/// Resolves "unit.port" against the just-instantiated units (name -> live
+/// ProcessingUnit*), the loader's counterpart to validate()'s
+/// resolvePort-against-descriptors lambda above. nullptr on any failure --
+/// callers treat that as the fatal defect design spec §4.2 step 4 describes
+/// (validate() already reported this reference as resolvable).
+BasePort* resolveInstantiatedPort(
+    const std::unordered_map<std::string, ProcessingUnit*>& unitsByName, const std::string& ref) {
+    std::string unitName, portName;
+    splitPortRef(ref, unitName, portName);
+    auto it = unitsByName.find(unitName);
+    if (it == unitsByName.end()) {
+        return nullptr;
+    }
+    return findPortByName(it->second, portName);
+}
+
 // ---------------------------------------------------------------- section parsers
 
 void parseSystemSection(const nlohmann::json& doc, SystemSpec& spec,
@@ -851,6 +897,176 @@ SystemConfiguration SystemSpec::systemConfiguration() const {
     cfg.eventPoolSize = eventPoolSize;
     cfg.eventQueueSize = eventQueueSize;
     return cfg;
+}
+
+// ---------------------------------------------------------------- SpecSystem
+
+SpecSystem::SpecSystem(SystemSpec spec, const UnitFactory& factory)
+    : AxonVexSystem(spec.systemConfiguration()), spec_(std::move(spec)), factory_(factory) {}
+
+bool SpecSystem::initializeBlocksLayout() {
+    specErrors_.clear();
+
+    // Reserved-but-rejected (design spec §7 Q7): validate() only shape-checks
+    // this section since no MissionElement factories exist yet -- refusing it
+    // here, rather than silently ignoring it, is what makes that "reserved"
+    // instead of "accepted and dropped".
+    if (!spec_.missionPipelines.empty()) {
+        specErrors_.push_back(SpecError{"$.missionPipelines", SpecErrorCode::UNSUPPORTED_SECTION,
+                                        "missionPipelines is not yet consumed by the loader "
+                                        "(no MissionElement factories exist)"});
+        getLogger().error("SpecSystem", specErrors_.back().message);
+        return false;
+    }
+
+    // Step 3 (design spec §4.2): instantiate every unit via factory_,
+    // outside any lock (UnitFactory's own contract) and in spec order so a
+    // later unit's connections can reference an earlier one by name.
+    std::unordered_map<std::string, ProcessingUnit*> unitsByName;
+    unitsByName.reserve(spec_.units.size());
+
+    // Rollback for every failure return below: a failed instantiation must
+    // never leave the units it already registered (or wiring already made)
+    // inside the system -- a half-built AxonVexSystem must not survive a
+    // false return. unregisterProcessingUnit() also tears down any system
+    // ports/connections already attached to that unit, so this one call
+    // undoes everything a partially-completed pass could have done.
+    std::vector<uint32_t> registeredUnitIds;
+    registeredUnitIds.reserve(spec_.units.size());
+    auto rollbackRegisteredUnits = [this, &registeredUnitIds]() {
+        for (uint32_t id : registeredUnitIds) {
+            unregisterProcessingUnit(id);
+        }
+        registeredUnitIds.clear();
+    };
+
+    for (const SpecUnit& su : spec_.units) {
+        std::unique_ptr<ProcessingUnit> unit;
+        try {
+            unit = factory_.create(su.type, su.name, su.params);
+        } catch (const std::exception& e) {
+            specErrors_.push_back(SpecError{
+                "$.units[" + su.name + "]", SpecErrorCode::UNKNOWN_UNIT_TYPE,
+                std::string("factory.create() failed for unit '") + su.name + "': " + e.what()});
+            getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
+            return false;
+        }
+        if (!unit) {
+            specErrors_.push_back(
+                SpecError{"$.units[" + su.name + "]", SpecErrorCode::UNKNOWN_UNIT_TYPE,
+                          "factory.create() returned null for unit '" + su.name + "'"});
+            getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
+            return false;
+        }
+
+        ProcessingUnit* raw = unit.get();
+        if (su.downSamplingFactor != 1) {
+            raw->setDownSamplingFactor(su.downSamplingFactor);
+        }
+
+        TimingConstraints constraints = su.hasTiming ? su.timing : TimingConstraints{};
+        uint32_t unitId = 0;
+        try {
+            unitId = registerProcessingUnit(std::move(unit), constraints);
+        } catch (const std::exception& e) {
+            specErrors_.push_back(
+                SpecError{"$.units[" + su.name + "]", SpecErrorCode::BAD_REFERENCE,
+                          std::string("registerProcessingUnit() failed for unit '") + su.name +
+                              "': " + e.what()});
+            getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
+            return false;
+        }
+        registeredUnitIds.push_back(unitId);
+        unitsByName[su.name] = raw;
+    }
+
+    // Runtime-only failure (design spec §4.2 step 3): the adapter's URI was
+    // validated but no instance was ever injected via addAdapter().
+    for (const SpecAdapter& sa : spec_.adapters) {
+        if (!getAdapter(sa.uri)) {
+            specErrors_.push_back(SpecError{"$.adapters", SpecErrorCode::MISSING_ADAPTER,
+                                            "adapter '" + sa.uri +
+                                                "' was not injected via addAdapter() before "
+                                                "initialize()"});
+            getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
+            return false;
+        }
+    }
+
+    // Step 4: wire connections. A resolution failure or a false tryConnect()
+    // here is a DEFECT, not a normal error path -- validate() already
+    // reported every one of these references as resolvable and compatible.
+    for (const SpecConnection& conn : spec_.connections) {
+        BasePort* fromPort = resolveInstantiatedPort(unitsByName, conn.from);
+        BasePort* toPort = resolveInstantiatedPort(unitsByName, conn.to);
+        if (!fromPort || !toPort || !fromPort->tryConnect(toPort)) {
+            specErrors_.push_back(
+                SpecError{"$.connections", SpecErrorCode::BAD_REFERENCE,
+                          "internal defect: failed to wire '" + conn.from + "' -> '" + conn.to +
+                              "' after validate() reported it as resolvable and compatible"});
+            getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
+            return false;
+        }
+    }
+
+    for (const auto& kv : spec_.systemPorts.inputs) {
+        BasePort* port = resolveInstantiatedPort(unitsByName, kv.second);
+        std::string unitName, portName;
+        splitPortRef(kv.second, unitName, portName);
+        auto uit = unitsByName.find(unitName);
+        if (!port || uit == unitsByName.end() ||
+            !assignSystemInputPort(kv.first, uit->second, port->getId())) {
+            specErrors_.push_back(SpecError{"$.systemPorts.inputs." + kv.first,
+                                            SpecErrorCode::BAD_REFERENCE,
+                                            "internal defect: failed to assign system input '" +
+                                                kv.first + "' -> '" + kv.second + "'"});
+            getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
+            return false;
+        }
+    }
+    for (const auto& kv : spec_.systemPorts.outputs) {
+        BasePort* port = resolveInstantiatedPort(unitsByName, kv.second);
+        std::string unitName, portName;
+        splitPortRef(kv.second, unitName, portName);
+        auto uit = unitsByName.find(unitName);
+        if (!port || uit == unitsByName.end() ||
+            !assignSystemOutputPort(kv.first, uit->second, port->getId())) {
+            specErrors_.push_back(SpecError{"$.systemPorts.outputs." + kv.first,
+                                            SpecErrorCode::BAD_REFERENCE,
+                                            "internal defect: failed to assign system output '" +
+                                                kv.first + "' -> '" + kv.second + "'"});
+            getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::unique_ptr<AxonVexSystem> loadSystemFromSpec(const nlohmann::json& doc,
+                                                  std::vector<SpecError>& errors,
+                                                  const UnitFactory& factory) {
+    std::vector<SpecError> local;
+    axonvex::optional<SystemSpec> spec = SystemSpec::parse(doc, local);
+    if (!spec.has_value()) {
+        errors.insert(errors.end(), local.begin(), local.end());
+        return nullptr;
+    }
+
+    if (!spec->validate(factory, local)) {
+        errors.insert(errors.end(), local.begin(), local.end());
+        return nullptr;
+    }
+    errors.insert(errors.end(), local.begin(), local.end()); // empty; validate() succeeded.
+
+    return std::unique_ptr<AxonVexSystem>(new SpecSystem(std::move(*spec), factory));
 }
 
 } // namespace axonvex::core
