@@ -244,8 +244,21 @@ class AxonVexSystem {
      * entire lifetime on a thread outside the system's own workers; call
      * emergencyShutdown() from a callback if the system must stop itself,
      * and destroy the object afterward from an external thread.
+     *
+     * @note virtual: AxonVexSystem is already polymorphic (initializeBlocksLayout()
+     * is pure virtual, so this class has a vtable regardless), and
+     * loadSystemFromSpec() (systemSpec.hpp) hands back ownership of a
+     * SpecSystem through exactly this type -- std::unique_ptr<AxonVexSystem>.
+     * A non-virtual destructor there is undefined behavior on delete and, in
+     * practice on this ABI, skips every derived member's destructor: an
+     * ASan LeakSanitizer run on the SpecSystem instantiation slice caught
+     * this concretely (SystemSpec's owned vectors/maps in SpecSystem::spec_
+     * leaking because ~SpecSystem() was never reached). Fixed here rather
+     * than worked around at that one call site because any future
+     * AxonVexSystem subclass stored in a unique_ptr<AxonVexSystem> would hit
+     * the exact same UB.
      */
-    ~AxonVexSystem();
+    virtual ~AxonVexSystem();
 
     // Non-copyable, non-movable (due to atomic members)
     AxonVexSystem(const AxonVexSystem&) = delete;

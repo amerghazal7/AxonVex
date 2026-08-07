@@ -6,7 +6,9 @@
 #include <axonvex_core/builtinUnits.hpp>
 #include <axonvex_core/systemSpec.hpp>
 #include <axonvex_core/utils/serialization/jsonSerializer.hpp>
+#include <chrono>
 #include <gtest/gtest.h>
+#include <thread>
 
 namespace axonvex::core::test {
 namespace {
@@ -417,6 +419,219 @@ TEST(SystemSpecExampleDocTest, ParsesAndValidatesAgainstBuiltinUnits) {
         << (validateErrors.empty() ? "" : validateErrors[0].message);
     EXPECT_TRUE(validateErrors.empty());
 #endif
+}
+
+// ---------------------------------------------------------------- loadSystemFromSpec() /
+// SpecSystem
+
+TEST(SystemSpecLoaderTest, ParseFailureReturnsNullWithoutConstructing) {
+    UnitFactory factory;
+    std::vector<SpecError> errors;
+    auto system = loadSystemFromSpec(json::array(), errors, factory); // non-object root
+    EXPECT_EQ(system, nullptr);
+    EXPECT_TRUE(errorsContain(errors, SpecErrorCode::INVALID_TYPE));
+}
+
+TEST_F(SpecTestFactory, ValidateFailureReturnsNullWithoutInstantiating) {
+    json doc = minimalValidDoc();
+    doc["units"][0]["type"] = "test.DoesNotExist";
+    std::vector<SpecError> errors;
+    auto system = loadSystemFromSpec(doc, errors, factory);
+    EXPECT_EQ(system, nullptr);
+    EXPECT_TRUE(errorsContain(errors, SpecErrorCode::UNKNOWN_UNIT_TYPE));
+    EXPECT_EQ(createCalls, 0); // loadSystemFromSpec must not instantiate on a validate() failure.
+}
+
+// The Phase 2 exit criterion (plan §11 / design spec §4.1): a spec-driven
+// system boots, runs, and produces data with ZERO subclass code -- SpecSystem
+// is used directly here, never subclassed.
+TEST(SystemSpecLoaderTest, BootsRunsAndProducesDataWithZeroSubclassCode) {
+    json doc = json{
+        {"specVersion", "1.0"},
+        {"system", {{"name", "spec-demo"}, {"tickRateUs", 1000}}},
+        {"units",
+         json::array(
+             {{{"name", "gen"},
+               {"type", "axonvex.SineGenerator"},
+               {"params", {{"frequencyHz", 10.0}, {"amplitude", 1.0}}}},
+              {{"name", "filt"}, {"type", "axonvex.MovingAverage"}, {"params", {{"window", 8}}}},
+              {{"name", "sink"}, {"type", "axonvex.StatsSink"}, {"params", json::object()}}})},
+        {"connections", json::array({{{"from", "gen.out"}, {"to", "filt.in"}},
+                                     {{"from", "filt.out"}, {"to", "sink.in"}}})},
+        {"systemPorts", {{"outputs", {{"filtered", "filt.out"}}}}}};
+
+    UnitFactory factory;
+    builtin::registerBuiltinUnitTypes(factory);
+
+    std::vector<SpecError> errors;
+    auto system = loadSystemFromSpec(doc, errors, factory);
+    ASSERT_NE(system, nullptr) << (errors.empty() ? "" : errors[0].message);
+    EXPECT_TRUE(errors.empty());
+
+    ASSERT_TRUE(system->initialize());
+    EXPECT_NE(system->getSystemOutputPort("filtered"), nullptr);
+
+    builtin::StatsSink* sink = nullptr;
+    for (ProcessingUnit* u : system->getAllProcessingUnits()) {
+        if (u->getName() == "sink") {
+            sink = dynamic_cast<builtin::StatsSink*>(u);
+        }
+    }
+    ASSERT_NE(sink, nullptr);
+
+    ASSERT_TRUE(system->start());
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (sink->sampleCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_GT(sink->sampleCount(), 0u);
+
+    EXPECT_TRUE(system->stop());
+}
+
+TEST_F(SpecTestFactory, MissingAdapterFailsInitializeAndRecordsError) {
+    // validate() only checks URI well-formedness (SpecErrorCode::BAD_REFERENCE);
+    // whether an adapter instance was actually injected via addAdapter() before
+    // initialize() is a runtime-only concern (design spec §4.2 step 3), so this
+    // is not caught until SpecSystem::initializeBlocksLayout() actually runs.
+    json doc = json{{"specVersion", "1.0"},
+                    {"system", {{"name", "t"}}},
+                    {"units", json::array({{{"name", "u1"}, {"type", "test.DoubleSource"}}})},
+                    {"adapters", json::array({{{"uri", "ros2://foo"}, {"type", "ros2"}}})}};
+    std::vector<SpecError> parseErrors;
+    auto spec = SystemSpec::parse(doc, parseErrors);
+    ASSERT_TRUE(spec.has_value()) << (parseErrors.empty() ? "" : parseErrors[0].message);
+    std::vector<SpecError> validateErrors;
+    ASSERT_TRUE(spec->validate(factory, validateErrors))
+        << (validateErrors.empty() ? "" : validateErrors[0].message);
+
+    SpecSystem system(std::move(*spec), factory);
+    EXPECT_FALSE(system.initialize());
+    EXPECT_TRUE(errorsContain(system.getLastSpecErrors(), SpecErrorCode::MISSING_ADAPTER));
+}
+
+TEST_F(SpecTestFactory, FailedInitializeRollsBackEveryUnitItRegistered) {
+    // Regression: initializeBlocksLayout() registers every unit before the
+    // MISSING_ADAPTER check runs, so on the pre-fix code this left both u1
+    // and u2 as orphaned ProcessingUnits inside the system after a failed
+    // initialize() -- a half-built system that also (pre-fix) reported
+    // isHealthy()==true because the failure path only logged a state
+    // transition instead of performing one.
+    json doc = json{{"specVersion", "1.0"},
+                    {"system", {{"name", "t"}}},
+                    {"units", json::array({{{"name", "u1"}, {"type", "test.DoubleSource"}},
+                                           {{"name", "u2"}, {"type", "test.DoubleSink"}}})},
+                    {"connections", json::array({{{"from", "u1.out"}, {"to", "u2.in"}}})},
+                    {"adapters", json::array({{{"uri", "ros2://foo"}, {"type", "ros2"}}})}};
+    std::vector<SpecError> parseErrors;
+    auto spec = SystemSpec::parse(doc, parseErrors);
+    ASSERT_TRUE(spec.has_value()) << (parseErrors.empty() ? "" : parseErrors[0].message);
+    std::vector<SpecError> validateErrors;
+    ASSERT_TRUE(spec->validate(factory, validateErrors))
+        << (validateErrors.empty() ? "" : validateErrors[0].message);
+
+    SpecSystem system(std::move(*spec), factory);
+    ASSERT_FALSE(system.initialize());
+    EXPECT_TRUE(errorsContain(system.getLastSpecErrors(), SpecErrorCode::MISSING_ADAPTER));
+
+    EXPECT_EQ(system.getAllProcessingUnits().size(), 0u);
+    EXPECT_EQ(system.getProcessingUnitCount(), 0u);
+    EXPECT_FALSE(system.isHealthy());
+}
+
+TEST_F(SpecTestFactory, ReinitializeAfterFailedInitializeDoesNotLeakQueuedEvents) {
+    // Regression (ASan/LeakSanitizer): registerProcessingUnit() during a
+    // failed initializeBlocksLayout() queues SystemEvents into
+    // eventPool_/eventQueue_ before the event thread exists. On pre-fix code,
+    // cleanupComponents() never drained them, so the next initialize() call's
+    // initializeComponents() replaced the pool without ever destructing the
+    // still-queued SystemEvent objects (leaking their string/metadata-map
+    // members). Not observable as a plain assertion -- this test's purpose is
+    // to be run under the ASan/LSan build (see build-asan) where the leak
+    // aborts the run pre-fix and passes clean post-fix.
+    json doc = json{{"specVersion", "1.0"},
+                    {"system", {{"name", "t"}}},
+                    {"units", json::array({{{"name", "u1"}, {"type", "test.DoubleSource"}},
+                                           {{"name", "u2"}, {"type", "test.DoubleSink"}}})},
+                    {"connections", json::array({{{"from", "u1.out"}, {"to", "u2.in"}}})},
+                    {"adapters", json::array({{{"uri", "ros2://foo"}, {"type", "ros2"}}})}};
+    std::vector<SpecError> parseErrors;
+    auto spec = SystemSpec::parse(doc, parseErrors);
+    ASSERT_TRUE(spec.has_value()) << (parseErrors.empty() ? "" : parseErrors[0].message);
+    std::vector<SpecError> validateErrors;
+    ASSERT_TRUE(spec->validate(factory, validateErrors))
+        << (validateErrors.empty() ? "" : validateErrors[0].message);
+
+    SpecSystem system(std::move(*spec), factory);
+    ASSERT_FALSE(system.initialize());
+    ASSERT_FALSE(
+        system.initialize()); // reuse without reset(): must not leak the 1st attempt's events
+}
+
+TEST_F(SpecTestFactory, MissionPipelinesSectionIsRejectedAsUnsupportedByTheLoader) {
+    // Reserved-but-rejected (design spec §7 Q7): validate() only shape-checks
+    // this section (no MissionElement factories exist yet), so it is the
+    // loader's job to refuse it explicitly rather than silently ignore it.
+    json doc = minimalValidDoc();
+    doc["missionPipelines"] = json::array({{{"name", "mp1"}}});
+    std::vector<SpecError> parseErrors;
+    auto spec = SystemSpec::parse(doc, parseErrors);
+    ASSERT_TRUE(spec.has_value()) << (parseErrors.empty() ? "" : parseErrors[0].message);
+    std::vector<SpecError> validateErrors;
+    ASSERT_TRUE(spec->validate(factory, validateErrors))
+        << (validateErrors.empty() ? "" : validateErrors[0].message);
+
+    SpecSystem system(std::move(*spec), factory);
+    EXPECT_FALSE(system.initialize());
+    EXPECT_TRUE(errorsContain(system.getLastSpecErrors(), SpecErrorCode::UNSUPPORTED_SECTION));
+}
+
+TEST_F(SpecTestFactory, WiringDefectAfterValidationPassesIsFatal) {
+    // Regression for design spec §4.2 step 4: tryConnect() returning false
+    // here is a DEFECT (validate() already reported the two ports as
+    // compatible "double" Sync ports going by their descriptors) -- e.g. a
+    // unit type whose registered UnitTypeDescriptor lies about its real port
+    // template type. This must fail loudly (initialize() -> false, a recorded
+    // SpecError), never silently skip the connection.
+    class LiarSource : public ProcessingUnit {
+      public:
+        explicit LiarSource(const std::string& name) : ProcessingUnit(name) {
+            createOutputPort<int>(0, "out"); // descriptor below lies: claims double.
+        }
+        void processSync() override {}
+        void processAsync() override {}
+        void reset() override {}
+        void initialize() override {
+            setState(ExecutionState::INITIALIZED);
+        }
+        std::string getTypeDescription() override {
+            return "test.LiarSource";
+        }
+    };
+    factory.registerType(
+        describeWithPorts("test.LiarSource",
+                          {PortDescriptor::make<double>(0, "out", PortDescriptor::Direction::Output,
+                                                        PortDescriptor::Kind::Sync)}),
+        [](const std::string& name, const json&) {
+            return std::unique_ptr<ProcessingUnit>(new LiarSource(name));
+        });
+
+    json doc = json{{"specVersion", "1.0"},
+                    {"system", {{"name", "t"}}},
+                    {"units", json::array({{{"name", "src"}, {"type", "test.LiarSource"}},
+                                           {{"name", "dst"}, {"type", "test.DoubleSink"}}})},
+                    {"connections", json::array({{{"from", "src.out"}, {"to", "dst.in"}}})}};
+    std::vector<SpecError> parseErrors;
+    auto spec = SystemSpec::parse(doc, parseErrors);
+    ASSERT_TRUE(spec.has_value()) << (parseErrors.empty() ? "" : parseErrors[0].message);
+    std::vector<SpecError> validateErrors;
+    ASSERT_TRUE(spec->validate(factory, validateErrors))
+        << (validateErrors.empty() ? "" : validateErrors[0].message);
+
+    SpecSystem system(std::move(*spec), factory);
+    EXPECT_FALSE(system.initialize());
+    EXPECT_FALSE(system.getLastSpecErrors().empty());
 }
 
 } // namespace
