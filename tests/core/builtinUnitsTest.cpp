@@ -10,6 +10,7 @@
 #include <axonvex_core/builtinUnits.hpp>
 #include <cstdlib>
 #include <gtest/gtest.h>
+#include <new>
 
 // ---------------------------------------------------------------------------
 // Global operator new/delete override, gated by an atomic flag, so a test
@@ -22,13 +23,41 @@
 // regression test (same test_core binary, one process-wide operator new)
 // reuses this exact counter via `extern` rather than defining a second,
 // conflicting global operator new/delete override.
+//
+// C50: the process-wide reach of this override is intrinsic to any
+// operator-new-based allocation probe in standard C++ — there is no
+// TU-scoped or thread-scoped way to intercept `new`. A per-test injectable
+// allocator was considered instead, but timingControllerTest.cpp's sibling
+// regression measures allocations made by RealTimeScheduler's *internal*
+// containers on a real scheduler thread during timer-driven execution, not
+// just allocations made by one object under test — an injectable
+// allocator/counter would have to be threaded through scheduler internals
+// for a test-only concern, well past what either regression needs. The
+// actual bug was narrower: this override was missing the nothrow overload
+// (plus the array and array-nothrow forms), so any allocation ASan's own
+// runtime served through `operator new(nothrow)` — e.g. GTest's
+// `std::get_temporary_buffer` inside its `stable_sort`, invoked on every
+// process run regardless of --gtest_filter — got freed through this TU's
+// malloc-backed `operator delete` and tripped
+// "alloc-dealloc-mismatch (operator new vs free)" under ASan with
+// Conan-provided GTest (reproduced: 585/595 failing before this fix).
+// Fix: complete the C++14 overload set (ordinary/array x
+// throwing/nothrow, plus sized delete) so every allocation in the process
+// is malloc/free-paired consistently — functionally a no-op passthrough
+// identical to the platform default, whether or not tracking is enabled.
 std::atomic<bool> g_trackAllocs{false};
 std::atomic<long> g_allocCount{0};
 
-void* operator new(std::size_t size) {
+namespace {
+inline void countAlloc() {
     if (g_trackAllocs.load(std::memory_order_relaxed)) {
         g_allocCount.fetch_add(1, std::memory_order_relaxed);
     }
+}
+} // namespace
+
+void* operator new(std::size_t size) {
+    countAlloc();
     void* p = std::malloc(size);
     if (!p) {
         throw std::bad_alloc();
@@ -36,11 +65,46 @@ void* operator new(std::size_t size) {
     return p;
 }
 
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+    countAlloc();
+    return std::malloc(size);
+}
+
+void* operator new[](std::size_t size) {
+    countAlloc();
+    void* p = std::malloc(size);
+    if (!p) {
+        throw std::bad_alloc();
+    }
+    return p;
+}
+
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+    countAlloc();
+    return std::malloc(size);
+}
+
 void operator delete(void* p) noexcept {
     std::free(p);
 }
 
 void operator delete(void* p, std::size_t) noexcept {
+    std::free(p);
+}
+
+void operator delete(void* p, const std::nothrow_t&) noexcept {
+    std::free(p);
+}
+
+void operator delete[](void* p) noexcept {
+    std::free(p);
+}
+
+void operator delete[](void* p, std::size_t) noexcept {
+    std::free(p);
+}
+
+void operator delete[](void* p, const std::nothrow_t&) noexcept {
     std::free(p);
 }
 
