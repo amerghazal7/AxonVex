@@ -32,8 +32,20 @@ project("${PROJECT_NAME}"
     DESCRIPTION "A Real-Time Framework Built for Scalable, Precise Execution"
     LANGUAGES CXX)
 
-# Set install prefix to project-local directory
-set(CMAKE_INSTALL_PREFIX "${AXONVEX_INSTALL_PREFIX}" CACHE PATH "" FORCE)
+# Default install prefix to the project-local dev directory, but only when
+# the caller didn't ask for one: unconditional FORCE here previously stomped
+# any `-DCMAKE_INSTALL_PREFIX=...` a downstream packager (conan, a system
+# package build) passed in, silently redirecting `cmake --install` into
+# install/libs/ instead of their real destination. CMAKE_INSTALL_PREFIX_-
+# INITIALIZED_TO_DEFAULT is set by the project() call above and is true only
+# when nothing else set the prefix.
+# ponytail: CMAKE_INSTALL_RPATH above is still baked to AXONVEX_INSTALL_PREFIX,
+# so an overridden prefix gets correct headers/libs but a stale RPATH; fix
+# that (e.g. $ORIGIN-relative RPATH) if/when non-default-prefix installs need
+# to run in place without LD_LIBRARY_PATH.
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "${AXONVEX_INSTALL_PREFIX}" CACHE PATH "AxonVex install location" FORCE)
+endif()
 
 option(BUILD_TESTING "Build unit tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
