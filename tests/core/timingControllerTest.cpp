@@ -1091,6 +1091,62 @@ TEST_F(TimingControllerTest, EmergencyStopFromTaskBodyIsSafe) {
     controller->stop(); // must return -- no self-join, no terminate
 }
 
+// Part 1 lifecycle-hang regression (v1_release_plan.md phase4): an external
+// thread's start() (the AxonVexSystem::start()/startComponents() shape) can
+// race an event-callback-triggered stop() (the
+// AxonVexSystem::emergencyShutdown() shape, itself reachable from the
+// event-processing thread) on the SAME RealTimeScheduler instance.
+// schedulerThread_ pre-fix was a plain unique_ptr<thread> with no lock
+// protecting it across start()/stop(): one thread's assignment of a fresh
+// std::thread could interleave with the other thread's
+// check-then-join, producing a join() on a torn/stale thread handle that
+// blocks forever (confirmed via gdb on the system-level
+// ReinitializeAfterCallbackInitiatedEmergencyShutdown hang: stop()'s
+// schedulerThread_->join() stuck on a futex with no matching live thread
+// left in the process). A hang here has no natural timeout, so a watchdog
+// thread aborts the process if the racing loop doesn't finish within a
+// generous deadline -- CLAUDE.md: "a test whose failure mode is a HANG
+// needs its own deadline/watchdog."
+TEST_F(TimingControllerTest, ConcurrentStartStopDoesNotHang) {
+    std::atomic<bool> finished{false};
+    std::thread watchdog([&finished] {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!finished.load()) {
+            std::fprintf(stderr, "ConcurrentStartStopDoesNotHang: watchdog deadline exceeded -- "
+                                 "start()/stop() race hung\n");
+            std::abort();
+        }
+    });
+
+    std::atomic<bool> stopFlag{false};
+    std::thread starter([this, &stopFlag] {
+        while (!stopFlag.load()) {
+            controller->start();
+        }
+    });
+    std::thread stopper([this, &stopFlag] {
+        while (!stopFlag.load()) {
+            controller->stop();
+        }
+    });
+
+    auto raceDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    while (std::chrono::steady_clock::now() < raceDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    stopFlag.store(true);
+    starter.join();
+    stopper.join();
+    controller->stop(); // deterministic teardown for TearDown()
+
+    finished.store(true);
+    watchdog.join();
+    SUCCEED();
+}
+
 // V5 (CLAUDE.md #8: lock-free claims require a TSan-clean stress test plus a
 // memory-ordering comment -- the comment lives on RealTimeScheduler's
 // AtomicStatistics member). Hammer getPerformanceMetrics()/

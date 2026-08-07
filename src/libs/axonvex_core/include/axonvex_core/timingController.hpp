@@ -410,6 +410,23 @@ class RealTimeScheduler {
     std::unique_ptr<std::thread> schedulerThread_;
     std::condition_variable schedulerCondition_;
     std::mutex schedulerMutex_;
+    // C46 (Part 1 lifecycle hang): serializes start()/stop() against each
+    // other. schedulerThread_ is a plain unique_ptr<thread> -- not atomic,
+    // no lock -- so an external thread's start() (e.g.
+    // AxonVexSystem::start()/startComponents()) racing an event-callback's
+    // stop() (e.g. AxonVexSystem::emergencyShutdown(), which can run on the
+    // event-processing thread) could read/write it concurrently: one
+    // assigning a fresh std::thread while the other decides what to join
+    // from a torn/stale read. The result is a join() on a thread id that
+    // was never actually the live scheduler thread -- pthread_join blocks
+    // on a futex nothing will ever signal, an unbounded hang (reproduced
+    // and confirmed via gdb: stop()'s schedulerThread_->join() stuck
+    // forever with no matching live thread in the process). halt() (the
+    // non-blocking half stop() calls, and TimingController::emergencyStop()
+    // calls directly per design spec Sec6.3's hot e-stop path) stays
+    // lock-free and outside this mutex -- only the handle-manipulating
+    // parts of start()/stop() take it.
+    std::mutex lifecycleMutex_;
     // C42: published by schedulerLoop() itself as its first act, cleared as
     // its last (every exit path) — never read from schedulerThread_ (which
     // stop() is busy tearing down). Same discipline as system.cpp's

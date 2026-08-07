@@ -144,6 +144,14 @@ void RealTimeScheduler::start() {
     // than only once a new thread is actually spawned below.
     hasStarted_.store(true, std::memory_order_relaxed);
 
+    // C46: serializes the running_ check and the schedulerThread_ handle
+    // manipulation below against a concurrent stop() -- see lifecycleMutex_'s
+    // declaration comment. Must wrap the running_.load() early-return too,
+    // not just the thread creation: without that, this check and stop()'s
+    // own handle teardown can interleave (check-then-act race across two
+    // functions), which is exactly how the reported hang happened.
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+
     if (running_.load()) {
         return; // Already running
     }
@@ -192,14 +200,33 @@ void RealTimeScheduler::stop() {
     // reclaiming, so every step here must be individually idempotent
     // instead of gated by one flag (SafetyManager/Watchdog C33/C36
     // precedent).
+    //
+    // Called unlocked, before lifecycleMutex_ below: halt() is the
+    // documented non-blocking half (design spec Sec6.3) that
+    // TimingController::emergencyStop() depends on staying lock-free for
+    // its hot e-stop path, and calling it early also wakes a scheduler
+    // thread already waiting on schedulerCondition_ with the lowest
+    // possible latency in the common (uncontended) case.
     halt();
 
-    // C42: checked before touching schedulerThread_, and before any lock —
-    // there are none in this function, but the check must still gate the
-    // join below. A ProcessingUnit task body (or the error callback) runs
-    // ON this thread via executeTask(), so self-detection must read only
-    // the published atomic id, never the std::thread object itself (start()
-    // move-assigns it with no happens-before edge to a concurrent reader).
+    // C46: everything from here down re-touches schedulerThread_/running_ and
+    // must be mutually exclusive with a concurrent start() -- see
+    // lifecycleMutex_'s declaration comment. running_ is re-cleared under the
+    // lock (redundant with halt() above in the common case, but the
+    // authoritative write when a concurrent start() raced ahead of halt()
+    // and set it back to true from inside ITS locked section): whichever of
+    // start()/stop() finishes its critical section last now determines the
+    // final state, instead of a stale schedulerThread_ read producing a
+    // join() on a thread id nothing will ever signal (the reported hang).
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+    running_.store(false);
+    schedulerCondition_.notify_all();
+
+    // C42: checked before touching schedulerThread_. A ProcessingUnit task
+    // body (or the error callback) runs ON this thread via executeTask(), so
+    // self-detection must read only the published atomic id, never the
+    // std::thread object itself (start() move-assigns it with no
+    // happens-before edge to a concurrent reader).
     if (isOnSchedulerThread()) {
         // Self-stop: running_ is now false, so schedulerLoop() exits on its
         // own once this call returns and control unwinds back out through
