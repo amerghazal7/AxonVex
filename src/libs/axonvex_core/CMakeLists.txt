@@ -5,6 +5,7 @@ find_package(nlohmann_json REQUIRED)
 find_package(TBB REQUIRED)
 
 add_library(axonvex_core SHARED
+    src/builtinUnits.cpp
     src/configuration.cpp
     src/errorHandler.cpp
     src/logger.cpp
@@ -13,8 +14,11 @@ add_library(axonvex_core SHARED
     src/precisionTimer.cpp
     src/processingUnit.cpp
     src/system.cpp
+    src/systemSpec.cpp
     src/timingController.cpp
     src/traceReplay.cpp
+    src/unitFactory.cpp
+    src/unitMetadata.cpp
 )
 
 set_target_properties(axonvex_core PROPERTIES EXPORT_NAME core)
