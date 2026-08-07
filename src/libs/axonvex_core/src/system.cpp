@@ -1064,26 +1064,29 @@ std::string AxonVexSystem::getSystemPortInfo() const {
     std::ostringstream oss;
     oss << "System Port Information for '" << systemConfig_.systemName << "':\n";
 
-    auto inputNames = systemPorts_.inputNames();
-    oss << "Input Ports (" << inputNames.size() << "):\n";
-    for (const auto& name : inputNames) {
-        BasePort* port = systemPorts_.input(name);
-        oss << "  - " << name;
-        if (port) {
-            oss << " (Type: " << port->getDataTypeName()
-                << ", Owner: " << port->getOwner()->getName() << ")";
+    // describeInputs()/describeOutputs() read name + type + owner under one
+    // SystemPortRegistry::mutex_ hold, so there is no window for a
+    // concurrent unregisterProcessingUnit() to free the port between lookup
+    // and dereference. The old inputNames()+input()+deref two-step (each
+    // step its own lock/unlock) had exactly that window — a
+    // heap-use-after-free; regression test:
+    // AxonVexSystemTest.GetSystemPortInfoDoesNotRaceUnregisterProcessingUnit.
+    auto inputDescriptions = systemPorts_.describeInputs();
+    oss << "Input Ports (" << inputDescriptions.size() << "):\n";
+    for (const auto& desc : inputDescriptions) {
+        oss << "  - " << desc.name;
+        if (!desc.dataTypeName.empty() || !desc.ownerName.empty()) {
+            oss << " (Type: " << desc.dataTypeName << ", Owner: " << desc.ownerName << ")";
         }
         oss << "\n";
     }
 
-    auto outputNames = systemPorts_.outputNames();
-    oss << "Output Ports (" << outputNames.size() << "):\n";
-    for (const auto& name : outputNames) {
-        BasePort* port = systemPorts_.output(name);
-        oss << "  - " << name;
-        if (port) {
-            oss << " (Type: " << port->getDataTypeName()
-                << ", Owner: " << port->getOwner()->getName() << ")";
+    auto outputDescriptions = systemPorts_.describeOutputs();
+    oss << "Output Ports (" << outputDescriptions.size() << "):\n";
+    for (const auto& desc : outputDescriptions) {
+        oss << "  - " << desc.name;
+        if (!desc.dataTypeName.empty() || !desc.ownerName.empty()) {
+            oss << " (Type: " << desc.dataTypeName << ", Owner: " << desc.ownerName << ")";
         }
         oss << "\n";
     }
