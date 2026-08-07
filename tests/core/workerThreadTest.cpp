@@ -19,6 +19,17 @@
 #include <gtest/gtest.h>
 #include <thread>
 
+// Watchdog budget for the hang-guard tests below. Deliberately NOT scaled up
+// under sanitizers. This test aborted at 20.91s on a 2-core CI runner under
+// TSan, but the same test pinned to 2 cores under TSan locally completes in
+// ~1s -- with or without the yields in the racing loops. A 20x gap is not
+// explained by slower hardware, so the CI abort most likely caught a real
+// intermittent hang in start()/join(), which is exactly what this watchdog
+// exists for. Raising the deadline would convert a caught bug into a silent
+// one, so it stays at 20s until the CI abort is either reproduced and fixed
+// or positively explained. Tracked as an open item, not a flake.
+#define AXONVEX_TEST_WATCHDOG_SECONDS 20
+
 using namespace axonvex::core::detail;
 using namespace std::chrono_literals;
 
@@ -174,7 +185,8 @@ TEST(WorkerThreadTest, WithHandleRunsOnlyWhileAHandleExists) {
 TEST(WorkerThreadTest, SelfJoinDoesNotDeadlockUnderConcurrentExternalJoin) {
     std::atomic<bool> finished{false};
     std::thread watchdog([&finished] {
-        auto deadline = std::chrono::steady_clock::now() + 20s;
+        auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(AXONVEX_TEST_WATCHDOG_SECONDS);
         while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
@@ -244,7 +256,8 @@ TEST(WorkerThreadTest, SelfJoinDoesNotDeadlockUnderConcurrentExternalJoin) {
 TEST(WorkerThreadTest, ConcurrentStartJoinDoesNotHang) {
     std::atomic<bool> finished{false};
     std::thread watchdog([&finished] {
-        auto deadline = std::chrono::steady_clock::now() + 20s;
+        auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(AXONVEX_TEST_WATCHDOG_SECONDS);
         while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
@@ -259,6 +272,14 @@ TEST(WorkerThreadTest, ConcurrentStartJoinDoesNotHang) {
     std::atomic<bool> stopFlag{false};
     std::atomic<bool> loopShouldExit{false};
 
+    // Both loops yield each iteration. Without it they spin flat out on the
+    // WorkerThread mutex, and on a low-core machine (a 2-core CI runner, and
+    // worse under TSan instrumentation) they starve the worker thread that
+    // has to observe loopShouldExit in order to exit -- so join() waits on a
+    // thread that is never scheduled. That looks exactly like the hang this
+    // test guards, but it is CPU starvation, not a lifecycle bug. Yielding
+    // keeps the start()/join() interleaving this test exists to hammer while
+    // letting the worker make progress when threads outnumber cores.
     std::thread starter([&] {
         while (!stopFlag.load()) {
             worker.start([&loopShouldExit] {
@@ -266,6 +287,7 @@ TEST(WorkerThreadTest, ConcurrentStartJoinDoesNotHang) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
             });
+            std::this_thread::yield();
         }
     });
     std::thread joiner([&] {
@@ -273,6 +295,7 @@ TEST(WorkerThreadTest, ConcurrentStartJoinDoesNotHang) {
             loopShouldExit.store(true);
             worker.join();
             loopShouldExit.store(false);
+            std::this_thread::yield();
         }
     });
 
