@@ -210,13 +210,14 @@ AxonVex is split into libraries under `src/libs/`:
 | Library | Type | Role |
 |---------|------|------|
 | `axonvex_core` | Shared | Runtime, orchestration, ports, timing, configuration, logging, interface units |
-| `axonvex_interfaces` | Interface | Protocol abstractions (TCP, UDP, WebSocket) |
+| `axonvex_interfaces` | Interface | Protocol contract (`ProtocolInterface`, dispatch barrier); WebSocket placeholder, compile-gated until WS-VIZ |
+| `axonvex_net` | Shared | TCP and UDP transports (magic + length-prefixed framing, hostname/IPv6 resolution, dead-connection lifecycle) |
 | `axonvex_adapters` | Interface | Adapter contract (AdapterInterface, AdapterBase, MockAdapter) |
 | `axonvex_ros2` | Interface | ROS 2 plugin — ROS2Adapter with typed unit creation (optional, requires rclcpp) |
 | `axonvex_plugins` | Interface | Plugin API and dynamic loading |
 | `axonvex_safety` | Interface | Safety primitives (Watchdog) |
 | `axonvex_io` | Interface | Filesystem helpers |
-| `axonvex_visualization` | Interface | Telemetry pub/sub bus + WebSocket gateway (Angular 17+ dashboard planned) |
+| `axonvex_visualization` | Interface | `TelemetryBus`: bounded lock-free publish, dedicated egress thread, framed JSON envelope (WebSocket gateway + Angular 17+ dashboard planned — WS-VIZ) |
 
 All interface libraries depend only on `axonvex_core`. See [Architecture](docs/architecture_and_design.md) for the full design.
 
@@ -227,10 +228,10 @@ All interface libraries depend only on `axonvex_core`. See [Architecture](docs/a
 ### Implemented
 - ✅ **Core Runtime**: System orchestration, processing units, typed ports, timing controller
 - ✅ **Configuration**: JSON-backed runtime configuration with typed access
-- ✅ **Logging**: Dual-interface logger with stream and function APIs
-- ✅ **Utilities**: Thread-safe queue, ring buffer, memory pool, LRU cache, JSON serializer
+- ✅ **Logging**: Asynchronous logger with `LOG_*`/`LOGF_*` macros and `{}` placeholder formatting
+- ✅ **Utilities**: Thread-safe queue, ring buffer, memory pool, JSON serializer
 - ✅ **Types**: UUID, Point2D/3D, Quaternion geometry types
-- ✅ **Protocol Abstraction**: TCP, UDP, WebSocket scaffolds with `ProtocolInterface` contract
+- ✅ **Transports**: Compiled `axonvex_net` TCP/UDP with framed wire protocol and `ProtocolInterface` contract (the WebSocket placeholder is compile-gated — the real gateway is WS-VIZ)
 - ✅ **Plugin System**: Dynamic plugin loading (Linux) with `PluginManager`
 - ✅ **Safety Primitives**: Watchdog timer with configurable callbacks
 - ✅ **Safety Envelope**: `SafetyManager` with policy registry, e-stop, periodic evaluation, and event notification
