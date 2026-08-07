@@ -162,6 +162,67 @@ TEST(WorkerThreadTest, WithHandleRunsOnlyWhileAHandleExists) {
     EXPECT_TRUE(worker.join());
 }
 
+// CRITICAL review fix regression: neither SelfJoinIsRefusedNotAttempted
+// (no external caller in flight) nor ConcurrentStartJoinDoesNotHang
+// (external threads only, no self-call) exercises the actual defect --
+// join() checking isOnThisThread() AFTER acquiring handleMutex_ instead of
+// before. That ordering means a self-join call blocks on the SAME mutex an
+// external join() already holds while genuinely blocked waiting for this
+// exact thread, instead of refusing immediately: permanent two-thread
+// deadlock. This test combines both halves: a real external join() in
+// flight, concurrent with a self-join from inside the loop.
+TEST(WorkerThreadTest, SelfJoinDoesNotDeadlockUnderConcurrentExternalJoin) {
+    std::atomic<bool> finished{false};
+    std::thread watchdog([&finished] {
+        auto deadline = std::chrono::steady_clock::now() + 20s;
+        while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!finished.load()) {
+            std::fprintf(stderr,
+                         "SelfJoinDoesNotDeadlockUnderConcurrentExternalJoin: watchdog deadline "
+                         "exceeded -- self-join deadlocked against a concurrent external join()\n");
+            std::abort();
+        }
+    });
+
+    WorkerThread worker;
+    std::atomic<bool> externalMayJoin{false};
+    std::atomic<bool> loopShouldExit{false};
+    std::atomic<bool> selfJoinReturnedFalse{false};
+
+    worker.start([&] {
+        externalMayJoin.store(true); // tell the external thread to enter its blocking join()
+        // Race-window widener (not the correctness guarantee -- the
+        // watchdog above is): give the external join() a real chance to
+        // acquire handleMutex_ and block inside the actual pthread join
+        // before the self-join below fires. The fix must return false
+        // here regardless of who reaches the lock first.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        bool result = worker.join(); // must return false without blocking
+        selfJoinReturnedFalse.store(!result);
+        while (!loopShouldExit.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+
+    ASSERT_TRUE(waitFor([&] { return externalMayJoin.load(); }, 5s));
+    std::thread externalJoiner([&] {
+        worker.join(); // genuine external join -- blocks until the loop exits
+    });
+
+    ASSERT_TRUE(waitFor([&] { return selfJoinReturnedFalse.load(); }, 10s))
+        << "self-join must return promptly (false) even while an external join() is in flight";
+    EXPECT_TRUE(selfJoinReturnedFalse.load());
+
+    loopShouldExit.store(true);
+    externalJoiner.join();
+
+    finished.store(true);
+    watchdog.join();
+    SUCCEED();
+}
+
 // NOTE: the destructor's detach-instead-of-self-join branch (self-destruct
 // on the worker's own thread) is deliberately NOT covered by a test here,
 // same as ~RealTimeScheduler/~AxonVexSystem: detaching avoids the

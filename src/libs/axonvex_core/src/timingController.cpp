@@ -141,6 +141,31 @@ void RealTimeScheduler::start() {
     // than only once a new thread is actually spawned below.
     hasStarted_.store(true, std::memory_order_relaxed);
 
+    // C42 follow-up, hoisted above lifecycleMutex_ (review fix on the Part 1
+    // hang fix): restart from the scheduler thread itself (a task, still
+    // inside this very call stack, calling start() again after its own
+    // deferred stop()) must refuse outright, unconditionally of running_ --
+    // mirrors the system-layer refusals (initialize()/stop()/reset() on
+    // isOnWorkerThread()); that thread has not unwound out of
+    // schedulerLoop() yet, so starting a second thread here would run two
+    // schedulerLoop()s over the same tasks_ concurrently, and detaching the
+    // old (still-live) loop instead would recreate the C41 hazard (its own
+    // stack racing what start() hands to a new thread). The join-before-
+    // assign half of the old comment here (restart from a different,
+    // external thread after another thread's deferred self-stop left the
+    // handle joinable) lives inside schedulerWorker_.start() itself (C39).
+    // MUST run before lifecycleMutex_ is acquired, not after: a concurrent
+    // external stop() can be holding that lock blocked inside
+    // schedulerWorker_.join() waiting for exactly this thread to return --
+    // taking the lock here first would deadlock against it (same shape as
+    // the join()-widened-critical-section fix in WorkerThread).
+    // isOnSchedulerThread() is lock-free (reads only a published atomic id
+    // via schedulerWorker_.isOnThisThread()), so this check never itself
+    // contends for the lock it exists to avoid.
+    if (isOnSchedulerThread()) {
+        return;
+    }
+
     // C46: serializes the running_ check and the schedulerWorker_ handle
     // manipulation below against a concurrent stop() -- see lifecycleMutex_'s
     // declaration comment. Must wrap the running_.load() early-return too,
@@ -151,24 +176,6 @@ void RealTimeScheduler::start() {
 
     if (running_.load()) {
         return; // Already running
-    }
-
-    // C42 follow-up: read the published id before touching schedulerWorker_
-    // at all -- same discipline as stop(). Restart from the scheduler
-    // thread itself (a task, still inside this very call stack, calling
-    // start() again after its own deferred stop()) must refuse outright --
-    // mirrors the system-layer refusals (initialize()/stop()/reset() on
-    // isOnWorkerThread()); that thread has not unwound out of
-    // schedulerLoop() yet, so starting a second thread here would run two
-    // schedulerLoop()s over the same tasks_ concurrently, and detaching the
-    // old (still-live) loop instead would recreate the C41 hazard (its own
-    // stack racing what start() hands to a new thread). The
-    // join-before-assign half of the old comment here (restart from a
-    // different, external thread after another thread's deferred self-stop
-    // left the handle joinable) now lives inside
-    // schedulerWorker_.start() itself (C39).
-    if (isOnSchedulerThread()) {
-        return;
     }
 
     // running_/paused_ flip to the "started" state via schedulerWorker_'s
@@ -214,6 +221,23 @@ void RealTimeScheduler::stop() {
     // possible latency in the common (uncontended) case.
     halt();
 
+    // Self-stop refusal, hoisted above lifecycleMutex_ (CRITICAL review fix
+    // on the Part 1 hang fix): a ProcessingUnit task body, or the error
+    // callback, running ON this thread via executeTask() can call stop() on
+    // itself. halt() above already cleared running_ and woke
+    // schedulerCondition_ -- everything this thread's own schedulerLoop()
+    // needs to see to exit once this call unwinds. MUST check and return
+    // before lifecycleMutex_ is acquired: a concurrent external stop() can
+    // be holding that lock blocked inside schedulerWorker_.join() waiting
+    // for exactly this thread to return. If this self-call then blocked
+    // trying to acquire the same lock (the pre-fix behavior), neither side
+    // could ever make progress -- the exact deadlock this fix removes.
+    // isOnSchedulerThread() is lock-free by construction, so this check
+    // never itself contends for the lock it exists to avoid.
+    if (isOnSchedulerThread()) {
+        return;
+    }
+
     // C46: everything from here down re-touches schedulerWorker_/running_ and
     // must be mutually exclusive with a concurrent start() -- see
     // lifecycleMutex_'s declaration comment. running_ is re-cleared under the
@@ -228,14 +252,9 @@ void RealTimeScheduler::stop() {
     schedulerCondition_.notify_all();
 
     // schedulerWorker_.join() self-checks isOnThisThread() and refuses
-    // (returns false, does nothing) rather than self-joining -- the C33
-    // shape one layer down (a ProcessingUnit task body, or the error
-    // callback, runs ON this thread via executeTask()). Self-stop:
-    // running_ is now false, so schedulerLoop() exits on its own once this
-    // call returns and control unwinds back out through
-    // executeTask()/processSync(); the deferred join and handle reset is
-    // absorbed by the next stop() call from a real external thread, or by
-    // ~RealTimeScheduler() if stop() is never called again.
+    // (returns false, does nothing) rather than self-joining -- the
+    // isOnSchedulerThread() refusal above already ruled out reaching here
+    // on this thread, so this is purely the external-caller path.
     schedulerWorker_.join();
 }
 
