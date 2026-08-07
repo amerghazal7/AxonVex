@@ -20,6 +20,7 @@ add_library(axonvex_core SHARED
     src/traceReplay.cpp
     src/unitFactory.cpp
     src/unitMetadata.cpp
+    src/unitRegistry.cpp
 )
 
 set_target_properties(axonvex_core PROPERTIES EXPORT_NAME core)
