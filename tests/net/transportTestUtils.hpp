@@ -141,6 +141,12 @@ inline std::vector<uint8_t> framed(const std::vector<uint8_t>& payload) {
                              static_cast<uint8_t>((len >> 16) & 0xFF),
                              static_cast<uint8_t>((len >> 8) & 0xFF),
                              static_cast<uint8_t>(len & 0xFF)};
+    // ponytail: reserve() up front so insert() takes the no-reallocation
+    // path. GCC -O3's -Wstringop-overread false-positives on the reallocating
+    // _M_range_insert path for vector<unsigned char> (GCC libstdc++ quirk;
+    // the copy itself is well-defined regardless of payload size). Invisible
+    // under -O0, hence undetected until Release builds became reachable.
+    out.reserve(out.size() + payload.size());
     out.insert(out.end(), payload.begin(), payload.end());
     return out;
 }

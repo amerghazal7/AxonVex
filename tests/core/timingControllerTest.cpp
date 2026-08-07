@@ -6,11 +6,33 @@
 #include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
 using namespace axonvex::core;
 using namespace std::chrono_literals;
+
+// Shared with builtinUnitsTest.cpp (same test_core binary): that TU defines
+// the process-wide operator new/delete override, gated by g_trackAllocs, that
+// counts heap allocations. Reused here (rather than a second, conflicting
+// override) to prove selectReadyTasksForCycle() performs zero heap
+// allocations per scheduler cycle in steady state (HIGH review fix).
+extern std::atomic<bool> g_trackAllocs;
+extern std::atomic<long> g_allocCount;
+
+namespace axonvex::core {
+// C45: grants direct, single-threaded access to the otherwise-private
+// scheduleRoundRobin() so the regression test below can drive it
+// deterministically (no scheduler thread, no timing dependence) instead of
+// inferring correctness from task-execution counts under real concurrency.
+class RoundRobinTestAccessor {
+  public:
+    static uint32_t call(RealTimeScheduler& scheduler) {
+        return scheduler.scheduleRoundRobin();
+    }
+};
+} // namespace axonvex::core
 
 namespace {
 
@@ -518,6 +540,78 @@ TEST_F(TimingControllerTest, AllReadyTasksExecutePerCycle) {
     EXPECT_GE(unit3->getProcessCallCount(), 35u);
 }
 
+// HIGH regression: V4's selectReadyTasksForCycle() used fresh local vectors
+// (`candidates`, and the returned `ids`) every scheduler cycle -- a
+// `.reserve()`/heap allocation on the scheduler thread even in a fully idle
+// cycle, violating CLAUDE.md rule 2 ("no heap allocation" on the scheduler
+// hot path) in the very change whose purpose was RT-path cleanup. Fix: both
+// became clear()-only persistent members (readyCandidates_/readyTaskIds_),
+// so steady-state cycles allocate nothing.
+//
+// Measured via the process-wide allocation counter defined in
+// builtinUnitsTest.cpp (see the `extern` declarations near the top of this
+// file): the task body samples the counter on every call, so the delta
+// between two consecutive calls captures everything the scheduler thread
+// allocated in between -- which necessarily includes one or more
+// selectReadyTasksForCycle() passes (period 1ms vs. a 200us timer
+// resolution means several idle cycles run between executions).
+TEST_F(TimingControllerTest, SchedulerReadySetSelectionAllocatesNoHeapInSteadyState) {
+    class AllocationProbeUnit : public MockProcessingUnit {
+      public:
+        explicit AllocationProbeUnit(const std::string& name) : MockProcessingUnit(name) {}
+        void processSync() override {
+            // callCount_ is polled from the main thread below while this
+            // runs on the scheduler thread -- must be atomic (TSan-caught
+            // race on a plain uint32_t here, in an earlier version of this
+            // test). lastCount_ is scheduler-thread-only (read+written only
+            // from here), so it stays a plain long.
+            uint32_t n = callCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+            long count = g_allocCount.load(std::memory_order_relaxed);
+            long delta = count - lastCount_;
+            lastCount_ = count;
+            // Skip the first 20 calls: capacity has not yet reached its
+            // high-water mark, so a one-time growth allocation there is
+            // expected and not a regression.
+            if (n > 20 && delta > maxDeltaAfterWarmup.load(std::memory_order_relaxed)) {
+                maxDeltaAfterWarmup.store(delta, std::memory_order_relaxed);
+            }
+        }
+        uint32_t getCallCount() const {
+            return callCount_.load(std::memory_order_relaxed);
+        }
+        std::atomic<long> maxDeltaAfterWarmup{0};
+
+      private:
+        std::atomic<uint32_t> callCount_{0};
+        long lastCount_{0};
+    };
+
+    AllocationProbeUnit probeUnit("AllocProbe");
+    probeUnit.initialize();
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(1);
+    controller->scheduleProcessingUnit(&probeUnit, constraints);
+    controller->setTimerResolution(std::chrono::microseconds(200));
+
+    g_allocCount.store(0, std::memory_order_relaxed);
+    g_trackAllocs.store(true, std::memory_order_relaxed);
+    controller->start();
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (probeUnit.getCallCount() < 200 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    g_trackAllocs.store(false, std::memory_order_relaxed);
+    controller->stop();
+
+    ASSERT_GE(probeUnit.getCallCount(), 200u);
+    EXPECT_EQ(probeUnit.maxDeltaAfterWarmup.load(std::memory_order_relaxed), 0)
+        << "scheduler thread heap-allocated between two consecutive task "
+           "executions after warmup -- selectReadyTasksForCycle() is "
+           "allocating on the RT path";
+}
+
 // Regression test for C1: removing a task while it executes must not destroy
 // the task out from under the scheduler (use-after-free guarded by ASan runs).
 TEST_F(TimingControllerTest, RemoveTaskDuringExecutionIsSafe) {
@@ -543,6 +637,109 @@ TEST_F(TimingControllerTest, RemoveTaskDuringExecutionIsSafe) {
     // Remove while (likely) mid-execution: must not crash or corrupt the pool
     EXPECT_TRUE(controller->removeProcessingUnit(taskId));
     controller->stop();
+}
+
+// V6 use-after-free regression (CRITICAL, C18-shape): schedulerLoop()
+// dispatches errorCallback_ using `task->unit` AFTER finalizeTaskExecution()
+// may already have deallocated `task` back to taskPool_ (the pendingRemoval
+// branch, taken when removeTask() runs while the task is still "executing").
+//
+// Deterministic single-threaded repro (no races needed): the failing unit
+// removes ITSELF on its 10th consecutive failure -- still safe to do from
+// inside processSync(), since executeTask() holds no lock while user code
+// runs. That 10th failure is also the one that sets outcome.deactivated,
+// so schedulerLoop makes TWO error-callback calls for it. From inside the
+// FIRST call, we schedule a brand-new task: the pool's Treiber-stack (LIFO)
+// free list hands it the exact block just freed by finalizeTaskExecution(),
+// overwriting its `unit` field. Pre-fix, the SECOND call re-reads
+// `task->unit` from that now-reused block and reports the WRONG
+// ProcessingUnit*; post-fix it uses TaskFinalizeOutcome::unit, captured
+// under tasksMutex_ before any deallocation could happen.
+TEST_F(TimingControllerTest, ErrorCallbackAfterSelfRemovalReportsOriginalUnit) {
+    class SelfRemovingUnit : public MockProcessingUnit {
+      public:
+        explicit SelfRemovingUnit(const std::string& name) : MockProcessingUnit(name) {}
+        void setController(TimingController* controller) {
+            controller_ = controller;
+        }
+        void setTaskId(uint32_t id) {
+            taskId_ = id;
+        }
+        void processSync() override {
+            // 10 == RealTimeScheduler::kMaxConsecutiveFailures (private);
+            // this is the call that pushes consecutiveFailures to 10, lining
+            // up self-removal with outcome.deactivated becoming true.
+            if (++callCount_ == 10) {
+                controller_->removeProcessingUnit(taskId_);
+            }
+            throw std::runtime_error("forced failure");
+        }
+
+      private:
+        TimingController* controller_{nullptr};
+        uint32_t taskId_{0};
+        int callCount_{0};
+    };
+
+    SelfRemovingUnit failingUnit("SelfRemoving");
+    failingUnit.setController(controller.get());
+    failingUnit.initialize();
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(1);
+    uint32_t taskId = controller->scheduleProcessingUnit(&failingUnit, constraints);
+    ASSERT_GT(taskId, 0u);
+    failingUnit.setTaskId(taskId);
+
+    // errorCallback_ fires once per failure (calls 1-9: consecutiveFailures
+    // < 10, one dispatch each) and TWICE on call 10 (the deactivation
+    // message, then the regular one) -- 9 + 2 = 11 total, then never again
+    // (the task is erased from tasks_ by the self-removal on call 10).
+    constexpr size_t kExpectedTotalCalls = 11;
+
+    // observedUnits is only ever read from the main thread AFTER
+    // controller->stop() below has joined the scheduler thread -- that join
+    // is the synchronization point. The POLL condition below must not touch
+    // it directly (the scheduler thread is still writing it concurrently at
+    // that point); poll on this atomic counter instead (TSan-caught race on
+    // observedUnits.size() in an earlier version of this test).
+    std::vector<ProcessingUnit*> observedUnits;
+    std::atomic<size_t> callbackCount{0};
+    bool reused = false;
+    controller->setErrorCallback([&](ProcessingUnit* u, const std::string& msg) {
+        observedUnits.push_back(u);
+        // Only the FIRST of the deactivation pair carries this message; fire
+        // the reuse trick right there so the SECOND call for this SAME
+        // failure is the one that would read the corrupted block pre-fix.
+        if (!reused && msg.find("deactivated") != std::string::npos) {
+            reused = true;
+            // Force the pool's just-freed block to be handed to a NEW task
+            // from inside this callback, before the pair's second callback
+            // runs.
+            TimingConstraints reuseConstraints;
+            reuseConstraints.period = std::chrono::milliseconds(50);
+            controller->scheduleProcessingUnit(unit2.get(), reuseConstraints);
+        }
+        callbackCount.fetch_add(1, std::memory_order_relaxed);
+    });
+
+    controller->setTimerResolution(std::chrono::microseconds(200));
+    controller->start();
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (callbackCount.load(std::memory_order_relaxed) < kExpectedTotalCalls &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    controller->stop();
+
+    ASSERT_EQ(observedUnits.size(), kExpectedTotalCalls)
+        << "expected exactly " << kExpectedTotalCalls
+        << " error-callback dispatches (9 single failures + the deactivating "
+           "pair), then none more once the task self-removes";
+    EXPECT_EQ(observedUnits.back(), &failingUnit)
+        << "last callback of the deactivating pair reported a different "
+           "ProcessingUnit* -- use-after-free on the deallocated SchedulerTask";
 }
 
 TEST_F(TimingControllerTest, CustomScheduling) {
@@ -577,6 +774,27 @@ TEST_F(TimingControllerTest, CustomScheduling) {
     // Custom scheduler should have been called
     EXPECT_GT(customCallCount, 0);
     EXPECT_GT(unit1->getProcessCallCount(), 0);
+}
+
+// C44-sibling regression: scheduleCustom() reads customScheduler_ unlocked on
+// the scheduler thread (both the `if (!customScheduler_)` guard and the
+// invocation itself), while setCustomScheduler() writes it under
+// schedulerMutex_ -- the identical torn-std::function-read shape C44 fixed
+// for errorCallback_. Fix: registration refuses once the scheduler has ever
+// started, per the same hasStarted_ latch / requireNotStarted() helper --
+// pre-fix, this call silently succeeds instead of throwing.
+TEST_F(TimingControllerTest, SetCustomSchedulerAfterStartThrows) {
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(10);
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+
+    controller->start();
+
+    EXPECT_THROW(controller->setCustomScheduler(
+                     [](const std::vector<SchedulerTask>&) -> uint32_t { return 0; }),
+                 std::logic_error);
+
+    controller->stop();
 }
 
 // Timing Constraint Tests
@@ -791,6 +1009,124 @@ TEST_F(TimingControllerTest, EmergencyStop) {
     EXPECT_TRUE(failsafeCalled.load());
 }
 
+// Bounded e-stop halt (design spec §6): emergencyStop() must be the
+// non-blocking primitive -- it must not wait for the in-flight task's WCET.
+// Before the fix, TimingController::emergencyStop() called
+// RealTimeScheduler::stop(), which joins the scheduler thread and therefore
+// blocks for as long as the currently-executing task takes.
+TEST_F(TimingControllerTest, EmergencyStopIsNonBlockingWithinBound) {
+    unit1->setProcessingDelay(std::chrono::milliseconds(80));
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+    controller->start();
+
+    // Poll until the unit has started executing at least once, so
+    // emergencyStop() below races a genuinely in-flight ~80ms task.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (unit1->getProcessCallCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_GT(unit1->getProcessCallCount(), 0u);
+
+    auto before = std::chrono::steady_clock::now();
+    controller->emergencyStop();
+    auto elapsed = std::chrono::steady_clock::now() - before;
+
+    // Loose, CI-safe bound: the primitive must return long before the
+    // ~80ms in-flight task does. The real number is a Phase 3 benchmark
+    // concern (docs/benchmarks.md); this test only asserts "bounded at all".
+    EXPECT_LT(elapsed, std::chrono::milliseconds(50));
+    EXPECT_FALSE(controller->isRunning());
+}
+
+// halt() (via emergencyStop()) must be safe to call from the scheduler
+// thread itself -- a task body invoking it is a realistic shape (a policy
+// evaluated on-demand from inside a task). It must not deadlock or
+// std::terminate (the C33/C42 self-join shape stop() already guards
+// against); unlike stop(), halt() never joins, so there is no self-join
+// hazard to defer -- this test proves that holds through the public API.
+class SelfEmergencyStoppingUnit : public MockProcessingUnit {
+  public:
+    SelfEmergencyStoppingUnit(const std::string& name, TimingController* controller,
+                              std::shared_ptr<std::atomic<bool>> attempted)
+        : MockProcessingUnit(name), controller_(controller), attempted_(std::move(attempted)) {}
+
+    void processSync() override {
+        if (!attempted_->exchange(true)) {
+            controller_->emergencyStop();
+        }
+    }
+
+  private:
+    TimingController* controller_;
+    std::shared_ptr<std::atomic<bool>> attempted_;
+};
+
+TEST_F(TimingControllerTest, EmergencyStopFromTaskBodyIsSafe) {
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto selfStopper =
+        std::make_unique<SelfEmergencyStoppingUnit>("SelfStopper", controller.get(), attempted);
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    controller->scheduleProcessingUnit(selfStopper.get(), constraints);
+    controller->start();
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!attempted->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(attempted->load()) << "self emergencyStop() was never attempted";
+
+    // Scheduler must actually wind down (running_ false) after the
+    // self-triggered halt, and a normal stop() from this (external) thread
+    // afterwards must complete (join) without hanging.
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (controller->isRunning() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_FALSE(controller->isRunning());
+    controller->stop(); // must return -- no self-join, no terminate
+}
+
+// V5 (CLAUDE.md #8: lock-free claims require a TSan-clean stress test plus a
+// memory-ordering comment -- the comment lives on RealTimeScheduler's
+// AtomicStatistics member). Hammer getPerformanceMetrics()/
+// resetPerformanceMetrics() from a separate thread while the scheduler
+// thread continuously executes tasks (the sole writer of statistics_), for
+// long enough that a real race would have a chance to fire. No assertion on
+// the numbers themselves -- this test's only job is to run cleanly under
+// ThreadSanitizer (see the tsan ctest invocation); a plain build merely
+// checks it doesn't crash/hang.
+TEST_F(TimingControllerTest, ConcurrentStatsReadDuringExecutionIsRaceFree) {
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(1);
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+    controller->start();
+
+    std::atomic<bool> stop{false};
+    std::thread reader([this, &stop]() {
+        while (!stop.load()) {
+            auto stats = controller->getPerformanceMetrics();
+            (void)stats;
+            controller->resetPerformanceMetrics();
+        }
+    });
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    stop.store(true);
+    reader.join();
+    controller->stop();
+
+    SUCCEED(); // reaching here without a TSan report / crash / hang is the test
+}
+
 // Thread Safety Tests
 TEST_F(TimingControllerTest, ConcurrentTaskManagement) {
     // Test was failing due to priority scheduler bug - now fixed, keeping original priority-based
@@ -851,6 +1187,198 @@ TEST_F(TimingControllerTest, ConcurrentTaskManagement) {
     for (const auto& unit : units) {
         EXPECT_GT(unit->getProcessCallCount(), 0);
     }
+}
+
+// C44 regression: setErrorCallback() must be setup-only. Registering before
+// start() must still work and the callback must still fire on a task
+// failure.
+TEST_F(TimingControllerTest, SetErrorCallbackBeforeStartFiresOnTaskFailure) {
+    std::atomic<int> errorCount{0};
+    controller->setErrorCallback(
+        [&errorCount](ProcessingUnit*, const std::string&) { errorCount.fetch_add(1); });
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    unit1->setShouldThrow(true);
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+
+    controller->start();
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (errorCount.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    controller->stop();
+
+    EXPECT_GT(errorCount.load(), 0) << "error callback registered before start() never fired";
+}
+
+// C44 regression: executeTask()'s failure path reads errorCallback_ unlocked
+// on the scheduler thread. Registering a NEW callback after start() would
+// race that read (a torn std::function). Fix: registration refuses once the
+// scheduler has ever started, per the C32 precedent (BasePort::
+// requireNoTrafficYet) -- pre-fix, this call silently succeeds instead of
+// throwing.
+TEST_F(TimingControllerTest, SetErrorCallbackAfterStartThrows) {
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(10);
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+
+    controller->start();
+
+    EXPECT_THROW(controller->setErrorCallback([](ProcessingUnit*, const std::string&) {}),
+                 std::logic_error);
+
+    controller->stop();
+}
+
+// C45 regression: scheduleRoundRobin() kept its rotation cursor in a
+// function-local static, so every RealTimeScheduler instance in the process
+// shared ONE cursor. This drives scheduleRoundRobin() directly (via the
+// friend accessor, single-threaded, no scheduler loop involved) instead of
+// inferring correctness from task-execution counts under real concurrency,
+// which turned out to mask the bug: with only two always-ready tasks per
+// instance, scheduleRoundRobin()'s own "scan up to tasks_.size() candidates"
+// loop visits both tasks every pass regardless of where the (possibly
+// corrupted) cursor starts, so a timing-based count comparison stayed
+// balanced even pre-fix.
+//
+// The property under test: an isolated RealTimeScheduler with a given
+// sequence of addTask() calls must produce a fully deterministic
+// scheduleRoundRobin() selection sequence -- unordered_map iteration order
+// is a pure function of the keys inserted (integers, default std::hash, no
+// randomization), so two freshly-constructed instances given the identical
+// task IDs in the identical order are bitwise-reproducible in isolation.
+// Interleaving unrelated calls on a second, disjoint-ID-space instance must
+// not change that sequence. Pre-fix (shared static) it does; post-fix
+// (per-instance lastSelectedTask_ member) it cannot, by construction.
+TEST_F(TimingControllerTest, ConcurrentInstancesRotateIndependently) {
+    TimingConstraints constraints;
+    constraints.period = std::chrono::microseconds(0); // always ready
+
+    // Baseline: A run in complete isolation, 3 tasks, 6 consecutive
+    // selections (two full rotations) recorded with no other instance ever
+    // constructed.
+    RealTimeScheduler baselineA(SchedulingPolicy::ROUND_ROBIN);
+    MockProcessingUnit ba1("A1"), ba2("A2"), ba3("A3");
+    ba1.initialize();
+    ba2.initialize();
+    ba3.initialize();
+    baselineA.addTask(&ba1, constraints);
+    baselineA.addTask(&ba2, constraints);
+    baselineA.addTask(&ba3, constraints);
+
+    std::vector<uint32_t> baselineSequence;
+    for (int i = 0; i < 6; ++i) {
+        baselineSequence.push_back(RoundRobinTestAccessor::call(baselineA));
+    }
+    // Sanity: an isolated instance must actually pick ready tasks, never 0.
+    for (uint32_t id : baselineSequence) {
+        ASSERT_NE(id, 0u) << "isolated scheduler failed to select any ready task";
+    }
+
+    // Now repeat the IDENTICAL construction as A2 -- same task IDs (1,2,3),
+    // same insertion order -- but interleave calls to a SECOND instance B
+    // with a disjoint ID range in between every A2 call. B's task IDs must
+    // not exist in A2's map for the corruption to bite (a shared cursor
+    // holding a value the local map DOES contain still resolves via ++it,
+    // masking the bug the same way the timing version above did).
+    RealTimeScheduler interleavedA(SchedulingPolicy::ROUND_ROBIN);
+    MockProcessingUnit ia1("A1"), ia2("A2"), ia3("A3");
+    ia1.initialize();
+    ia2.initialize();
+    ia3.initialize();
+    interleavedA.addTask(&ia1, constraints);
+    interleavedA.addTask(&ia2, constraints);
+    interleavedA.addTask(&ia3, constraints);
+
+    RealTimeScheduler otherB(SchedulingPolicy::ROUND_ROBIN);
+    MockProcessingUnit burn("Burn"), ib1("B1");
+    burn.initialize();
+    ib1.initialize();
+    // Burn B's IDs 1..5 so its one real task lands at ID 6 -- disjoint from
+    // A's {1,2,3}.
+    for (int i = 0; i < 5; ++i) {
+        uint32_t id = otherB.addTask(&burn, constraints);
+        otherB.removeTask(id);
+    }
+    otherB.addTask(&ib1, constraints);
+
+    std::vector<uint32_t> interleavedSequence;
+    for (int i = 0; i < 6; ++i) {
+        interleavedSequence.push_back(RoundRobinTestAccessor::call(interleavedA));
+        RoundRobinTestAccessor::call(otherB); // unrelated instance, disjoint IDs
+    }
+
+    // The property: A2's own selections must be identical to the baseline,
+    // regardless of B's interleaved activity. Pre-fix, the shared static
+    // means every otherB call between two interleavedA calls overwrites the
+    // cursor with a value (6) absent from A's map, forcing a reset to
+    // tasks_.begin() -- which desyncs the sequence from the baseline as
+    // soon as the correct rotation would NOT have been at begin().
+    EXPECT_EQ(interleavedSequence, baselineSequence)
+        << "an unrelated instance's activity changed this instance's round-robin "
+           "selection order -- the rotation cursor is not instance-local (C45)";
+}
+
+// C43 regression: scheduleCustom() used to invoke customScheduler_ WHILE
+// STILL HOLDING tasksMutex_. A custom scheduler that calls back into any
+// scheduler API taking that same lock (getActiveTaskIds(), addTask(),
+// removeTask(), getStatistics()...) self-deadlocks -- permanently -- on the
+// (non-recursive) mutex, on the scheduler thread. This test's failure mode
+// pre-fix is exactly that hang, so it is guarded by its own deadline: if the
+// re-entrant call hasn't completed within it, the TimingController is
+// deliberately leaked instead of destroyed -- ~TimingController joins the
+// scheduler thread, and a thread permanently blocked on its own mutex would
+// hang the whole ctest run, not just this test.
+TEST_F(TimingControllerTest, CustomSchedulerCallbackCanReenterSchedulerApi) {
+    auto ctrl = std::make_unique<TimingController>(SchedulingPolicy::CUSTOM);
+    TimingController* ctrlRaw = ctrl.get();
+
+    MockProcessingUnit unit("Reentrant");
+    unit.initialize();
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    ctrl->scheduleProcessingUnit(&unit, constraints);
+
+    std::atomic<bool> reentered{false};
+    std::atomic<int> reentrantTaskCount{-1};
+
+    ctrl->setCustomScheduler([ctrlRaw, &reentered, &reentrantTaskCount](
+                                 const std::vector<SchedulerTask>& tasks) -> uint32_t {
+        // Re-entrant call: pre-fix this deadlocks (tasksMutex_ is already
+        // held by the caller, on this same thread).
+        auto ids = ctrlRaw->getActiveTaskIds();
+        reentrantTaskCount.store(static_cast<int>(ids.size()));
+        reentered.store(true);
+
+        for (const auto& task : tasks) {
+            if (task.active.load() && !task.executing.load()) {
+                return task.taskId;
+            }
+        }
+        return 0;
+    });
+
+    ctrl->start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!reentered.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    if (!reentered.load()) {
+        // Pre-fix hang: do not touch ctrl any further -- see the comment
+        // above the test.
+        ctrl.release();
+        FAIL() << "custom scheduler callback re-entering the scheduler API never completed -- "
+                  "scheduleCustom() is still invoking the callback under tasksMutex_ (C43)";
+    }
+
+    ctrl->stop();
+    EXPECT_TRUE(reentered.load());
+    EXPECT_EQ(reentrantTaskCount.load(), 1);
 }
 
 } // anonymous namespace

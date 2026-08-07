@@ -1,9 +1,9 @@
 #pragma once
 
-#include <axonvex_core/callback.hpp>
-#include <axonvex_core/callerKeyed.hpp>
 #include <algorithm>
 #include <atomic>
+#include <axonvex_core/callback.hpp>
+#include <axonvex_core/callerKeyed.hpp>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -14,23 +14,22 @@
 
 namespace axonvex::adapters {
 
-enum class AdapterState {
-    Disconnected,
-    Connecting,
-    Connected,
-    Reconnecting,
-    Error,
-    ShuttingDown
-};
+enum class AdapterState { Disconnected, Connecting, Connected, Reconnecting, Error, ShuttingDown };
 
 inline std::string adapterStateToString(AdapterState state) {
     switch (state) {
-        case AdapterState::Disconnected:  return "Disconnected";
-        case AdapterState::Connecting:    return "Connecting";
-        case AdapterState::Connected:     return "Connected";
-        case AdapterState::Reconnecting:  return "Reconnecting";
-        case AdapterState::Error:         return "Error";
-        case AdapterState::ShuttingDown:  return "ShuttingDown";
+        case AdapterState::Disconnected:
+            return "Disconnected";
+        case AdapterState::Connecting:
+            return "Connecting";
+        case AdapterState::Connected:
+            return "Connected";
+        case AdapterState::Reconnecting:
+            return "Reconnecting";
+        case AdapterState::Error:
+            return "Error";
+        case AdapterState::ShuttingDown:
+            return "ShuttingDown";
     }
     return "Unknown";
 }
@@ -45,15 +44,15 @@ struct AdapterStatistics {
     std::chrono::steady_clock::time_point connectedSince;
 
     double uptimeSeconds() const {
-        if (connectedSince == std::chrono::steady_clock::time_point{}) return 0.0;
-        return std::chrono::duration<double>(
-                   std::chrono::steady_clock::now() - connectedSince)
+        if (connectedSince == std::chrono::steady_clock::time_point{})
+            return 0.0;
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - connectedSince)
             .count();
     }
 
     void reset() {
-        messagesReceived = messagesSent = bytesReceived = bytesSent =
-            errorsCount = reconnectCount = 0;
+        messagesReceived = messagesSent = bytesReceived = bytesSent = errorsCount = reconnectCount =
+            0;
         connectedSince = {};
     }
 };
@@ -85,8 +84,7 @@ class AdapterInterface {
     virtual AdapterState state() const = 0;
     virtual bool isConnected() const = 0;
 
-    virtual bool publish(const std::string& topic,
-                         const std::vector<uint8_t>& payload) = 0;
+    virtual bool publish(const std::string& topic, const std::vector<uint8_t>& payload) = 0;
 
     using MessageCallback = axonvex::core::Callback<AdapterMessage>;
     virtual void subscribe(const std::string& topic, MessageCallback* cb) = 0;
@@ -142,10 +140,10 @@ class AdapterBase : public AdapterInterface {
             return false;
         }
         auto current = state_.load();
-        if (current == AdapterState::Connected) return true;
+        if (current == AdapterState::Connected)
+            return true;
         if (current != AdapterState::Disconnected) {
-            reportError("start() called in invalid state: " +
-                        adapterStateToString(current));
+            reportError("start() called in invalid state: " + adapterStateToString(current));
             return false;
         }
         state_.store(AdapterState::Connecting);
@@ -162,8 +160,7 @@ class AdapterBase : public AdapterInterface {
     bool stop() override {
         std::lock_guard<std::mutex> lock(mutex_);
         auto current = state_.load();
-        if (current == AdapterState::Disconnected ||
-            current == AdapterState::ShuttingDown) {
+        if (current == AdapterState::Disconnected || current == AdapterState::ShuttingDown) {
             return true;
         }
         state_.store(AdapterState::ShuttingDown);
@@ -180,13 +177,14 @@ class AdapterBase : public AdapterInterface {
         onShutdown();
     }
 
-    AdapterState state() const override { return state_.load(); }
+    AdapterState state() const override {
+        return state_.load();
+    }
     bool isConnected() const override {
         return state_.load() == AdapterState::Connected;
     }
 
-    bool publish(const std::string& topic,
-                 const std::vector<uint8_t>& payload) override {
+    bool publish(const std::string& topic, const std::vector<uint8_t>& payload) override {
         if (!isConnected()) {
             reportError("publish() called while not connected");
             stats_.errorsCount++;
@@ -206,12 +204,15 @@ class AdapterBase : public AdapterInterface {
     bool unsubscribe(const std::string& topic, MessageCallback* cb) override {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = topicSubscribers_.find(topic);
-        if (it == topicSubscribers_.end()) return false;
+        if (it == topicSubscribers_.end())
+            return false;
         auto& vec = it->second;
         auto pos = std::find(vec.begin(), vec.end(), cb);
-        if (pos == vec.end()) return false;
+        if (pos == vec.end())
+            return false;
         vec.erase(pos);
-        if (vec.empty()) topicSubscribers_.erase(it);
+        if (vec.empty())
+            topicSubscribers_.erase(it);
         return true;
     }
 
@@ -223,8 +224,12 @@ class AdapterBase : public AdapterInterface {
         return errorBus_.unregisterKeyedCallback(key, cb);
     }
 
-    AdapterStatistics statistics() const override { return stats_; }
-    bool healthCheck() const override { return isConnected(); }
+    AdapterStatistics statistics() const override {
+        return stats_;
+    }
+    bool healthCheck() const override {
+        return isConnected();
+    }
 
     size_t subscriberCount(const std::string& topic) const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -233,7 +238,9 @@ class AdapterBase : public AdapterInterface {
     }
 
   protected:
-    virtual bool onStart() { return true; }
+    virtual bool onStart() {
+        return true;
+    }
     virtual void onStop() {}
     virtual void onShutdown() {}
     virtual void enrichMessage(AdapterMessage& /*msg*/) {}
@@ -243,11 +250,11 @@ class AdapterBase : public AdapterInterface {
         errorBus_.callCallbacksByKey("default", message);
     }
 
-    void deliverLocally(const std::string& topic,
-                        const std::vector<uint8_t>& payload) {
+    void deliverLocally(const std::string& topic, const std::vector<uint8_t>& payload) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = topicSubscribers_.find(topic);
-        if (it == topicSubscribers_.end()) return;
+        if (it == topicSubscribers_.end())
+            return;
 
         AdapterMessage msg;
         msg.topic = topic;
@@ -276,8 +283,12 @@ class AdapterBase : public AdapterInterface {
 
 class MockAdapter final : public AdapterBase {
   public:
-    std::string name() const override { return "MockAdapter"; }
-    std::string protocolId() const override { return "mock"; }
+    std::string name() const override {
+        return "MockAdapter";
+    }
+    std::string protocolId() const override {
+        return "mock";
+    }
     bool configure(const std::string& /*key*/, const std::string& /*value*/) override {
         return false;
     }

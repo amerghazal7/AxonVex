@@ -183,7 +183,12 @@ T* MemoryPool<T>::allocate() noexcept {
             if (free_head_.compare_exchange_weak(head, new_head, acq_rel, acquire)) {
                 block.is_allocated.store(true, relaxed);
                 size_t current_count = allocated_count_.fetch_add(1, relaxed) + 1;
-                size_t peak = stats_.peak_usage.load(relaxed);
+                // peak_usage is atomic<uint64_t>; compare_exchange_weak's expected
+                // parameter is a reference requiring an exact type match. size_t and
+                // uint64_t are the same type on Linux/Windows but distinct on Apple
+                // platforms (unsigned long vs unsigned long long) — a size_t local
+                // here fails to bind and breaks the macOS build.
+                uint64_t peak = stats_.peak_usage.load(relaxed);
                 while (current_count > peak &&
                        !stats_.peak_usage.compare_exchange_weak(peak, current_count, relaxed)) {}
                 stats_.current_usage.store(current_count, relaxed);

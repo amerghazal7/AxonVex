@@ -168,13 +168,34 @@ void ProcessingUnit::updateInstanceDescription(const std::string& description) {
 }
 
 ProcessingUnit::ExecutionStats ProcessingUnit::getExecutionStats() const {
-    std::lock_guard<std::mutex> lock(statsMutex_);
-    return stats_;
+    // V8: no lock — see the field comments in the header. Each load is relaxed;
+    // this is a diagnostics snapshot, not a linearization point.
+    ExecutionStats stats;
+    stats.syncExecutionCount = syncExecutionCount_.load(std::memory_order_relaxed);
+    stats.asyncExecutionCount = asyncExecutionCount_.load(std::memory_order_relaxed);
+    stats.totalSyncTime =
+        std::chrono::microseconds(totalSyncTimeUs_.load(std::memory_order_relaxed));
+    stats.totalAsyncTime =
+        std::chrono::microseconds(totalAsyncTimeUs_.load(std::memory_order_relaxed));
+    stats.avgSyncTime = std::chrono::microseconds(avgSyncTimeUs_.load(std::memory_order_relaxed));
+    stats.avgAsyncTime = std::chrono::microseconds(avgAsyncTimeUs_.load(std::memory_order_relaxed));
+    stats.maxSyncTime = std::chrono::microseconds(maxSyncTimeUs_.load(std::memory_order_relaxed));
+    stats.maxAsyncTime = std::chrono::microseconds(maxAsyncTimeUs_.load(std::memory_order_relaxed));
+    return stats;
 }
 
 void ProcessingUnit::resetExecutionStats() {
-    std::lock_guard<std::mutex> lock(statsMutex_);
-    stats_ = ExecutionStats{};
+    // V8: relaxed stores; may interleave with an in-flight update from the
+    // scheduler thread (same tolerance as the loads above — diagnostics, not a
+    // correctness-critical counter).
+    syncExecutionCount_.store(0, std::memory_order_relaxed);
+    asyncExecutionCount_.store(0, std::memory_order_relaxed);
+    totalSyncTimeUs_.store(0, std::memory_order_relaxed);
+    totalAsyncTimeUs_.store(0, std::memory_order_relaxed);
+    avgSyncTimeUs_.store(0, std::memory_order_relaxed);
+    avgAsyncTimeUs_.store(0, std::memory_order_relaxed);
+    maxSyncTimeUs_.store(0, std::memory_order_relaxed);
+    maxAsyncTimeUs_.store(0, std::memory_order_relaxed);
 }
 
 ProcessingUnit::PerformanceMetrics ProcessingUnit::getPerformanceMetrics() const {
@@ -208,22 +229,34 @@ void ProcessingUnit::setError(const std::string& error) {
 }
 
 void ProcessingUnit::updateSyncExecutionStats(std::chrono::microseconds executionTime) {
-    std::lock_guard<std::mutex> lock(statsMutex_);
-    stats_.syncExecutionCount++;
-    stats_.totalSyncTime += executionTime;
-    stats_.avgSyncTime = stats_.totalSyncTime / stats_.syncExecutionCount;
-    if (executionTime > stats_.maxSyncTime) {
-        stats_.maxSyncTime = executionTime;
+    // V8: single-writer (scheduler thread only) — plain arithmetic, then relaxed
+    // stores to publish. No RMW race is possible because nothing else ever
+    // writes these fields.
+    uint64_t count = syncExecutionCount_.load(std::memory_order_relaxed) + 1;
+    auto total =
+        std::chrono::microseconds(totalSyncTimeUs_.load(std::memory_order_relaxed)) + executionTime;
+    int64_t maxSoFar = maxSyncTimeUs_.load(std::memory_order_relaxed);
+
+    syncExecutionCount_.store(count, std::memory_order_relaxed);
+    totalSyncTimeUs_.store(total.count(), std::memory_order_relaxed);
+    avgSyncTimeUs_.store((total / count).count(), std::memory_order_relaxed);
+    if (executionTime.count() > maxSoFar) {
+        maxSyncTimeUs_.store(executionTime.count(), std::memory_order_relaxed);
     }
 }
 
 void ProcessingUnit::updateAsyncExecutionStats(std::chrono::microseconds executionTime) {
-    std::lock_guard<std::mutex> lock(statsMutex_);
-    stats_.asyncExecutionCount++;
-    stats_.totalAsyncTime += executionTime;
-    stats_.avgAsyncTime = stats_.totalAsyncTime / stats_.asyncExecutionCount;
-    if (executionTime > stats_.maxAsyncTime) {
-        stats_.maxAsyncTime = executionTime;
+    // V8: same single-writer argument as updateSyncExecutionStats above.
+    uint64_t count = asyncExecutionCount_.load(std::memory_order_relaxed) + 1;
+    auto total = std::chrono::microseconds(totalAsyncTimeUs_.load(std::memory_order_relaxed)) +
+                 executionTime;
+    int64_t maxSoFar = maxAsyncTimeUs_.load(std::memory_order_relaxed);
+
+    asyncExecutionCount_.store(count, std::memory_order_relaxed);
+    totalAsyncTimeUs_.store(total.count(), std::memory_order_relaxed);
+    avgAsyncTimeUs_.store((total / count).count(), std::memory_order_relaxed);
+    if (executionTime.count() > maxSoFar) {
+        maxAsyncTimeUs_.store(executionTime.count(), std::memory_order_relaxed);
     }
 }
 

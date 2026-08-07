@@ -1,0 +1,145 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://axonvex.dev/schema/axv-v1.schema.json",
+  "title": "AxonVex SystemSpec v1 (.axv.json)",
+  "description": "Composer document format (Phase 2 design spec §2). This file is the normative structural reference; the authoritative validator is axonvex::core::SystemSpec::parse/validate in src/libs/axonvex_core, which also enforces cross-field rules (name uniqueness, port/type resolution against a UnitFactory) a generic JSON Schema validator cannot express.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["specVersion", "system", "units"],
+  "properties": {
+    "specVersion": { "const": "1.0" },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "tickRateUs": { "type": "integer", "exclusiveMinimum": 0 },
+        "schedulingPolicy": {
+          "enum": ["ROUND_ROBIN", "PRIORITY_BASED", "EARLIEST_DEADLINE_FIRST", "RATE_MONOTONIC"]
+        },
+        "enableRealTimeScheduling": { "type": "boolean" },
+        "logLevel": { "enum": ["Debug", "Info", "Warning", "Error", "Critical"] },
+        "eventPoolSize": { "type": "integer", "exclusiveMinimum": 0 },
+        "eventQueueSize": { "type": "integer", "exclusiveMinimum": 0 },
+        "maxProcessingUnits": { "type": "integer", "exclusiveMinimum": 0 }
+      }
+    },
+    "units": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "minLength": 1 },
+          "params": { "type": "object" },
+          "timing": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "periodUs": { "type": "integer", "minimum": 0 },
+              "deadlineUs": { "type": "integer", "minimum": 0 },
+              "wcetUs": { "type": "integer", "minimum": 0 },
+              "priority": { "enum": ["IDLE", "LOW", "NORMAL", "HIGH", "REAL_TIME", "CRITICAL"] },
+              "isRealTime": { "type": "boolean" }
+            }
+          },
+          "downSamplingFactor": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to"],
+        "properties": {
+          "from": { "type": "string", "pattern": "^[^.]+\\.[^.]+$" },
+          "to": { "type": "string", "pattern": "^[^.]+\\.[^.]+$" }
+        }
+      }
+    },
+    "systemPorts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputs": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^[^.]+\\.[^.]+$" } },
+        "outputs": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^[^.]+\\.[^.]+$" } }
+      }
+    },
+    "adapters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["uri", "type"],
+        "properties": {
+          "uri": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "minLength": 1 },
+          "config": { "type": "object" }
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "evaluationPeriodMs": { "type": "integer", "exclusiveMinimum": 0 },
+        "policies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string", "minLength": 1 },
+              "params": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    "missionPipelines": {
+      "description": "Reserved-but-rejected in v1 (design spec §7 Q7): shape-checked here and by the C++ validator, but the loader refuses it with UNSUPPORTED_SECTION until MissionElement factories exist (Phase 7).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "elements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "type"],
+              "properties": {
+                "name": { "type": "string" },
+                "type": { "type": "string" },
+                "params": { "type": "object" }
+              }
+            }
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["from", "to", "on"],
+              "properties": {
+                "from": { "type": "string" },
+                "to": { "type": "string" },
+                "on": { "enum": ["success", "failure", "abort"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

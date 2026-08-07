@@ -1,0 +1,201 @@
+# AxonVex clang-tidy configuration.
+#
+# This is a REAL, enforced gate (see .github/workflows/ci.yml, "Run
+# clang-tidy" step): `WarningsAsErrors` turns matching diagnostics into a
+# nonzero clang-tidy exit code, which the CI step propagates as a failure.
+# Every exclusion below was verified against the actual tree, not guessed —
+# see the two-tier design and the triage counts further down.
+#
+# --- C++14 ceiling (checks removed from Checks entirely) -------------------
+# The project builds strictly as C++14 (CLAUDE.md). These two checks are
+# actively wrong for this codebase, not just "not yet fixed", so they are
+# excluded from `Checks` itself rather than merely deferred below:
+#   - portability-avoid-pragma-once: STYLE_GUIDE.md mandates `#pragma once`
+#     for header guards. This check tells you to do the opposite.
+#   - readability-use-concise-preprocessor-directives: suggests `#elifdef` /
+#     `#elifndef`, which are C23/C++23 preprocessor directives — invalid in
+#     a C++14 translation unit.
+# Also excluded for the same C++14-ceiling reason (no current hits, but each
+# assumes >=C++17 and would actively break the build if it ever fired):
+#   - modernize-use-nodiscard        ([[nodiscard]] is a C++17 attribute)
+#   - modernize-unary-static-assert  (single-arg static_assert is C++17)
+#   - modernize-concat-nested-namespaces (rewrites to `namespace a::b {},
+#     which CLAUDE.md explicitly forbids regardless of standard)
+#   - modernize-use-designated-initializers (C++20)
+#   - modernize-type-traits (would suggest `std::is_same_v` etc. under
+#     C++17; CLAUDE.md explicitly forbids `std::is_*_v` — belt and braces
+#     even though the compile flags already pin the check to C++14)
+# These two are excluded on the same grounds but DO currently fire (found via
+# a `-std=gnu++17` compile_commands.json, e.g. an unpinned Conan toolchain
+# build before CMakeLists.txt enforced C++14 post-project()) rather than
+# being merely hypothetical:
+#   - modernize-use-scoped-lock (std::lock_guard -> std::scoped_lock is a
+#     C++17 rewrite; std::scoped_lock does not exist in C++14)
+#   - readability-redundant-declaration (orders deletion of out-of-line
+#     `static constexpr` member definitions, e.g. memoryPool.hpp's
+#     NULL_INDEX/DEFAULT_POOL_SIZE/MIN_POOL_SIZE/MAX_POOL_SIZE and
+#     threadSafeQueue.hpp's DEFAULT_CAPACITY/MIN_CAPACITY/MAX_CAPACITY. Those
+#     definitions are ODR-required in C++14 — a static constexpr data member
+#     only became implicitly inline, and its out-of-line definition
+#     redundant, in C++17. Obeying this check under C++14 breaks the link.
+#
+# --- Two-tier rollout (checks kept in Checks, but not all WarningsAsErrors) -
+# `Checks` below is intentionally broad: every enabled check still runs and
+# prints, so violations are visible in CI log output for humans to triage.
+# `WarningsAsErrors` is the enforced subset — everything enabled EXCEPT the
+# checks the tree already violates today; each name below is excluded because
+# it currently fires on this tree, so the gate is green today.
+#
+# Reproduce with the CI job's own commands (ci.yml "Configure for clang-tidy"
+# + "Run clang-tidy" steps), verbatim:
+#   conan install .. --output-folder=. --build=missing
+#   cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+#   find ../src -name "*.cpp" | xargs clang-tidy -p .
+# (18 src/**/*.cpp translation units; headers seen transitively via
+# HeaderFilterRegex below.) CMakeLists.txt enforces C++14 with a plain
+# set(CMAKE_CXX_STANDARD 14) placed AFTER project(), specifically so this
+# command yields the same -std=gnu++14 the project always intends,
+# regardless of the active Conan profile's compiler.cppstd.
+#
+# Deliberately NOT included: exact hit counts per check. An earlier version
+# of this file pinned counts (e.g. "misc-include-cleaner (289)") measured
+# under a non-Conan, hand-rolled build directory. Re-measuring with the
+# command above reproduces the same set of violating check *names*, but not
+# the same counts — they are sensitive to which build directory, compiler
+# launcher (e.g. a ccache shim on PATH ahead of the real compiler), and
+# co-installed GCC version clang-tidy's driver-detection resolves to on the
+# machine running it, none of which this repo controls. A frozen number a
+# maintainer cannot reproduce is worse than no number: it invites "did I
+# regress?" guessing instead of an answer. Run the command above and treat
+# its output as ground truth; use `grep -c` on a check name if you want a
+# count for your own machine.
+#
+# Checks confirmed to currently fire and excluded below: misc-include-cleaner,
+# misc-const-correctness, readability-braces-around-statements [mechanical,
+# cheap follow-up: this is literally STYLE_GUIDE.md's "always brace single
+# statements" rule already being violated — good first check to promote],
+# readability-implicit-bool-conversion, modernize-pass-by-value,
+# bugprone-narrowing-conversions [worth a dedicated correctness pass, not
+# blanket auto-fix: several hits are on RT-path numeric code],
+# performance-enum-size, modernize-use-emplace, modernize-avoid-c-arrays,
+# readability-math-missing-parentheses,
+# readability-convert-member-functions-to-static, readability-else-after-return,
+# bugprone-implicit-widening-of-multiplication-result,
+# concurrency-mt-unsafe [flag for the thread-safety-focused reviewer: worth
+# checking each hit isn't masking a real TSan-relevant issue],
+# readability-function-cognitive-complexity, performance-unnecessary-value-param,
+# modernize-return-braced-init-list, readability-qualified-auto,
+# readability-inconsistent-ifelse-braces, performance-avoid-endl,
+# modernize-use-default-member-init, bugprone-empty-catch [flag: this is
+# exactly the project's named "silent failure" bug class (CLAUDE.md) — at
+# least one hit is in system.cpp, currently owned by a parallel work track;
+# do not fix piecemeal, fix all together once that file is free],
+# readability-redundant-member-init, readability-named-parameter,
+# readability-isolate-declaration, modernize-use-auto,
+# readability-ambiguous-smartptr-reset-call, performance-move-const-arg,
+# modernize-use-equals-default, misc-unused-parameters,
+# bugprone-multi-level-implicit-pointer-conversion, bugprone-argument-comment,
+# readability-use-std-min-max, readability-use-anyofallof,
+# readability-simplify-boolean-expr, readability-redundant-string-cstr,
+# readability-redundant-casting, readability-make-member-function-const,
+# readability-avoid-const-params-in-decls, modernize-use-override,
+# modernize-loop-convert, bugprone-inc-dec-in-conditions,
+# bugprone-exception-escape, bugprone-branch-clone,
+# misc-use-internal-linkage, readability-non-const-parameter,
+# bugprone-std-namespace-modification [these three were missing from the
+# original triage entirely — verified firing (13, 2, and 1 hits respectively
+# in this measurement) via the exact command above, independent of the C++
+# standard, so their absence was a triage gap, not a std-version artifact].
+#
+# readability-identifier-naming is deliberately left unconfigured (no
+# *Case/*Prefix/*Suffix options set below): with zero options it performs no
+# checks, so enabling it today is a no-op, not a silent gap. Configuring it
+# to assert docs/STYLE_GUIDE.md's naming rules (PascalCase classes, camelCase
+# methods, snake_case_ members, UPPER_CASE constants) is real, separate
+# follow-up work — land it once verified clean, not as a wall of new red.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  concurrency-*,
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+  -misc-no-recursion,
+  modernize-*,
+  -modernize-use-nodiscard,
+  -modernize-unary-static-assert,
+  -modernize-concat-nested-namespaces,
+  -modernize-use-trailing-return-type,
+  -modernize-type-traits,
+  -modernize-use-designated-initializers,
+  -modernize-use-scoped-lock,
+  -readability-redundant-declaration,
+  performance-*,
+  portability-*,
+  -portability-avoid-pragma-once,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-uppercase-literal-suffix,
+  -readability-use-concise-preprocessor-directives
+
+WarningsAsErrors: >
+  *,
+  -misc-include-cleaner,
+  -misc-const-correctness,
+  -readability-braces-around-statements,
+  -readability-implicit-bool-conversion,
+  -modernize-pass-by-value,
+  -bugprone-narrowing-conversions,
+  -performance-enum-size,
+  -modernize-use-emplace,
+  -modernize-avoid-c-arrays,
+  -readability-math-missing-parentheses,
+  -readability-convert-member-functions-to-static,
+  -readability-else-after-return,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -concurrency-mt-unsafe,
+  -readability-function-cognitive-complexity,
+  -performance-unnecessary-value-param,
+  -modernize-return-braced-init-list,
+  -readability-qualified-auto,
+  -readability-inconsistent-ifelse-braces,
+  -performance-avoid-endl,
+  -modernize-use-default-member-init,
+  -bugprone-empty-catch,
+  -readability-redundant-member-init,
+  -readability-named-parameter,
+  -readability-isolate-declaration,
+  -modernize-use-auto,
+  -readability-ambiguous-smartptr-reset-call,
+  -performance-move-const-arg,
+  -modernize-use-equals-default,
+  -misc-unused-parameters,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -bugprone-argument-comment,
+  -readability-use-std-min-max,
+  -readability-use-anyofallof,
+  -readability-simplify-boolean-expr,
+  -readability-redundant-string-cstr,
+  -readability-redundant-casting,
+  -readability-make-member-function-const,
+  -readability-avoid-const-params-in-decls,
+  -modernize-use-override,
+  -modernize-loop-convert,
+  -bugprone-inc-dec-in-conditions,
+  -bugprone-exception-escape,
+  -bugprone-branch-clone,
+  -misc-use-internal-linkage,
+  -readability-non-const-parameter,
+  -bugprone-std-namespace-modification
+
+# Only fail on diagnostics from AxonVex's own headers, not system/ROS2/
+# nlohmann/gtest headers pulled in transitively.
+HeaderFilterRegex: '(^|/)(src|tests|examples|plugins)/.*\.hpp$'
+
+FormatStyle: file
+
+CheckOptions:
+  - key: readability-braces-around-statements.ShortStatementLines
+    value: '0'

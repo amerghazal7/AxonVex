@@ -1,0 +1,18 @@
+{
+  "specVersion": "1.0",
+  "system": { "name": "spec-demo", "tickRateUs": 1000, "schedulingPolicy": "PRIORITY_BASED" },
+  "units": [
+    { "name": "gen",  "type": "axonvex.SineGenerator",
+      "params": { "frequencyHz": 10.0, "amplitude": 1.0 },
+      "timing": { "periodUs": 1000, "priority": "HIGH" } },
+    { "name": "filt", "type": "axonvex.MovingAverage",
+      "params": { "window": 8 },
+      "timing": { "periodUs": 1000 } },
+    { "name": "sink", "type": "axonvex.StatsSink", "params": {} }
+  ],
+  "connections": [
+    { "from": "gen.out",  "to": "filt.in" },
+    { "from": "filt.out", "to": "sink.in" }
+  ],
+  "systemPorts": { "outputs": { "filtered": "filt.out" } }
+}

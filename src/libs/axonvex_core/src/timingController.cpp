@@ -3,9 +3,9 @@
 #include <axonvex_core/timingController.hpp>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
-#include <iostream>
-#include <sstream>
+#include <stdexcept>
 
 #ifdef __linux__
 #include <pthread.h>
@@ -139,6 +139,11 @@ bool RealTimeScheduler::updateTaskConstraints(uint32_t taskId,
 }
 
 void RealTimeScheduler::start() {
+    // C44: latch first, before any early return, so the setup-only window
+    // for setErrorCallback() closes the moment start() is invoked rather
+    // than only once a new thread is actually spawned below.
+    hasStarted_.store(true, std::memory_order_relaxed);
+
     if (running_.load()) {
         return; // Already running
     }
@@ -187,8 +192,7 @@ void RealTimeScheduler::stop() {
     // reclaiming, so every step here must be individually idempotent
     // instead of gated by one flag (SafetyManager/Watchdog C33/C36
     // precedent).
-    running_.store(false);
-    schedulerCondition_.notify_all();
+    halt();
 
     // C42: checked before touching schedulerThread_, and before any lock —
     // there are none in this function, but the check must still gate the
@@ -214,6 +218,29 @@ void RealTimeScheduler::stop() {
         schedulerThread_->join();
     }
     schedulerThread_.reset();
+}
+
+void RealTimeScheduler::halt() noexcept {
+    // Design spec §6.3: the non-blocking half of what stop() does. Storing
+    // haltRequestedAt_ before running_ costs nothing extra (both are single
+    // relaxed/atomic ops) and means a reader can never observe running_
+    // already false with haltRequestedAt_ still unset.
+    auto now = std::chrono::steady_clock::now();
+    haltRequestedAtNs_.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count(),
+        std::memory_order_relaxed);
+    running_.store(false);
+    schedulerCondition_.notify_all();
+}
+
+std::chrono::microseconds RealTimeScheduler::getHaltLatency() const noexcept {
+    int64_t haltNs = haltRequestedAtNs_.load(std::memory_order_relaxed);
+    int64_t returnNs = lastTaskReturnAtNs_.load(std::memory_order_relaxed);
+    if (haltNs == 0 || returnNs == 0 || returnNs < haltNs) {
+        return std::chrono::microseconds{0};
+    }
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::nanoseconds(returnNs - haltNs));
 }
 
 bool RealTimeScheduler::isOnSchedulerThread() const noexcept {
@@ -262,13 +289,51 @@ void RealTimeScheduler::setTimerResolution(std::chrono::microseconds resolution)
 }
 
 SchedulerStatistics RealTimeScheduler::getStatistics() const {
-    std::lock_guard<std::mutex> lock(statsMutex_);
-    return statistics_;
+    // V5: no lock -- assembles the public DTO from independent relaxed
+    // atomic loads. See AtomicStatistics's header comment for why no
+    // stronger ordering/consistency is needed or was ever promised.
+    SchedulerStatistics snapshot;
+    snapshot.totalExecutions = statistics_.totalExecutions.load(std::memory_order_relaxed);
+    snapshot.successfulExecutions =
+        statistics_.successfulExecutions.load(std::memory_order_relaxed);
+    snapshot.failedExecutions = statistics_.failedExecutions.load(std::memory_order_relaxed);
+    snapshot.missedDeadlines = statistics_.missedDeadlines.load(std::memory_order_relaxed);
+    snapshot.preemptions = statistics_.preemptions.load(std::memory_order_relaxed);
+    snapshot.totalExecutionTime =
+        std::chrono::microseconds(statistics_.totalExecutionTimeUs.load(std::memory_order_relaxed));
+    snapshot.averageExecutionTime = std::chrono::microseconds(
+        statistics_.averageExecutionTimeUs.load(std::memory_order_relaxed));
+    snapshot.maxExecutionTime =
+        std::chrono::microseconds(statistics_.maxExecutionTimeUs.load(std::memory_order_relaxed));
+    snapshot.minExecutionTime =
+        std::chrono::microseconds(statistics_.minExecutionTimeUs.load(std::memory_order_relaxed));
+    snapshot.schedulingJitter =
+        std::chrono::microseconds(statistics_.schedulingJitterUs.load(std::memory_order_relaxed));
+    snapshot.averageSchedulingJitter = std::chrono::microseconds(
+        statistics_.averageSchedulingJitterUs.load(std::memory_order_relaxed));
+    // cpuUtilization / schedulabilityRatio: never written anywhere in this
+    // class (pre-existing -- TimingController::validateSchedulability()
+    // computes its own local utilization, never feeds this struct); default
+    // 0.0 matches today's always-unset behavior exactly.
+    return snapshot;
 }
 
 void RealTimeScheduler::resetStatistics() {
-    std::lock_guard<std::mutex> lock(statsMutex_);
-    statistics_.reset();
+    // V5: no lock. A reset racing an in-flight scheduler-thread write is a
+    // "last write wins" administrative op, not a per-tick contended path --
+    // resetStatistics() is never called from schedulerLoop.
+    statistics_.totalExecutions.store(0, std::memory_order_relaxed);
+    statistics_.successfulExecutions.store(0, std::memory_order_relaxed);
+    statistics_.failedExecutions.store(0, std::memory_order_relaxed);
+    statistics_.missedDeadlines.store(0, std::memory_order_relaxed);
+    statistics_.preemptions.store(0, std::memory_order_relaxed);
+    statistics_.totalExecutionTimeUs.store(0, std::memory_order_relaxed);
+    statistics_.averageExecutionTimeUs.store(0, std::memory_order_relaxed);
+    statistics_.maxExecutionTimeUs.store(0, std::memory_order_relaxed);
+    statistics_.minExecutionTimeUs.store(std::chrono::microseconds::max().count(),
+                                         std::memory_order_relaxed);
+    statistics_.schedulingJitterUs.store(0, std::memory_order_relaxed);
+    statistics_.averageSchedulingJitterUs.store(0, std::memory_order_relaxed);
 }
 
 std::vector<uint32_t> RealTimeScheduler::getActiveTaskIds() const {
@@ -301,12 +366,34 @@ bool RealTimeScheduler::isTaskActive(uint32_t taskId) const {
 }
 
 void RealTimeScheduler::setCustomScheduler(CustomSchedulerCallback callback) {
-    std::lock_guard<std::mutex> lock(schedulerMutex_);
+    // C44-sibling fix: setup-only, no lock -- same shape as setErrorCallback,
+    // reusing its hasStarted_ latch / requireNotStarted() helper rather than
+    // a second mechanism. scheduleCustom() reads customScheduler_ unlocked on
+    // the scheduler thread; this call used to write it under schedulerMutex_
+    // while running, which is exactly the torn-std::function-read hazard C44
+    // closed for errorCallback_.
+    requireNotStarted("setCustomScheduler");
     customScheduler_ = callback;
 }
 
+void RealTimeScheduler::requireNotStarted(const char* what) const {
+    if (hasStarted_.load(std::memory_order_relaxed)) {
+        throw std::logic_error(
+            std::string(what) +
+            " must be called before the scheduler starts: executeTask() reads the error "
+            "callback unlocked on the scheduler thread, so late registration would race it "
+            "(C44)");
+    }
+}
+
 void RealTimeScheduler::setErrorCallback(ErrorCallback callback) {
-    std::lock_guard<std::mutex> lock(schedulerMutex_);
+    // C44: setup-only, no lock — mirrors ports.hpp's requireNoTrafficYet
+    // (C32). This does not close every window: a setErrorCallback() racing
+    // the very first start() on another thread can still slip past the
+    // check before hasStarted_ becomes visible, same caveat C32 documents.
+    // That is a caller-contract violation (register before starting, from
+    // one thread), not something a runtime check can fully repair.
+    requireNotStarted("setErrorCallback");
     errorCallback_ = callback;
 }
 
@@ -387,9 +474,16 @@ void RealTimeScheduler::schedulerLoop() {
 
         nextWakeup = now + timerResolution_;
 
-        // Check for tasks that need reactivation
+        // V4: ready-set built ONCE per cycle for the 4 non-CUSTOM policies
+        // (also folds the reactivation-check pass, previously a second
+        // separate locked traversal -- see selectReadyTasksForCycle()).
+        // CUSTOM keeps its own per-call model (V1's snapshot-then-release
+        // contract): it needs its own small reactivation pass here since it
+        // never calls that helper, and a task-count cap since scheduleCustom()
+        // has no ready-set of its own to size the loop against.
         size_t taskCount = 0;
-        {
+        if (policy_ == SchedulingPolicy::CUSTOM) {
+            readyTaskIds_.clear(); // not used on this path -- see the loop below
             std::lock_guard<std::mutex> lock(tasksMutex_);
             for (auto& kv : tasks_) {
                 SchedulerTask* task = kv.second;
@@ -400,32 +494,24 @@ void RealTimeScheduler::schedulerLoop() {
                 }
             }
             taskCount = tasks_.size();
+        } else {
+            selectReadyTasksForCycle(); // fills readyTaskIds_ (HIGH fix: no per-cycle heap alloc)
+            taskCount = readyTaskIds_.size();
         }
 
         // Execute every ready task this cycle, not just one (C1). Each task is
         // claimed (executing=true) under tasksMutex_ and its user code then runs
         // WITHOUT the lock, so addTask/removeTask/getters are never blocked by
         // user code. The hard cap of taskCount iterations guarantees termination;
-        // note an overloaded task (execution time > period) can be reselected
-        // within one cycle and consume several iterations before the cap hits.
+        // for CUSTOM, an overloaded task (execution time > period) can still be
+        // reselected within one cycle and consume several iterations before the
+        // cap hits -- the other policies exhaust their fixed ready-set instead.
         for (size_t executed = 0; executed < taskCount && running_.load(); ++executed) {
             uint32_t selectedTaskId = 0;
-            switch (policy_) {
-                case SchedulingPolicy::ROUND_ROBIN:
-                    selectedTaskId = scheduleRoundRobin();
-                    break;
-                case SchedulingPolicy::PRIORITY_BASED:
-                    selectedTaskId = schedulePriorityBased();
-                    break;
-                case SchedulingPolicy::EARLIEST_DEADLINE_FIRST:
-                    selectedTaskId = scheduleEarliestDeadlineFirst();
-                    break;
-                case SchedulingPolicy::RATE_MONOTONIC:
-                    selectedTaskId = scheduleRateMonotonic();
-                    break;
-                case SchedulingPolicy::CUSTOM:
-                    selectedTaskId = scheduleCustom();
-                    break;
+            if (policy_ == SchedulingPolicy::CUSTOM) {
+                selectedTaskId = scheduleCustom();
+            } else if (executed < readyTaskIds_.size()) {
+                selectedTaskId = readyTaskIds_[executed];
             }
 
             if (selectedTaskId == 0) {
@@ -444,16 +530,40 @@ void RealTimeScheduler::schedulerLoop() {
             }
 
             if (task != nullptr) {
-                executeTask(*task);
+                TaskExecutionResult result = executeTask(*task);
 
-                // Release the claim under the lock. removeTask only defers
-                // deallocation (pendingRemoval) while executing is true and only
-                // reads/writes these flags under tasksMutex_, so exactly one side
-                // deallocates and never while the other still uses the task.
-                std::lock_guard<std::mutex> lock(tasksMutex_);
-                task->executing.store(false);
-                if (task->pendingRemoval.load()) {
-                    taskPool_->deallocateObject(task);
+                // V6: bookkeeping folded into the release-claim lock inside
+                // finalizeTaskExecution() -- previously a separate tasksMutex_
+                // acquisition inside executeTask() plus this one; now one.
+                TaskFinalizeOutcome outcome = finalizeTaskExecution(*task, result);
+
+                // V5: no statsMutex_ -- scheduler-thread-private relaxed
+                // atomics, see AtomicStatistics's header comment.
+                updateGlobalStatistics(result.success, result.executionTime,
+                                       outcome.missedDeadline);
+
+                // Unlocked dispatch (C18/C1). CRITICAL fix: use
+                // outcome.unit, captured under tasksMutex_ inside
+                // finalizeTaskExecution() BEFORE it may deallocate `task`
+                // back to taskPool_ (pendingRemoval branch). `task` itself
+                // must not be dereferenced here any more -- a concurrent
+                // removeTask() during execution can have already returned
+                // this exact block to the pool's free list by this point.
+                if (!result.success && errorCallback_) {
+                    if (outcome.deactivated) {
+                        // Bounded, zero-heap (V2): %.180s caps the embedded
+                        // message so GCC can prove buf is always large
+                        // enough (silences -Wformat-truncation) -- errorMessage
+                        // itself is already a 192-byte bounded buffer.
+                        char buf[288];
+                        std::snprintf(
+                            buf, sizeof(buf),
+                            "Task temporarily deactivated after %llu consecutive failures: %.180s",
+                            static_cast<unsigned long long>(kMaxConsecutiveFailures),
+                            result.errorMessage);
+                        errorCallback_(outcome.unit, std::string(buf));
+                    }
+                    errorCallback_(outcome.unit, std::string(result.errorMessage));
                 }
             }
         }
@@ -550,11 +660,11 @@ uint32_t RealTimeScheduler::scheduleRateMonotonic() {
 uint32_t RealTimeScheduler::scheduleRoundRobin() {
     std::lock_guard<std::mutex> lock(tasksMutex_);
 
-    static uint32_t lastSelectedTask = 0;
     auto now = std::chrono::steady_clock::now();
 
-    // Find next task after the last selected one
-    auto it = tasks_.find(lastSelectedTask);
+    // Find next task after the last selected one (C45: lastSelectedTask_ is
+    // a per-instance member, guarded by tasksMutex_ above)
+    auto it = tasks_.find(lastSelectedTask_);
     if (it != tasks_.end()) {
         ++it;
     } else {
@@ -569,7 +679,7 @@ uint32_t RealTimeScheduler::scheduleRoundRobin() {
 
         auto& task = it->second;
         if (task->active.load() && !task->executing.load() && now >= task->nextExecution) {
-            lastSelectedTask = it->first;
+            lastSelectedTask_ = it->first;
             return it->first;
         }
 
@@ -579,153 +689,232 @@ uint32_t RealTimeScheduler::scheduleRoundRobin() {
     return 0;
 }
 
+void RealTimeScheduler::selectReadyTasksForCycle() {
+    // HIGH fix: reuse the persistent member buffers instead of fresh locals
+    // -- clear() keeps each vector's capacity, so once the ready-set size
+    // stabilizes this cycle allocates nothing (see the members' declaration
+    // comment and ReadyCandidate's comment on the struct itself).
+    auto& candidates = readyCandidates_;
+    candidates.clear();
+    auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(tasksMutex_);
+        candidates.reserve(tasks_.size());
+        for (auto& kv : tasks_) {
+            SchedulerTask* task = kv.second;
+            // Reactivation check folded into this same pass -- was a second,
+            // separate locked traversal in schedulerLoop before V4.
+            if (!task->active.load() && task->consecutiveFailures > 0 &&
+                now >= task->reactivationTime) {
+                task->active.store(true);
+                task->consecutiveFailures = 0;
+            }
+            if (task->active.load() && !task->executing.load() && now >= task->nextExecution) {
+                candidates.push_back({task->taskId, task->constraints.priority,
+                                      task->nextExecution + task->constraints.deadline,
+                                      task->constraints.period});
+            }
+        }
+    }
+
+    // Sort/select with tasksMutex_ released -- O(1) lock acquisitions for
+    // the whole cycle's selection instead of one per candidate picked.
+    // Comparators mirror each scheduleX() method's own selection rule
+    // exactly (those methods are unchanged above, still independently
+    // callable for direct callers/tests).
+    switch (policy_) {
+        case SchedulingPolicy::PRIORITY_BASED:
+            std::sort(candidates.begin(), candidates.end(),
+                      [](const ReadyCandidate& a, const ReadyCandidate& b) {
+                          return a.priority < b.priority;
+                      });
+            break;
+        case SchedulingPolicy::EARLIEST_DEADLINE_FIRST:
+            std::sort(candidates.begin(), candidates.end(),
+                      [](const ReadyCandidate& a, const ReadyCandidate& b) {
+                          return a.deadline < b.deadline;
+                      });
+            break;
+        case SchedulingPolicy::RATE_MONOTONIC:
+            std::sort(candidates.begin(), candidates.end(),
+                      [](const ReadyCandidate& a, const ReadyCandidate& b) {
+                          return a.period < b.period;
+                      });
+            break;
+        case SchedulingPolicy::ROUND_ROBIN: {
+            // Same "next after cursor, wrap" order as scheduleRoundRobin(),
+            // computed once for every ready task this cycle instead of
+            // re-scanned under lock per pick. lastSelectedTask_'s read here
+            // is unlocked -- safe because it is written only from the
+            // scheduler thread (this call, or scheduleRoundRobin() itself,
+            // both scheduler-thread-only call paths that this rework never
+            // runs concurrently with each other).
+            auto it = std::find_if(
+                candidates.begin(), candidates.end(),
+                [this](const ReadyCandidate& c) { return c.taskId == lastSelectedTask_; });
+            if (it != candidates.end()) {
+                std::rotate(candidates.begin(), it + 1, candidates.end());
+            }
+            break;
+        }
+        case SchedulingPolicy::CUSTOM:
+            break; // not used for CUSTOM -- schedulerLoop keeps the old per-call path
+    }
+
+    auto& ids = readyTaskIds_;
+    ids.clear();
+    ids.reserve(candidates.size());
+    for (const auto& c : candidates) {
+        ids.push_back(c.taskId);
+    }
+    if (policy_ == SchedulingPolicy::ROUND_ROBIN && !ids.empty()) {
+        // Guarded by tasksMutex_, matching the member's documented
+        // invariant (see its declaration) even though this call path is
+        // scheduler-thread-only in practice.
+        std::lock_guard<std::mutex> lock(tasksMutex_);
+        lastSelectedTask_ = ids.back();
+    }
+}
+
 uint32_t RealTimeScheduler::scheduleCustom() {
+    // C44-sibling: both this guard and the call below read customScheduler_
+    // with no lock, on the scheduler thread. That is legal only because
+    // setCustomScheduler() is setup-only (requireNotStarted(), latched by
+    // hasStarted_): no write can land once the scheduler has started, and
+    // scheduleCustom() itself never runs before then, so there is no
+    // concurrent writer to race and no check-then-act window between the two
+    // reads. Do not "fix" this back into a schedulerMutex_ lock -- that would
+    // be a lock on the RT path for a hazard that no longer exists.
     if (!customScheduler_) {
         return schedulePriorityBased(); // Fallback
     }
 
-    std::lock_guard<std::mutex> lock(tasksMutex_);
-    std::vector<SchedulerTask> activeTasks;
-
-    for (const auto& pair : tasks_) {
-        if (pair.second->active.load()) {
-            activeTasks.emplace_back(*pair.second);
+    // C43: snapshot under tasksMutex_, then release before invoking the user
+    // callback (C12/C18 rule — never run user code under a lock). Each
+    // element is a deep copy (SchedulerTask's copy ctor copies the name and
+    // .load()s the atomics), so customSchedulerSnapshot_ stays valid and
+    // independent of tasks_ for the whole unlocked call below, even if the
+    // callback re-enters addTask/removeTask and mutates tasks_ concurrently.
+    {
+        std::lock_guard<std::mutex> lock(tasksMutex_);
+        customSchedulerSnapshot_.clear();
+        for (const auto& pair : tasks_) {
+            if (pair.second->active.load()) {
+                customSchedulerSnapshot_.emplace_back(*pair.second);
+            }
         }
     }
 
-    return customScheduler_(activeTasks);
+    // No lock held here: the callback may legally call back into this
+    // scheduler's public API. Its returned id is re-validated under
+    // tasksMutex_ by schedulerLoop() before use (find + active +
+    // !executing) — a stale id (removed, or since mutated by the callback
+    // itself) is simply skipped that cycle, the same handling every other
+    // scheduling algorithm's selection already gets, just with a much wider
+    // window now that user code runs in between.
+    return customScheduler_(customSchedulerSnapshot_);
 }
 
-void RealTimeScheduler::executeTask(SchedulerTask& task) {
+RealTimeScheduler::TaskExecutionResult RealTimeScheduler::executeTask(SchedulerTask& task) {
     // Precondition: the caller (scheduler loop) has already claimed the task
-    // (executing=true under tasksMutex_) and releases the claim afterwards.
-    auto executionStart = std::chrono::steady_clock::now();
+    // (executing=true under tasksMutex_) and calls finalizeTaskExecution()
+    // afterwards to release it. This function itself touches NO lock and
+    // dispatches NO user callback -- it only runs the unit's own code
+    // (already user code on the RT thread by design, V13) and reports what
+    // happened. V2: on failure, the message is copied into a bounded stack
+    // buffer (one snprintf, zero heap) rather than kept as a dangling
+    // `const char*` into the (about to be destroyed) exception object.
+    TaskExecutionResult result;
+    result.executionStart = std::chrono::steady_clock::now();
 
     try {
-        // Execute the async processing unit
         task.unit->processAsyncBase();
-
-        // Execute the sync processing unit
         task.unit->processSyncBase();
 
-        // Calculate the execution time
-        auto executionEnd = std::chrono::steady_clock::now();
-        auto executionTime =
-            std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
-
-        // Task bookkeeping under tasksMutex_: user code above runs unlocked, but
-        // constraints/nextExecution/lastExecution race updateTaskConstraints()
-        // on user threads without it. Lock order: tasksMutex_ before statsMutex_.
-        bool missedDeadline = false;
-        {
-            std::lock_guard<std::mutex> lock(tasksMutex_);
-            updateTaskStatistics(task, executionTime);
-
-            // Update next execution time
-            task.lastExecution = executionStart;
-            task.nextExecution = calculateNextExecution(task);
-            task.consecutiveFailures = 0; // Reset failure count on successful execution
-
-            // Evaluated AFTER nextExecution advances (original semantics): checks
-            // the upcoming slot, not the one that just ran
-            missedDeadline = hasDeadlinePassed(task);
-        }
-
-        // Update global statistics
-        {
-            std::lock_guard<std::mutex> lock(statsMutex_);
-            statistics_.totalExecutions++;
-            statistics_.successfulExecutions++;
-            statistics_.totalExecutionTime += executionTime;
-
-            if (statistics_.totalExecutions == 1) {
-                statistics_.averageExecutionTime = executionTime;
-                statistics_.minExecutionTime = executionTime;
-                statistics_.maxExecutionTime = executionTime;
-            } else {
-                // Update running averages
-                auto avgCount = statistics_.totalExecutions;
-                auto oldAvg = statistics_.averageExecutionTime.count();
-                auto newAvg = (oldAvg * (avgCount - 1) + executionTime.count()) / avgCount;
-                statistics_.averageExecutionTime =
-                    std::chrono::microseconds(static_cast<long long>(newAvg));
-
-                if (executionTime < statistics_.minExecutionTime) {
-                    statistics_.minExecutionTime = executionTime;
-                }
-                if (executionTime > statistics_.maxExecutionTime) {
-                    statistics_.maxExecutionTime = executionTime;
-                }
-            }
-
-            if (missedDeadline) {
-                statistics_.missedDeadlines++;
-            }
-        }
-
+        result.executionEnd = std::chrono::steady_clock::now();
+        result.executionTime = std::chrono::duration_cast<std::chrono::microseconds>(
+            result.executionEnd - result.executionStart);
     } catch (const std::exception& e) {
-        // Handle execution error
-        auto executionEnd = std::chrono::steady_clock::now();
-        auto executionTime =
-            std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
+        result.success = false;
+        result.executionEnd = std::chrono::steady_clock::now();
+        result.executionTime = std::chrono::duration_cast<std::chrono::microseconds>(
+            result.executionEnd - result.executionStart);
+        std::snprintf(result.errorMessage, sizeof(result.errorMessage), "%s", e.what());
+    }
 
-        const uint64_t MAX_CONSECUTIVE_FAILURES = 10;
-        bool deactivated = false;
-        bool missedDeadline = false;
-        uint64_t consecutiveFailures = 0;
+    // Halt-bound telemetry (§6.3): scheduler-thread-only writer, reused
+    // timestamp already paid for above -- no extra now() call.
+    lastTaskReturnAtNs_.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(result.executionEnd.time_since_epoch())
+            .count(),
+        std::memory_order_relaxed);
 
-        // Task bookkeeping under tasksMutex_ (races updateTaskConstraints
-        // otherwise), then global stats under statsMutex_ — same order as the
-        // success path (tasksMutex_ before statsMutex_).
-        {
-            std::lock_guard<std::mutex> lock(tasksMutex_);
-            task.executionCount++;
-            task.totalExecutionTime += executionTime;
-            task.consecutiveFailures++;
-            task.lastFailureTime = executionEnd;
-            consecutiveFailures = task.consecutiveFailures;
+    return result;
+}
 
-            // Temporarily deactivate task if too many consecutive failures
-            const auto FAILURE_BACKOFF_TIME = std::chrono::milliseconds(100);
-            if (task.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-                task.active.store(false);
-                task.reactivationTime = executionEnd + FAILURE_BACKOFF_TIME;
-                deactivated = true;
-            }
+RealTimeScheduler::TaskFinalizeOutcome RealTimeScheduler::finalizeTaskExecution(
+    SchedulerTask& task, const TaskExecutionResult& result) {
+    // V6: task bookkeeping folded into the SAME tasksMutex_ acquisition that
+    // releases the executing-claim and checks pendingRemoval -- previously
+    // two separate acquisitions (one inside executeTask() for bookkeeping,
+    // one in schedulerLoop() for the release). Net: one lock per task here,
+    // plus the claim lock schedulerLoop already takes before calling
+    // executeTask() -- unchanged from before this rework.
+    TaskFinalizeOutcome outcome;
+    std::lock_guard<std::mutex> lock(tasksMutex_);
 
-            missedDeadline = hasDeadlinePassed(task);
-            if (missedDeadline) {
-                task.missedDeadlines++;
-            }
+    // CRITICAL fix: copy the unit pointer out while `task` is still
+    // guaranteed alive (this lock is the only thing standing between here
+    // and the pendingRemoval deallocate below). schedulerLoop's error
+    // dispatch happens after this function returns and after the lock is
+    // released, so it must use this copy, never `task.unit` directly.
+    outcome.unit = task.unit;
+
+    if (result.success) {
+        updateTaskStatistics(task, result.executionTime);
+
+        task.lastExecution = result.executionStart;
+        task.nextExecution = calculateNextExecution(task);
+        task.consecutiveFailures = 0; // Reset failure count on successful execution
+
+        // Evaluated AFTER nextExecution advances (original semantics, carried
+        // across this move unchanged): checks the upcoming slot, not the one
+        // that just ran. The failure branch below must stay consistent with
+        // this ordering (see its comment).
+        outcome.missedDeadline = hasDeadlinePassed(task);
+    } else {
+        task.executionCount++;
+        task.totalExecutionTime += result.executionTime;
+        task.consecutiveFailures++;
+        task.lastFailureTime = result.executionEnd;
+
+        const auto FAILURE_BACKOFF_TIME = std::chrono::milliseconds(100);
+        if (task.consecutiveFailures >= kMaxConsecutiveFailures) {
+            task.active.store(false);
+            task.reactivationTime = result.executionEnd + FAILURE_BACKOFF_TIME;
+            outcome.deactivated = true;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(statsMutex_);
-            statistics_.totalExecutions++; // Count failed executions in total
-            statistics_.failedExecutions++;
-            statistics_.totalExecutionTime += executionTime;
-            if (missedDeadline) {
-                statistics_.missedDeadlines++;
-            }
-        }
-
-        // User callback + I/O with no locks held (C18/C1)
-        if (errorCallback_) {
-            if (deactivated) {
-                std::string msg = "Task temporarily deactivated after " +
-                                  std::to_string(MAX_CONSECUTIVE_FAILURES) +
-                                  " consecutive failures: " + e.what();
-                errorCallback_(task.unit, msg.c_str());
-            }
-            errorCallback_(task.unit, e.what());
-        }
-
-        // Log error if debugging is enabled (but throttled)
-        if (consecutiveFailures <= MAX_CONSECUTIVE_FAILURES) {
-            std::cerr << "Task execution failed: " << e.what() << std::endl;
+        // Failure path never advances nextExecution -- hasDeadlinePassed()
+        // here evaluates against the same (stale) slot the task missed,
+        // consistent with the success branch's "after advance" semantics
+        // (there is no advance to be after).
+        outcome.missedDeadline = hasDeadlinePassed(task);
+        if (outcome.missedDeadline) {
+            task.missedDeadlines++;
         }
     }
-    // executing is cleared by the scheduler loop under tasksMutex_ (see schedulerLoop)
+
+    // Release the claim under the same lock. removeTask only defers
+    // deallocation (pendingRemoval) while executing is true and only
+    // reads/writes these flags under tasksMutex_, so exactly one side
+    // deallocates and never while the other still uses the task.
+    task.executing.store(false);
+    if (task.pendingRemoval.load()) {
+        taskPool_->deallocateObject(&task);
+    }
+
+    return outcome;
 }
 
 void RealTimeScheduler::updateTaskStatistics(SchedulerTask& task,
@@ -738,19 +927,66 @@ void RealTimeScheduler::updateTaskStatistics(SchedulerTask& task,
     }
 }
 
-void RealTimeScheduler::updateSchedulingJitter(std::chrono::microseconds jitter) {
-    std::lock_guard<std::mutex> lock(statsMutex_);
-    statistics_.schedulingJitter = jitter;
+void RealTimeScheduler::updateGlobalStatistics(bool success,
+                                               std::chrono::microseconds executionTime,
+                                               bool missedDeadline) {
+    // V5: scheduler-thread-only writer, relaxed atomics, no lock -- see
+    // AtomicStatistics's comment in the header for the consistency argument.
+    // Mirrors the pre-rework mutex-protected block field-for-field: success
+    // updates successfulExecutions + the running avg/min/max; failure
+    // updates only failedExecutions (never avg/min/max, matching the
+    // original two independent code blocks exactly).
+    uint64_t total = statistics_.totalExecutions.fetch_add(1, std::memory_order_relaxed) + 1;
+    statistics_.totalExecutionTimeUs.fetch_add(executionTime.count(), std::memory_order_relaxed);
 
-    // Update running average for jitter
-    auto avgCount = statistics_.totalExecutions;
-    if (avgCount > 0) {
-        auto oldAvg = statistics_.averageSchedulingJitter.count();
-        auto newAvg = (oldAvg * (avgCount - 1) + jitter.count()) / avgCount;
-        statistics_.averageSchedulingJitter =
-            std::chrono::microseconds(static_cast<long long>(newAvg));
+    if (success) {
+        statistics_.successfulExecutions.fetch_add(1, std::memory_order_relaxed);
+
+        if (total == 1) {
+            statistics_.averageExecutionTimeUs.store(executionTime.count(),
+                                                     std::memory_order_relaxed);
+            statistics_.minExecutionTimeUs.store(executionTime.count(), std::memory_order_relaxed);
+            statistics_.maxExecutionTimeUs.store(executionTime.count(), std::memory_order_relaxed);
+        } else {
+            auto oldAvg = statistics_.averageExecutionTimeUs.load(std::memory_order_relaxed);
+            auto newAvg = (oldAvg * (static_cast<int64_t>(total) - 1) + executionTime.count()) /
+                          static_cast<int64_t>(total);
+            statistics_.averageExecutionTimeUs.store(newAvg, std::memory_order_relaxed);
+
+            if (executionTime.count() <
+                statistics_.minExecutionTimeUs.load(std::memory_order_relaxed)) {
+                statistics_.minExecutionTimeUs.store(executionTime.count(),
+                                                     std::memory_order_relaxed);
+            }
+            if (executionTime.count() >
+                statistics_.maxExecutionTimeUs.load(std::memory_order_relaxed)) {
+                statistics_.maxExecutionTimeUs.store(executionTime.count(),
+                                                     std::memory_order_relaxed);
+            }
+        }
     } else {
-        statistics_.averageSchedulingJitter = jitter;
+        statistics_.failedExecutions.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    if (missedDeadline) {
+        statistics_.missedDeadlines.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void RealTimeScheduler::updateSchedulingJitter(std::chrono::microseconds jitter) {
+    // V5: no lock -- scheduler-thread-only writer (called once per cycle
+    // from schedulerLoop, never concurrently with updateGlobalStatistics()
+    // since both run on that same single thread).
+    statistics_.schedulingJitterUs.store(jitter.count(), std::memory_order_relaxed);
+
+    auto avgCount = statistics_.totalExecutions.load(std::memory_order_relaxed);
+    if (avgCount > 0) {
+        auto oldAvg = statistics_.averageSchedulingJitterUs.load(std::memory_order_relaxed);
+        auto newAvg = (oldAvg * (static_cast<int64_t>(avgCount) - 1) + jitter.count()) /
+                      static_cast<int64_t>(avgCount);
+        statistics_.averageSchedulingJitterUs.store(newAvg, std::memory_order_relaxed);
+    } else {
+        statistics_.averageSchedulingJitterUs.store(jitter.count(), std::memory_order_relaxed);
     }
 }
 
@@ -942,6 +1178,10 @@ bool TimingController::isOnSchedulerThread() const noexcept {
     return scheduler_ && scheduler_->isOnSchedulerThread();
 }
 
+std::chrono::microseconds TimingController::getHaltLatency() const noexcept {
+    return scheduler_ ? scheduler_->getHaltLatency() : std::chrono::microseconds{0};
+}
+
 void TimingController::pause() {
     scheduler_->pause();
 }
@@ -1081,7 +1321,10 @@ bool TimingController::validateSchedulability() const {
 }
 
 void TimingController::emergencyStop() {
-    scheduler_->stop();
+    // Design spec §6.3: the non-blocking e-stop hot path. Does NOT wait for
+    // an in-flight task's WCET -- callers needing full teardown (thread
+    // reclaimed) should follow with stop(), which still joins.
+    scheduler_->halt();
 
     if (failsafeCallback_) {
         failsafeCallback_("Emergency stop triggered");
