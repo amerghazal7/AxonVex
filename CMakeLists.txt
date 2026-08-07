@@ -168,6 +168,9 @@ if(BUILD_TESTING)
             tests/adapters/adapterContractTest.cpp
             tests/core/typeCasterRegistryTest.cpp
             tests/visualization/telemetryBusTest.cpp
+            tests/core/unitMetadataTest.cpp
+            tests/core/unitFactoryTest.cpp
+            tests/core/systemSpecTest.cpp
         )
         target_link_libraries(test_core
             PRIVATE
@@ -196,6 +199,7 @@ if(BUILD_TESTING)
             AXONVEX_TEST_PLUGIN_OLDABI_PATH="$<TARGET_FILE:axonvex_test_plugin_oldabi>"
             AXONVEX_TEST_PLUGIN_NOSYMBOLS_PATH="$<TARGET_FILE:axonvex_test_plugin_nosymbols>"
             AXONVEX_TEST_PLUGIN_THROWINIT_PATH="$<TARGET_FILE:axonvex_test_plugin_throwinit>"
+            AXONVEX_COMPOSER_EXAMPLE_SPEC_PATH="${CMAKE_CURRENT_SOURCE_DIR}/docs/composer/example.axv.json"
         )
         add_dependencies(test_core
             axonvex_test_plugin
