@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -68,6 +69,26 @@ class SystemPortRegistry {
 
     size_t inputCount() const noexcept;
     size_t outputCount() const noexcept;
+
+    /// One port's name plus the (owned, copied) fields a debug report wants.
+    /// Populated entirely under mutex_ so no BasePort* it read is ever
+    /// carried past the lock — see describeInputs()/describeOutputs().
+    struct PortDescription {
+        std::string name;
+        std::string dataTypeName;
+        std::string ownerName;
+    };
+
+    /// Snapshots every input port's name + getDataTypeName() +
+    /// getOwner()->getName() in one critical section. Fixes the
+    /// getSystemPortInfo() use-after-free: the old inputNames() -> input()
+    /// -> dereference sequence released mutex_ between the lookup and the
+    /// dereference, leaving a window for removeAllForOwner() + unit
+    /// destruction to free the port first. getDataTypeName() and
+    /// getOwner() are plain non-locking, non-reentrant accessors (no user
+    /// callbacks), so calling them while already holding mutex_ is safe.
+    std::vector<PortDescription> describeInputs() const;
+    std::vector<PortDescription> describeOutputs() const;
 
     /// Clears both tables (reset()/cleanupComponents() path).
     void clear();

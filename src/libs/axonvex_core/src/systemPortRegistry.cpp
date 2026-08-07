@@ -1,4 +1,5 @@
 #include <axonvex_core/ports.hpp>
+#include <axonvex_core/processingUnit.hpp>
 #include <axonvex_core/systemPortRegistry.hpp>
 
 namespace axonvex::core {
@@ -97,6 +98,44 @@ void SystemPortRegistry::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     inputs_.clear();
     outputs_.clear();
+}
+
+std::vector<SystemPortRegistry::PortDescription> SystemPortRegistry::describeInputs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<PortDescription> described;
+    described.reserve(inputs_.size());
+    for (const auto& pair : inputs_) {
+        PortDescription desc;
+        desc.name = pair.first;
+        if (pair.second) {
+            desc.dataTypeName = pair.second->getDataTypeName();
+            ProcessingUnit* owner = pair.second->getOwner();
+            if (owner) {
+                desc.ownerName = owner->getName();
+            }
+        }
+        described.push_back(std::move(desc));
+    }
+    return described;
+}
+
+std::vector<SystemPortRegistry::PortDescription> SystemPortRegistry::describeOutputs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<PortDescription> described;
+    described.reserve(outputs_.size());
+    for (const auto& pair : outputs_) {
+        PortDescription desc;
+        desc.name = pair.first;
+        if (pair.second) {
+            desc.dataTypeName = pair.second->getDataTypeName();
+            ProcessingUnit* owner = pair.second->getOwner();
+            if (owner) {
+                desc.ownerName = owner->getName();
+            }
+        }
+        described.push_back(std::move(desc));
+    }
+    return described;
 }
 
 SystemPortRegistry::RemovedPorts SystemPortRegistry::removeAllForOwner(ProcessingUnit* owner) {

@@ -9,11 +9,13 @@
  * façade-level behavior; these tests pin the registry in isolation.
  */
 
+#include <atomic>
 #include <axonvex_core/processingUnit.hpp>
 #include <axonvex_core/systemPortRegistry.hpp>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 using namespace axonvex::core;
@@ -111,6 +113,23 @@ TEST_F(SystemPortRegistryTest, Clear) {
     EXPECT_EQ(registry_.outputCount(), 0u);
 }
 
+TEST_F(SystemPortRegistryTest, DescribeInputsAndOutputsReportNameTypeAndOwner) {
+    registry_.assignInput("sys_in", unit_.in_);
+    registry_.assignOutput("sys_out", unit_.out_);
+
+    auto inputs = registry_.describeInputs();
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_EQ(inputs[0].name, "sys_in");
+    EXPECT_EQ(inputs[0].dataTypeName, unit_.in_->getDataTypeName());
+    EXPECT_EQ(inputs[0].ownerName, "unit1");
+
+    auto outputs = registry_.describeOutputs();
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_EQ(outputs[0].name, "sys_out");
+    EXPECT_EQ(outputs[0].dataTypeName, unit_.out_->getDataTypeName());
+    EXPECT_EQ(outputs[0].ownerName, "unit1");
+}
+
 TEST_F(SystemPortRegistryTest, RemoveAllForOwnerRemovesOnlyThatOwnersPorts) {
     FixturePU other("unit2");
     registry_.assignInput("unit1_in", unit_.in_);
@@ -161,8 +180,17 @@ TEST_F(SystemPortRegistryTest, LockWithDoesNotDeadlockOnOpposingOrderOrSelf) {
     while (!(aDone.load() && bDone.load()) && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    EXPECT_TRUE(aDone.load()) << "lockWith deadlocked (a->b)";
-    EXPECT_TRUE(bDone.load()) << "lockWith deadlocked (b->a)";
+    if (!aDone.load() || !bDone.load()) {
+        // Wedged: detach rather than join so a real regression fails this
+        // test instead of hanging the whole ctest run (see
+        // AxonVexSystemTest.OpposingCrossSystemConnectsDoNotDeadlock for the
+        // same pattern).
+        t1.detach();
+        t2.detach();
+        FAIL() << "lockWith deadlocked (a->b: " << aDone.load() << ", b->a: " << bDone.load()
+               << ")";
+        return;
+    }
     t1.join();
     t2.join();
 }
