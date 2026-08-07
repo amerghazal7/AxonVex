@@ -593,6 +593,27 @@ TEST_F(TimingControllerTest, CustomScheduling) {
     EXPECT_GT(unit1->getProcessCallCount(), 0);
 }
 
+// C44-sibling regression: scheduleCustom() reads customScheduler_ unlocked on
+// the scheduler thread (both the `if (!customScheduler_)` guard and the
+// invocation itself), while setCustomScheduler() writes it under
+// schedulerMutex_ -- the identical torn-std::function-read shape C44 fixed
+// for errorCallback_. Fix: registration refuses once the scheduler has ever
+// started, per the same hasStarted_ latch / requireNotStarted() helper --
+// pre-fix, this call silently succeeds instead of throwing.
+TEST_F(TimingControllerTest, SetCustomSchedulerAfterStartThrows) {
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(10);
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+
+    controller->start();
+
+    EXPECT_THROW(controller->setCustomScheduler(
+                     [](const std::vector<SchedulerTask>&) -> uint32_t { return 0; }),
+                 std::logic_error);
+
+    controller->stop();
+}
+
 // Timing Constraint Tests
 TEST_F(TimingControllerTest, TimingConstraintUpdates) {
     TimingConstraints initialConstraints;
