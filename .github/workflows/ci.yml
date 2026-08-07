@@ -245,8 +245,14 @@ jobs:
       run: |
         mkdir -p build
         cd build
-        conan install .. --output-folder=. --build=missing
-        cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        # build_type must be stated on BOTH lines and must match. Conan's
+        # CMakeDeps gates every target property behind $<CONFIG:...>, so an
+        # unmatched pair yields imported targets that exist and link nothing
+        # (C48). Omitting it here previously meant conan installed Release
+        # (default profile) while cmake defaulted to Debug, which the
+        # configure-time guard now rejects outright instead of failing later.
+        conan install .. --output-folder=. --build=missing --settings=build_type=Debug
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
     - name: Run clang-tidy
       run: |
