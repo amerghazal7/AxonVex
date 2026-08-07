@@ -20,14 +20,14 @@
 #include <thread>
 
 // Watchdog budget for the hang-guard tests below. Deliberately NOT scaled up
-// under sanitizers. This test aborted at 20.91s on a 2-core CI runner under
-// TSan, but the same test pinned to 2 cores under TSan locally completes in
-// ~1s -- with or without the yields in the racing loops. A 20x gap is not
-// explained by slower hardware, so the CI abort most likely caught a real
-// intermittent hang in start()/join(), which is exactly what this watchdog
-// exists for. Raising the deadline would convert a caught bug into a silent
-// one, so it stays at 20s until the CI abort is either reproduced and fixed
-// or positively explained. Tracked as an open item, not a flake.
+// under sanitizers, and that decision is why the bug below was found rather
+// than buried: this test aborted at 20.91s on a 2-core CI runner, and raising
+// the deadline would have turned a caught hang into a silent one. The abort
+// was real -- see ConcurrentStartJoinDoesNotHang's shutdown protocol, whose
+// lost-wakeup was then reproduced locally (TSan pinned to one core, hung at
+// iteration 120; also 8/8 oversubscribed Release runs with no sanitizer at
+// all) and fixed. WorkerThread itself was exonerated: src/ was byte-identical
+// throughout. Keep this at 20s.
 #define AXONVEX_TEST_WATCHDOG_SECONDS 20
 
 using namespace axonvex::core::detail;
