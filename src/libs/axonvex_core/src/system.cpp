@@ -907,18 +907,13 @@ bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName, Pro
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    // Check if system port name already exists
-    if (systemInputPorts_.find(systemPortName) != systemInputPorts_.end()) {
+    // Check if system port name already exists / assign the port
+    if (!systemPorts_.assignInput(systemPortName, port)) {
         if (logger_) {
             logger_->warning("System", "System input port '" + systemPortName + "' already exists");
         }
         return false;
     }
-
-    // Assign the port
-    systemInputPorts_[systemPortName] = port;
 
     if (logger_) {
         logger_->info("System", "Assigned system input port '" + systemPortName + "' from " +
@@ -987,19 +982,14 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName, Pr
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    // Check if system port name already exists
-    if (systemOutputPorts_.find(systemPortName) != systemOutputPorts_.end()) {
+    // Check if system port name already exists / assign the port
+    if (!systemPorts_.assignOutput(systemPortName, port)) {
         if (logger_) {
             logger_->warning("System",
                              "System output port '" + systemPortName + "' already exists");
         }
         return false;
     }
-
-    // Assign the port
-    systemOutputPorts_[systemPortName] = port;
 
     if (logger_) {
         logger_->info("System", "Assigned system output port '" + systemPortName + "' from " +
@@ -1023,14 +1013,9 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName, Pr
 }
 
 bool AxonVexSystem::removeSystemInputPort(const std::string& systemPortName) {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    auto it = systemInputPorts_.find(systemPortName);
-    if (it == systemInputPorts_.end()) {
+    if (!systemPorts_.removeInput(systemPortName)) {
         return false;
     }
-
-    systemInputPorts_.erase(it);
 
     if (logger_) {
         logger_->info("System", "Removed system input port: " + systemPortName);
@@ -1040,14 +1025,9 @@ bool AxonVexSystem::removeSystemInputPort(const std::string& systemPortName) {
 }
 
 bool AxonVexSystem::removeSystemOutputPort(const std::string& systemPortName) {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    auto it = systemOutputPorts_.find(systemPortName);
-    if (it == systemOutputPorts_.end()) {
+    if (!systemPorts_.removeOutput(systemPortName)) {
         return false;
     }
-
-    systemOutputPorts_.erase(it);
 
     if (logger_) {
         logger_->info("System", "Removed system output port: " + systemPortName);
@@ -1057,83 +1037,56 @@ bool AxonVexSystem::removeSystemOutputPort(const std::string& systemPortName) {
 }
 
 BasePort* AxonVexSystem::getSystemInputPort(const std::string& portName) const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    auto it = systemInputPorts_.find(portName);
-    if (it != systemInputPorts_.end()) {
-        return it->second;
-    }
-    return nullptr;
+    return systemPorts_.input(portName);
 }
 
 BasePort* AxonVexSystem::getSystemOutputPort(const std::string& portName) const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    auto it = systemOutputPorts_.find(portName);
-    if (it != systemOutputPorts_.end()) {
-        return it->second;
-    }
-    return nullptr;
+    return systemPorts_.output(portName);
 }
 
 std::vector<std::string> AxonVexSystem::getSystemInputPortNames() const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    std::vector<std::string> names;
-    names.reserve(systemInputPorts_.size());
-
-    for (const auto& pair : systemInputPorts_) {
-        names.push_back(pair.first);
-    }
-
-    return names;
+    return systemPorts_.inputNames();
 }
 
 std::vector<std::string> AxonVexSystem::getSystemOutputPortNames() const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    std::vector<std::string> names;
-    names.reserve(systemOutputPorts_.size());
-
-    for (const auto& pair : systemOutputPorts_) {
-        names.push_back(pair.first);
-    }
-
-    return names;
+    return systemPorts_.outputNames();
 }
 
 bool AxonVexSystem::hasSystemInputPort(const std::string& portName) const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-    return systemInputPorts_.find(portName) != systemInputPorts_.end();
+    return systemPorts_.hasInput(portName);
 }
 
 bool AxonVexSystem::hasSystemOutputPort(const std::string& portName) const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-    return systemOutputPorts_.find(portName) != systemOutputPorts_.end();
+    return systemPorts_.hasOutput(portName);
 }
 
 std::string AxonVexSystem::getSystemPortInfo() const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
     std::ostringstream oss;
     oss << "System Port Information for '" << systemConfig_.systemName << "':\n";
 
-    oss << "Input Ports (" << systemInputPorts_.size() << "):\n";
-    for (const auto& pair : systemInputPorts_) {
-        oss << "  - " << pair.first;
-        if (pair.second) {
-            oss << " (Type: " << pair.second->getDataTypeName()
-                << ", Owner: " << pair.second->getOwner()->getName() << ")";
+    // describeInputs()/describeOutputs() read name + type + owner under one
+    // SystemPortRegistry::mutex_ hold, so there is no window for a
+    // concurrent unregisterProcessingUnit() to free the port between lookup
+    // and dereference. The old inputNames()+input()+deref two-step (each
+    // step its own lock/unlock) had exactly that window — a
+    // heap-use-after-free; regression test:
+    // AxonVexSystemTest.GetSystemPortInfoDoesNotRaceUnregisterProcessingUnit.
+    auto inputDescriptions = systemPorts_.describeInputs();
+    oss << "Input Ports (" << inputDescriptions.size() << "):\n";
+    for (const auto& desc : inputDescriptions) {
+        oss << "  - " << desc.name;
+        if (!desc.dataTypeName.empty() || !desc.ownerName.empty()) {
+            oss << " (Type: " << desc.dataTypeName << ", Owner: " << desc.ownerName << ")";
         }
         oss << "\n";
     }
 
-    oss << "Output Ports (" << systemOutputPorts_.size() << "):\n";
-    for (const auto& pair : systemOutputPorts_) {
-        oss << "  - " << pair.first;
-        if (pair.second) {
-            oss << " (Type: " << pair.second->getDataTypeName()
-                << ", Owner: " << pair.second->getOwner()->getName() << ")";
+    auto outputDescriptions = systemPorts_.describeOutputs();
+    oss << "Output Ports (" << outputDescriptions.size() << "):\n";
+    for (const auto& desc : outputDescriptions) {
+        oss << "  - " << desc.name;
+        if (!desc.dataTypeName.empty() || !desc.ownerName.empty()) {
+            oss << " (Type: " << desc.dataTypeName << ", Owner: " << desc.ownerName << ")";
         }
         oss << "\n";
     }
@@ -1771,10 +1724,7 @@ size_t AxonVexSystem::getMemoryUsage() const noexcept {
         usage += processingUnits_.size() * 1024; // Rough estimate per ProcessingUnit
     }
 
-    {
-        std::lock_guard<std::mutex> lock(systemPortsMutex_);
-        usage += (systemInputPorts_.size() + systemOutputPorts_.size()) * 64;
-    }
+    usage += (systemPorts_.inputCount() + systemPorts_.outputCount()) * 64;
 
     statistics_.memoryUsageBytes.store(usage);
     statistics_.peakMemoryUsageBytes.store(
@@ -1913,11 +1863,7 @@ std::string AxonVexSystem::getSystemReport() const {
 // Update the cleanup methods to handle system ports
 void AxonVexSystem::cleanupComponents() {
     // Clear system port assignments first
-    {
-        std::lock_guard<std::mutex> lock(systemPortsMutex_);
-        systemInputPorts_.clear();
-        systemOutputPorts_.clear();
-    }
+    systemPorts_.clear();
 
     // Reset components
     timingController_.reset();
@@ -1934,9 +1880,16 @@ bool AxonVexSystem::unregisterProcessingUnit(uint32_t unitId) {
     ProcessingUnit* unitPtr = nullptr;
     std::string unitName;
 
-    // First, remove any system ports associated with this unit
+    // First, remove any system ports associated with this unit. unitsMutex_
+    // is held for the entire find-through-erase span below (same atomicity
+    // as before the extraction: a concurrent unregisterProcessingUnit(same
+    // id) cannot observe the unit as still-present once this one has found
+    // it). systemPorts_.removeAllForOwner() takes only its own internal
+    // mutex_ — no other path holds that mutex_ while waiting on unitsMutex_,
+    // so nesting it inside unitsMutex_ here introduces no new lock-order
+    // cycle versus assignSystemInputPort/OutputPort (which take and release
+    // unitsMutex_ before ever touching systemPorts_).
     {
-        std::lock_guard<std::mutex> portsLock(systemPortsMutex_);
         std::lock_guard<std::mutex> unitsLock(unitsMutex_);
 
         auto it = processingUnits_.find(unitId);
@@ -1947,31 +1900,17 @@ bool AxonVexSystem::unregisterProcessingUnit(uint32_t unitId) {
         unitPtr = it->second.get();
         unitName = unitPtr->getName();
 
-        // Remove system input ports associated with this unit
-        auto inputIt = systemInputPorts_.begin();
-        while (inputIt != systemInputPorts_.end()) {
-            if (inputIt->second && inputIt->second->getOwner() == unitPtr) {
-                if (logger_) {
-                    logger_->info("System", "Removing system input port '" + inputIt->first +
-                                                "' due to ProcessingUnit removal");
-                }
-                inputIt = systemInputPorts_.erase(inputIt);
-            } else {
-                ++inputIt;
+        SystemPortRegistry::RemovedPorts removedPorts = systemPorts_.removeAllForOwner(unitPtr);
+        for (const auto& name : removedPorts.inputs) {
+            if (logger_) {
+                logger_->info("System", "Removing system input port '" + name +
+                                            "' due to ProcessingUnit removal");
             }
         }
-
-        // Remove system output ports associated with this unit
-        auto outputIt = systemOutputPorts_.begin();
-        while (outputIt != systemOutputPorts_.end()) {
-            if (outputIt->second && outputIt->second->getOwner() == unitPtr) {
-                if (logger_) {
-                    logger_->info("System", "Removing system output port '" + outputIt->first +
-                                                "' due to ProcessingUnit removal");
-                }
-                outputIt = systemOutputPorts_.erase(outputIt);
-            } else {
-                ++outputIt;
+        for (const auto& name : removedPorts.outputs) {
+            if (logger_) {
+                logger_->info("System", "Removing system output port '" + name +
+                                            "' due to ProcessingUnit removal");
             }
         }
 
