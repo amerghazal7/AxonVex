@@ -14,6 +14,7 @@
 #include <axonvex_core/utils/optional.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -34,15 +35,27 @@ class ProcessingUnit;
  * registry with timing and events. Rationale: keeps the registry dependency-
  * free and makes bulk-add (loadFromSpec) trivially testable.
  *
- * Threading contract: every method locks mutex_; no user code ever runs
- * under it — there are no callbacks in this class by design, which is a
- * structural (not just documented) guarantee against the C18 callback-
- * under-lock class of bug. remove() returns the owning unique_ptr so the
- * caller destroys the unit OUTSIDE this lock: unit destructors can run user
- * code via finalize(), so destroying under mutex_ would itself be a latent
- * C18-shape bug (the previous AxonVexSystem::unregisterProcessingUnit erased
- * the unique_ptr, and therefore ran ~ProcessingUnit(), while still holding
+ * Threading contract: every method locks mutex_; no unit destructor ever
+ * runs under it — remove()/clear() return ownership so the caller destroys
+ * units OUTSIDE this lock: unit destructors can run user code via
+ * finalize(), so destroying under mutex_ would itself be a latent C18-shape
+ * bug (the previous AxonVexSystem::unregisterProcessingUnit erased the
+ * unique_ptr, and therefore ran ~ProcessingUnit(), while still holding
  * unitsMutex_ — this extraction fixes that for free).
+ *
+ * addAndRun()/forEach() are the one deliberate exception to "nothing runs
+ * under mutex_": they exist because a caller that only gets a raw pointer
+ * back from add()/all() has no way to keep it valid once mutex_ is
+ * released — a concurrent clear()/remove() can free it before the caller
+ * finishes using it (this is exactly what happened pre-fix in
+ * AxonVexSystem::registerProcessingUnit/startComponents, an ASan-confirmed
+ * heap-use-after-free). Their callback runs under mutex_ so the caller's
+ * "use the pointer" span is atomic with the insert/iteration; it is
+ * synchronous, caller-local code, never a long-lived or externally
+ * registered handler, so it is not the C18 class of bug (arbitrary
+ * user/plugin callbacks invoked while holding a lock) — but it must never
+ * call back into this UnitRegistry (mutex_ is not recursive) and must not
+ * block or do I/O.
  */
 class UnitRegistry {
   public:
@@ -61,6 +74,16 @@ class UnitRegistry {
     /// never reused except after resetIds()).
     uint32_t add(std::unique_ptr<ProcessingUnit> unit);
 
+    /// Same insertion as add(), but `onAdded(id, ptr)` runs while mutex_ is
+    /// STILL held, before any other thread can observe or free the new
+    /// unit — closes the add()-then-use-the-pointer race a bare add()
+    /// leaves open (see the class comment). If `onAdded` throws, the
+    /// just-added unit is rolled back (erased) before mutex_ is released
+    /// and the exception propagates; the rolled-back unit's destructor
+    /// still runs OUTSIDE the lock, same as remove()/clear().
+    uint32_t addAndRun(std::unique_ptr<ProcessingUnit> unit,
+                       const std::function<void(uint32_t, ProcessingUnit*)>& onAdded);
+
     /// Returns the owning unique_ptr (caller destroys it outside this call —
     /// no lock is held once this returns) or nullptr if `id` is unknown.
     std::unique_ptr<ProcessingUnit> remove(uint32_t id);
@@ -75,6 +98,13 @@ class UnitRegistry {
 
     /// Snapshot vector (today's getAllProcessingUnits shape).
     std::vector<ProcessingUnit*> all() const;
+
+    /// Calls `fn(ptr)` for every currently-registered unit while holding
+    /// mutex_ for the WHOLE iteration — a concurrent clear()/remove() cannot
+    /// free any of them mid-loop (see the class comment; this is
+    /// startComponents()'s fix: it needs to touch every unit's pointer, not
+    /// just snapshot them).
+    void forEach(const std::function<void(ProcessingUnit*)>& fn) const;
 
     size_t count() const noexcept;
 

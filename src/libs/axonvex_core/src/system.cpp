@@ -769,45 +769,34 @@ uint32_t AxonVexSystem::registerProcessingUnit(std::unique_ptr<ProcessingUnit> u
         throw std::invalid_argument("Processing unit cannot be null");
     }
 
-    // unitRegistry_.add() throws std::runtime_error on capacity, matching the
-    // pre-extraction check-then-insert ordering exactly (same exception type
-    // and message).
-    ProcessingUnit* unitPtr = unit.get();
-    uint32_t unitId = unitRegistry_.add(std::move(unit));
+    // addAndRun() keeps "insert" and "use the pointer" atomic against a
+    // concurrent emergencyShutdown()/reset() -> UnitRegistry::clear(): the
+    // scheduling call below runs while unitRegistry_ still holds its lock,
+    // so clear() cannot free unitPtr out from under it (ASan-confirmed
+    // heap-use-after-free pre-fix: ProcessingUnit::getName() below used to
+    // run unlocked after add() returned, racing clear()). unitName is
+    // captured under that same lock so the event/log statements after
+    // addAndRun returns use a copy, never the (by-then possibly freed)
+    // pointer.
+    std::string unitName;
+    uint32_t unitId = unitRegistry_.addAndRun(
+        std::move(unit), [this, &constraints, &unitName](uint32_t /*id*/, ProcessingUnit* unitPtr) {
+            unitName = unitPtr->getName();
 
-    // Register with timing controller if running. NOTE (accepted narrow
-    // window, ponytail: known ceiling): between unitRegistry_.add() above and
-    // this call, unitId is externally reachable (getProcessingUnit()/
-    // unregisterProcessingUnit()); the pre-extraction code closed this window
-    // by holding unitsMutex_ across both steps, which UnitRegistry's
-    // per-call locking cannot replicate without exposing its mutex. A
-    // concurrent unregisterProcessingUnit(unitId) landing in this exact
-    // window would hand scheduleProcessingUnit a freed unitPtr. No in-tree
-    // caller unregisters a unit it hasn't already observed via
-    // getAllProcessingUnits()/getProcessingUnit(), which cannot return
-    // unitId until this call returns, so the window has no reachable
-    // trigger today. Upgrade path if that changes: give UnitRegistry a
-    // combined "add-and-run-under-lock" primitive.
-    if (timingController_ && isRunning()) {
-        try {
-            TimingConstraints finalConstraints = constraints;
-            if (finalConstraints.period.count() == 0) {
-                // Use default constraints based on system tick rate
-                finalConstraints.period = systemConfig_.systemTickRate;
-                finalConstraints.deadline = finalConstraints.period;
-                finalConstraints.wcet = finalConstraints.period / 10;
+            if (timingController_ && isRunning()) {
+                TimingConstraints finalConstraints = constraints;
+                if (finalConstraints.period.count() == 0) {
+                    // Use default constraints based on system tick rate
+                    finalConstraints.period = systemConfig_.systemTickRate;
+                    finalConstraints.deadline = finalConstraints.period;
+                    finalConstraints.wcet = finalConstraints.period / 10;
+                }
+
+                // Throwing here rolls the unit back inside addAndRun (still
+                // under the lock) before the exception reaches our caller.
+                timingController_->scheduleProcessingUnit(unitPtr, finalConstraints);
             }
-
-            timingController_->scheduleProcessingUnit(unitPtr, finalConstraints);
-        } catch (const std::exception& e) {
-            // Remove the unit if scheduling failed. remove() returns
-            // ownership; the temporary is destroyed here, after
-            // unitRegistry_'s internal lock has already been released (C18-
-            // shape fix carried from the UnitRegistry extraction).
-            unitRegistry_.remove(unitId);
-            throw;
-        }
-    }
+        });
 
     // Update statistics
     statistics_.totalProcessingUnits.fetch_add(1);
@@ -818,15 +807,15 @@ uint32_t AxonVexSystem::registerProcessingUnit(std::unique_ptr<ProcessingUnit> u
     event.type = SystemEvent::Type::PROCESSING_UNIT_ADDED;
     event.oldState = currentState_.load();
     event.newState = currentState_.load();
-    event.description = "Processing unit registered: " + unitPtr->getName();
+    event.description = "Processing unit registered: " + unitName;
     event.timestamp = std::chrono::steady_clock::now();
     event.metadata["unit_id"] = std::to_string(unitId);
-    event.metadata["unit_name"] = unitPtr->getName();
+    event.metadata["unit_name"] = unitName;
 
     publishEvent(event);
 
     if (logger_) {
-        logger_->info("System", "Registered processing unit: " + unitPtr->getName() +
+        logger_->info("System", "Registered processing unit: " + unitName +
                                     " (ID: " + std::to_string(unitId) + ")");
     }
 
@@ -1214,11 +1203,14 @@ bool AxonVexSystem::startComponents() {
             timingController_->start();
         }
 
-        // Schedule all registered processing units. Snapshot outside any
-        // registry lock (all() takes and releases its own internal lock),
-        // then call into the timing controller with no registry lock held —
-        // strictly narrower than the old unitsMutex_-held span, never wider.
-        for (ProcessingUnit* unit : unitRegistry_.all()) {
+        // forEach() holds unitRegistry_'s lock for the WHOLE loop, so a
+        // concurrent emergencyShutdown()/reset() -> clear() cannot free a
+        // unit out from under scheduleProcessingUnit() mid-iteration —
+        // restores the atomicity the old unitsMutex_-held span gave
+        // pre-extraction (a snapshot-then-unlocked-iterate here is the same
+        // ASan-confirmed heap-use-after-free shape as registerProcessingUnit,
+        // just via all() instead of add()).
+        unitRegistry_.forEach([this](ProcessingUnit* unit) {
             // Create default constraints
             TimingConstraints constraints;
             constraints.period = systemConfig_.systemTickRate;
@@ -1233,7 +1225,7 @@ bool AxonVexSystem::startComponents() {
                                                    unit->getName() + ": " + e.what());
                 }
             }
-        }
+        });
 
         return true;
 
