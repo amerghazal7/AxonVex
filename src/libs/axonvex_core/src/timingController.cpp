@@ -192,8 +192,7 @@ void RealTimeScheduler::stop() {
     // reclaiming, so every step here must be individually idempotent
     // instead of gated by one flag (SafetyManager/Watchdog C33/C36
     // precedent).
-    running_.store(false);
-    schedulerCondition_.notify_all();
+    halt();
 
     // C42: checked before touching schedulerThread_, and before any lock —
     // there are none in this function, but the check must still gate the
@@ -219,6 +218,29 @@ void RealTimeScheduler::stop() {
         schedulerThread_->join();
     }
     schedulerThread_.reset();
+}
+
+void RealTimeScheduler::halt() noexcept {
+    // Design spec §6.3: the non-blocking half of what stop() does. Storing
+    // haltRequestedAt_ before running_ costs nothing extra (both are single
+    // relaxed/atomic ops) and means a reader can never observe running_
+    // already false with haltRequestedAt_ still unset.
+    auto now = std::chrono::steady_clock::now();
+    haltRequestedAtNs_.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count(),
+        std::memory_order_relaxed);
+    running_.store(false);
+    schedulerCondition_.notify_all();
+}
+
+std::chrono::microseconds RealTimeScheduler::getHaltLatency() const noexcept {
+    int64_t haltNs = haltRequestedAtNs_.load(std::memory_order_relaxed);
+    int64_t returnNs = lastTaskReturnAtNs_.load(std::memory_order_relaxed);
+    if (haltNs == 0 || returnNs == 0 || returnNs < haltNs) {
+        return std::chrono::microseconds{0};
+    }
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::nanoseconds(returnNs - haltNs));
 }
 
 bool RealTimeScheduler::isOnSchedulerThread() const noexcept {
@@ -661,6 +683,12 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         auto executionEnd = std::chrono::steady_clock::now();
         auto executionTime =
             std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
+        // Halt-bound telemetry (§6.3): scheduler-thread-only writer, reused
+        // timestamp already paid for above -- no extra now() call.
+        lastTaskReturnAtNs_.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(executionEnd.time_since_epoch())
+                .count(),
+            std::memory_order_relaxed);
 
         // Task bookkeeping under tasksMutex_: user code above runs unlocked, but
         // constraints/nextExecution/lastExecution race updateTaskConstraints()
@@ -717,6 +745,10 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         auto executionEnd = std::chrono::steady_clock::now();
         auto executionTime =
             std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
+        lastTaskReturnAtNs_.store(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(executionEnd.time_since_epoch())
+                .count(),
+            std::memory_order_relaxed);
 
         const uint64_t MAX_CONSECUTIVE_FAILURES = 10;
         bool deactivated = false;
@@ -999,6 +1031,10 @@ bool TimingController::isOnSchedulerThread() const noexcept {
     return scheduler_ && scheduler_->isOnSchedulerThread();
 }
 
+std::chrono::microseconds TimingController::getHaltLatency() const noexcept {
+    return scheduler_ ? scheduler_->getHaltLatency() : std::chrono::microseconds{0};
+}
+
 void TimingController::pause() {
     scheduler_->pause();
 }
@@ -1138,7 +1174,10 @@ bool TimingController::validateSchedulability() const {
 }
 
 void TimingController::emergencyStop() {
-    scheduler_->stop();
+    // Design spec §6.3: the non-blocking e-stop hot path. Does NOT wait for
+    // an in-flight task's WCET -- callers needing full teardown (thread
+    // reclaimed) should follow with stop(), which still joins.
+    scheduler_->halt();
 
     if (failsafeCallback_) {
         failsafeCallback_("Emergency stop triggered");
