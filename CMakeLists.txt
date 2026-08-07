@@ -84,6 +84,11 @@ endif()
 option(BUILD_TESTING "Build unit tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_PLUGINS "Build middleware plugins (axonvex_ros2, etc.)" ON)
+# Off by default: Google Benchmark is a new Conan dependency, not one the
+# rest of the tree needs. REQUIRED below (not QUIET) is deliberate -- a
+# platform/config that can't satisfy this must hard-error, not silently
+# compile zero benchmark targets and report a passing build.
+option(AXONVEX_BUILD_BENCHMARKS "Build Google Benchmark microbenchmarks (WS-PERF)" OFF)
 
 ##################### Sanitizers ##########################
 # -DAXONVEX_SANITIZER=address|thread|undefined. One at a time: ASan and TSan
@@ -415,4 +420,10 @@ endif()
 ##################### Build Examples ##########################
 if(BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+##################### Build Benchmarks (optional) ##########################
+if(AXONVEX_BUILD_BENCHMARKS)
+    find_package(benchmark REQUIRED)
+    add_subdirectory(benchmarks)
 endif()

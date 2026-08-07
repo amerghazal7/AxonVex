@@ -54,6 +54,9 @@ class AxonVexConan(ConanFile):
         # non-BUILD_TESTING configures), but declaring it here keeps `conan
         # install .` at the repo root matching the old conanfile.txt exactly.
         self.test_requires("gtest/1.14.0")
+        # Google Benchmark backs the WS-PERF microbenchmarks (-DAXONVEX_BUILD_BENCHMARKS=ON,
+        # off by default). Dev-only like gtest: nothing the library itself links against.
+        self.test_requires("benchmark/1.8.3")
 
     # No layout()/cmake_layout(): this recipe's `conan install .
     # --output-folder=build` must drop conan_toolchain.cmake directly under
