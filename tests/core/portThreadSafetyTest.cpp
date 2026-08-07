@@ -195,7 +195,21 @@ TEST_F(PortThreadSafetyTest, ConcurrentAccessKeepsNonTrivialPayloadIntact) {
 
     for (int r = 0; r < NUM_READERS; ++r) {
         threads.emplace_back([&inputPort, &stop, &reads, &corrupted]() {
-            while (!stop.load(std::memory_order_acquire)) {
+            // do-while, not while: this must be a POST-check. Main joins the
+            // writers and then immediately does stop.store(true) before joining
+            // us here -- nothing orders "a reader thread has been scheduled at
+            // least once" against that store. With a pre-check while(), a
+            // reader whose first scheduling quantum lands after the store sees
+            // stop already true and exits having run the body zero times, so
+            // reads stays 0 and the EXPECT_GT below fails even though nothing
+            // is corrupted -- reproduces deterministically (198/200) on this
+            // box with `taskset -c 0`, which is exactly what a contended CI
+            // runner does to thread scheduling. A do-while runs the body --
+            // the read() + invariant check + counters -- unconditionally once
+            // per thread before ever consulting stop, which is a language
+            // guarantee, not a timing one, so it fixes this without touching
+            // the corruption check or any memory-ordering argument here.
+            do {
                 Payload seen = inputPort->read();
                 // Every published Payload has 8 values all equal to its seed and
                 // a name derived from that same seed. Anything else means the
@@ -216,7 +230,7 @@ TEST_F(PortThreadSafetyTest, ConcurrentAccessKeepsNonTrivialPayloadIntact) {
                     corrupted.store(true, std::memory_order_release);
                 }
                 reads.fetch_add(1, std::memory_order_relaxed);
-            }
+            } while (!stop.load(std::memory_order_acquire));
         });
     }
 
