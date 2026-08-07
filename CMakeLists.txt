@@ -66,6 +66,16 @@ project("${PROJECT_NAME}"
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Narrow, vendor-forced exception to "C++14 strictly" (CLAUDE.md), scoped to
+# Apple only: Xcode's libc++ dropped <experimental/filesystem>, and its
+# <filesystem> fallback (see axonvex_core/detail/filesystem_compat.hpp) needs
+# the -std= dialect itself at C++17 to define anything, not just the header
+# to be present. Every other platform keeps CMAKE_CXX_STANDARD 14 above; must
+# stay after project() for the same reason 14 does (comment above).
+if(APPLE)
+    set(CMAKE_CXX_STANDARD 17)
+endif()
+
 # Default install prefix to the project-local dev directory, but only when
 # the caller didn't ask for one: unconditional FORCE here previously stomped
 # any `-DCMAKE_INSTALL_PREFIX=...` a downstream packager (conan, a system
