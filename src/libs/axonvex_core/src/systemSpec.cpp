@@ -925,6 +925,21 @@ bool SpecSystem::initializeBlocksLayout() {
     std::unordered_map<std::string, ProcessingUnit*> unitsByName;
     unitsByName.reserve(spec_.units.size());
 
+    // Rollback for every failure return below: a failed instantiation must
+    // never leave the units it already registered (or wiring already made)
+    // inside the system -- a half-built AxonVexSystem must not survive a
+    // false return. unregisterProcessingUnit() also tears down any system
+    // ports/connections already attached to that unit, so this one call
+    // undoes everything a partially-completed pass could have done.
+    std::vector<uint32_t> registeredUnitIds;
+    registeredUnitIds.reserve(spec_.units.size());
+    auto rollbackRegisteredUnits = [this, &registeredUnitIds]() {
+        for (uint32_t id : registeredUnitIds) {
+            unregisterProcessingUnit(id);
+        }
+        registeredUnitIds.clear();
+    };
+
     for (const SpecUnit& su : spec_.units) {
         std::unique_ptr<ProcessingUnit> unit;
         try {
@@ -934,6 +949,7 @@ bool SpecSystem::initializeBlocksLayout() {
                 "$.units[" + su.name + "]", SpecErrorCode::UNKNOWN_UNIT_TYPE,
                 std::string("factory.create() failed for unit '") + su.name + "': " + e.what()});
             getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
             return false;
         }
         if (!unit) {
@@ -941,6 +957,7 @@ bool SpecSystem::initializeBlocksLayout() {
                 SpecError{"$.units[" + su.name + "]", SpecErrorCode::UNKNOWN_UNIT_TYPE,
                           "factory.create() returned null for unit '" + su.name + "'"});
             getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
             return false;
         }
 
@@ -950,16 +967,19 @@ bool SpecSystem::initializeBlocksLayout() {
         }
 
         TimingConstraints constraints = su.hasTiming ? su.timing : TimingConstraints{};
+        uint32_t unitId = 0;
         try {
-            registerProcessingUnit(std::move(unit), constraints);
+            unitId = registerProcessingUnit(std::move(unit), constraints);
         } catch (const std::exception& e) {
             specErrors_.push_back(
                 SpecError{"$.units[" + su.name + "]", SpecErrorCode::BAD_REFERENCE,
                           std::string("registerProcessingUnit() failed for unit '") + su.name +
                               "': " + e.what()});
             getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
             return false;
         }
+        registeredUnitIds.push_back(unitId);
         unitsByName[su.name] = raw;
     }
 
@@ -972,6 +992,7 @@ bool SpecSystem::initializeBlocksLayout() {
                                                 "' was not injected via addAdapter() before "
                                                 "initialize()"});
             getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
             return false;
         }
     }
@@ -988,6 +1009,7 @@ bool SpecSystem::initializeBlocksLayout() {
                           "internal defect: failed to wire '" + conn.from + "' -> '" + conn.to +
                               "' after validate() reported it as resolvable and compatible"});
             getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
             return false;
         }
     }
@@ -1004,6 +1026,7 @@ bool SpecSystem::initializeBlocksLayout() {
                                             "internal defect: failed to assign system input '" +
                                                 kv.first + "' -> '" + kv.second + "'"});
             getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
             return false;
         }
     }
@@ -1019,6 +1042,7 @@ bool SpecSystem::initializeBlocksLayout() {
                                             "internal defect: failed to assign system output '" +
                                                 kv.first + "' -> '" + kv.second + "'"});
             getLogger().error("SpecSystem", specErrors_.back().message);
+            rollbackRegisteredUnits();
             return false;
         }
     }

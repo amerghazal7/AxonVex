@@ -511,6 +511,64 @@ TEST_F(SpecTestFactory, MissingAdapterFailsInitializeAndRecordsError) {
     EXPECT_TRUE(errorsContain(system.getLastSpecErrors(), SpecErrorCode::MISSING_ADAPTER));
 }
 
+TEST_F(SpecTestFactory, FailedInitializeRollsBackEveryUnitItRegistered) {
+    // Regression: initializeBlocksLayout() registers every unit before the
+    // MISSING_ADAPTER check runs, so on the pre-fix code this left both u1
+    // and u2 as orphaned ProcessingUnits inside the system after a failed
+    // initialize() -- a half-built system that also (pre-fix) reported
+    // isHealthy()==true because the failure path only logged a state
+    // transition instead of performing one.
+    json doc = json{{"specVersion", "1.0"},
+                    {"system", {{"name", "t"}}},
+                    {"units", json::array({{{"name", "u1"}, {"type", "test.DoubleSource"}},
+                                           {{"name", "u2"}, {"type", "test.DoubleSink"}}})},
+                    {"connections", json::array({{{"from", "u1.out"}, {"to", "u2.in"}}})},
+                    {"adapters", json::array({{{"uri", "ros2://foo"}, {"type", "ros2"}}})}};
+    std::vector<SpecError> parseErrors;
+    auto spec = SystemSpec::parse(doc, parseErrors);
+    ASSERT_TRUE(spec.has_value()) << (parseErrors.empty() ? "" : parseErrors[0].message);
+    std::vector<SpecError> validateErrors;
+    ASSERT_TRUE(spec->validate(factory, validateErrors))
+        << (validateErrors.empty() ? "" : validateErrors[0].message);
+
+    SpecSystem system(std::move(*spec), factory);
+    ASSERT_FALSE(system.initialize());
+    EXPECT_TRUE(errorsContain(system.getLastSpecErrors(), SpecErrorCode::MISSING_ADAPTER));
+
+    EXPECT_EQ(system.getAllProcessingUnits().size(), 0u);
+    EXPECT_EQ(system.getProcessingUnitCount(), 0u);
+    EXPECT_FALSE(system.isHealthy());
+}
+
+TEST_F(SpecTestFactory, ReinitializeAfterFailedInitializeDoesNotLeakQueuedEvents) {
+    // Regression (ASan/LeakSanitizer): registerProcessingUnit() during a
+    // failed initializeBlocksLayout() queues SystemEvents into
+    // eventPool_/eventQueue_ before the event thread exists. On pre-fix code,
+    // cleanupComponents() never drained them, so the next initialize() call's
+    // initializeComponents() replaced the pool without ever destructing the
+    // still-queued SystemEvent objects (leaking their string/metadata-map
+    // members). Not observable as a plain assertion -- this test's purpose is
+    // to be run under the ASan/LSan build (see build-asan) where the leak
+    // aborts the run pre-fix and passes clean post-fix.
+    json doc = json{{"specVersion", "1.0"},
+                    {"system", {{"name", "t"}}},
+                    {"units", json::array({{{"name", "u1"}, {"type", "test.DoubleSource"}},
+                                           {{"name", "u2"}, {"type", "test.DoubleSink"}}})},
+                    {"connections", json::array({{{"from", "u1.out"}, {"to", "u2.in"}}})},
+                    {"adapters", json::array({{{"uri", "ros2://foo"}, {"type", "ros2"}}})}};
+    std::vector<SpecError> parseErrors;
+    auto spec = SystemSpec::parse(doc, parseErrors);
+    ASSERT_TRUE(spec.has_value()) << (parseErrors.empty() ? "" : parseErrors[0].message);
+    std::vector<SpecError> validateErrors;
+    ASSERT_TRUE(spec->validate(factory, validateErrors))
+        << (validateErrors.empty() ? "" : validateErrors[0].message);
+
+    SpecSystem system(std::move(*spec), factory);
+    ASSERT_FALSE(system.initialize());
+    ASSERT_FALSE(
+        system.initialize()); // reuse without reset(): must not leak the 1st attempt's events
+}
+
 TEST_F(SpecTestFactory, MissionPipelinesSectionIsRejectedAsUnsupportedByTheLoader) {
     // Reserved-but-rejected (design spec §7 Q7): validate() only shape-checks
     // this section (no MissionElement factories exist yet), so it is the
