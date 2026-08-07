@@ -2,6 +2,7 @@
 nlohmann_json/3.11.2
 gtest/1.14.0
 onetbb/2022.2.0
+benchmark/1.8.3
 
 [generators]
 CMakeDeps
