@@ -220,6 +220,11 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Setup Python for Conan
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
     # Pinned, not `apt-get install -y clang-format clang-tidy`: that resolves
     # to whatever major version the runner image ships, which drifts (this
     # gate hit exactly that in the real run this hardening is for — Ubuntu
@@ -228,16 +233,15 @@ jobs:
     # prebuilt wheels give the identical binary on any OS, so this is also
     # what a contributor should run locally (see CONTRIBUTING.md) — same
     # version everywhere, not just "same version on this runner image".
-    # clang-tidy 18.1.1 is the newest 18.1.x pip has mirrored (no 18.1.8
-    # wheel exists for it); same major/minor as clang-format 18.1.8, so its
-    # check set matches .clang-tidy's triage. Bump both together, deliberately,
-    # when there's a reason to move — never let apt silently carry one forward.
+    # Both pinned to the same 18.1.8 patch release so formatting and lint
+    # checks come from one toolchain version — bump both together,
+    # deliberately, when there's a reason to move.
     # The version check below turns "pip silently resolved something else"
     # into a hard failure instead of a quietly-different gate.
     - name: Install pinned clang-format and clang-tidy
       env:
         CLANG_FORMAT_VERSION: "18.1.8"
-        CLANG_TIDY_VERSION: "18.1.1"
+        CLANG_TIDY_VERSION: "18.1.8"
       run: |
         set -e
         pip install "clang-format==${CLANG_FORMAT_VERSION}" "clang-tidy==${CLANG_TIDY_VERSION}"
@@ -273,11 +277,6 @@ jobs:
           exit 1
         fi
         echo "$files" | xargs clang-format --dry-run --Werror
-
-    - name: Setup Python for Conan
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
 
     # Pinned: see the build-and-test job's "Install Conan" step for why.
     - name: Install Conan
