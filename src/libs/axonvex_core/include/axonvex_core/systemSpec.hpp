@@ -1,13 +1,15 @@
 /**
  * @file systemSpec.hpp
- * @brief SystemSpec v1 (.axv.json) parsing and validation (composer foundations).
+ * @brief SystemSpec v1 (.axv.json) parsing, validation, and instantiation
+ *        (composer foundations).
  *
- * Design spec §2 + §4.1/§4.2 (parse/validate slice only — this wave does NOT
- * implement SpecSystem / loadSystemFromSpec() / instantiation; see the
- * design spec for that follow-on). parse() and validate() together are a
- * standalone function pair: zero ProcessingUnit instantiation, all findable
- * errors collected in one pass (composer inline-error UX). The same pair
- * backs the future gateway spec/validate endpoint unchanged.
+ * Design spec §2 + §4.1/§4.2. parse() and validate() are a standalone
+ * function pair: zero ProcessingUnit instantiation, all findable errors
+ * collected in one pass (composer inline-error UX); the same pair backs the
+ * future gateway spec/validate endpoint unchanged. SpecSystem/
+ * loadSystemFromSpec() below are the instantiation slice (§4.2 steps 3-5):
+ * a concrete AxonVexSystem subclass so a spec-driven system boots from
+ * .axv.json with zero subclass code (plan §11 exit criterion).
  */
 
 #pragma once
@@ -18,6 +20,7 @@
 #include "utils/optional.hpp"
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -166,5 +169,56 @@ struct SystemSpec {
     /// default. Pure data mapping — does not construct or touch a system.
     SystemConfiguration systemConfiguration() const;
 };
+
+/// Concrete, spec-driven AxonVexSystem (design spec §4.1). `spec` is expected
+/// to have already passed SystemSpec::validate() against `factory` --
+/// loadSystemFromSpec() below is the parse+validate+construct convenience
+/// that guarantees this; constructing directly (as the MISSING_ADAPTER/
+/// UNSUPPORTED_SECTION/wiring-defect regression tests do, to reach
+/// runtime-only failure paths validate() cannot see) is the caller's
+/// responsibility to pre-validate.
+///
+/// `factory` is NOT owned (same non-owning-reference contract as
+/// addAdapter()/setSafetyHook()): it must outlive this SpecSystem.
+/// UnitFactory::global() (the default) satisfies this trivially; a
+/// caller-supplied UnitFactory must be kept alive for the SpecSystem's
+/// entire lifetime.
+class SpecSystem final : public AxonVexSystem {
+  public:
+    explicit SpecSystem(SystemSpec spec, const UnitFactory& factory = UnitFactory::global());
+
+    /// Errors from the last initializeBlocksLayout() run: runtime-only
+    /// failures validate() cannot see (MISSING_ADAPTER, UNSUPPORTED_SECTION)
+    /// and defect-class failures that should never happen after a passing
+    /// validate() (an unresolvable "unit.port" reference, tryConnect()
+    /// returning false on a type/kind mismatch). Empty after a successful
+    /// initialize().
+    const std::vector<SpecError>& getLastSpecErrors() const noexcept {
+        return specErrors_;
+    }
+
+  protected:
+    /// Design spec §4.2 steps 3-5: instantiate every spec.units entry via
+    /// `factory_`, wire spec.connections/systemPorts via BasePort::tryConnect
+    /// and assignSystemInputPort/OutputPort. Any failure records a SpecError
+    /// in specErrors_, logs it, and returns false (the existing initialize()
+    /// error path -- ERROR state, cleanupComponents() -- takes it from there).
+    bool initializeBlocksLayout() override;
+
+  private:
+    SystemSpec spec_;
+    const UnitFactory& factory_;
+    std::vector<SpecError> specErrors_;
+};
+
+/// Convenience: parse+validate+construct in one call. Returns nullptr
+/// (without constructing anything) on any parse or validate failure;
+/// `errors` collects whichever of the two stages failed. Backs the
+/// plan's originally-named `AxonVexSystem::loadFromSpec()` -- a concrete
+/// SpecSystem is the honest shape (see design spec §4.1); the plan's name
+/// survives as this free function.
+std::unique_ptr<AxonVexSystem> loadSystemFromSpec(
+    const nlohmann::json& doc, std::vector<SpecError>& errors,
+    const UnitFactory& factory = UnitFactory::global());
 
 } // namespace axonvex::core
