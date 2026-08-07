@@ -278,16 +278,62 @@ class RealTimeScheduler {
     // see hasStarted_.
     void requireNotStarted(const char* what) const;
 
-    // Scheduling algorithms
+    // Scheduling algorithms. Each remains independently callable (direct
+    // single-shot selection: its own tasksMutex_ scan) for existing callers
+    // -- the RoundRobinTestAccessor-driven regression test, and
+    // scheduleCustom()'s fallback below. schedulerLoop()'s hot path does NOT
+    // call these repeatedly any more for the non-CUSTOM policies; see
+    // selectReadyTasksForCycle() (V4).
     uint32_t scheduleRoundRobin();
     uint32_t schedulePriorityBased();
     uint32_t scheduleEarliestDeadlineFirst();
     uint32_t scheduleRateMonotonic();
     uint32_t scheduleCustom();
 
-    // Task execution
-    void executeTask(SchedulerTask& task);
+    // V4/V6 ready-set rework (design spec §5): one locked pass over tasks_
+    // collects every ready task's id + policy sort key for the WHOLE cycle
+    // (also folds the reactivation-check pass, previously a second separate
+    // locked traversal). Sorting and the resulting selection order are
+    // computed with tasksMutex_ released -- O(1) lock acquisitions for the
+    // cycle's selection instead of one per candidate picked (the old
+    // schedulerLoop called schedulePriorityBased()/etc., each its own O(n)
+    // locked scan, up to taskCount times per cycle: O(n^2) locked scans).
+    // Not used for SchedulingPolicy::CUSTOM -- scheduleCustom() keeps its
+    // own per-call snapshot/dispatch (V1's contract), which schedulerLoop
+    // still drives with its own per-call loop.
+    std::vector<uint32_t> selectReadyTasksForCycle();
+
+    // Task execution. executeTask() runs the user code UNLOCKED and returns
+    // the outcome without touching any lock itself; finalizeTaskExecution()
+    // is the one place that takes tasksMutex_ afterwards, folding the task
+    // bookkeeping (nextExecution advance, failure counters, deadline check)
+    // into the SAME acquisition schedulerLoop uses to release the
+    // executing-claim and check pendingRemoval (V6) -- previously two
+    // separate post-execution lock acquisitions (one inside executeTask for
+    // bookkeeping, one in schedulerLoop for the release), now one.
+    struct TaskExecutionResult {
+        bool success{true};
+        std::chrono::steady_clock::time_point executionStart{};
+        std::chrono::steady_clock::time_point executionEnd{};
+        std::chrono::microseconds executionTime{0};
+        // V2: truncated, fixed-size buffer instead of a heap std::string --
+        // filled only on the (already-exceptional) failure path via
+        // snprintf, no dynamic allocation. Empty ("") on success.
+        char errorMessage[192]{};
+    };
+    struct TaskFinalizeOutcome {
+        bool deactivated{false};
+        bool missedDeadline{false};
+    };
+
+    TaskExecutionResult executeTask(SchedulerTask& task);
+    TaskFinalizeOutcome finalizeTaskExecution(SchedulerTask& task,
+                                              const TaskExecutionResult& result);
     void updateTaskStatistics(SchedulerTask& task, std::chrono::microseconds executionTime);
+    // V5: scheduler-thread-only writer, no lock -- see AtomicStatistics's
+    // comment below for the consistency argument.
+    void updateGlobalStatistics(bool success, std::chrono::microseconds executionTime,
+                                bool missedDeadline);
 
     // Timing utilities
     std::chrono::steady_clock::time_point calculateNextExecution(const SchedulerTask& task) const;
@@ -347,9 +393,40 @@ class RealTimeScheduler {
     uint32_t cpuCore_{0};
     bool affinitySet_{false};
 
-    // Statistics
-    mutable std::mutex statsMutex_;
-    SchedulerStatistics statistics_;
+    // V5: written ONLY by the scheduler thread (updateGlobalStatistics() and
+    // updateSchedulingJitter(), both called exclusively from schedulerLoop),
+    // read by any thread via getStatistics(). Each field is an independent
+    // atomic; relaxed ordering suffices because there is exactly one writer
+    // (no writer-writer race to arbitrate, only writer-reader visibility,
+    // which atomicity itself provides regardless of memory order) and
+    // SchedulerStatistics never promised cross-field transactional
+    // consistency -- a mutex-protected snapshot mid-update was never atomic
+    // w.r.t. the scheduler's OWN in-flight computation either (e.g.
+    // averageExecutionTime is a running approximation, not exact). This
+    // closes the "statsMutex_ taken every cycle + per task execution"
+    // violation: no lock at all on this path now. getStatistics() /
+    // resetStatistics() assemble/reset the public SchedulerStatistics DTO
+    // from these fields; see RealTimeSchedulerStatsTest.
+    // ConcurrentStatsReadDuringExecutionIsRaceFree for the TSan-clean proof
+    // this rule (CLAUDE.md #8) requires for any lock-free claim.
+    struct AtomicStatistics {
+        std::atomic<uint64_t> totalExecutions{0};
+        std::atomic<uint64_t> successfulExecutions{0};
+        std::atomic<uint64_t> failedExecutions{0};
+        std::atomic<uint64_t> missedDeadlines{0};
+        std::atomic<uint64_t> preemptions{0};
+        std::atomic<int64_t> totalExecutionTimeUs{0};
+        std::atomic<int64_t> averageExecutionTimeUs{0};
+        std::atomic<int64_t> maxExecutionTimeUs{0};
+        std::atomic<int64_t> minExecutionTimeUs{std::chrono::microseconds::max().count()};
+        std::atomic<int64_t> schedulingJitterUs{0};
+        std::atomic<int64_t> averageSchedulingJitterUs{0};
+    };
+    AtomicStatistics statistics_;
+
+    // Failure-handling constant shared by executeTask()'s (deleted) former
+    // inline copy and finalizeTaskExecution()'s deactivation message.
+    static constexpr uint64_t kMaxConsecutiveFailures = 10;
 
     // Custom scheduler
     CustomSchedulerCallback customScheduler_;
