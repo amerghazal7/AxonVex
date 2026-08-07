@@ -35,7 +35,7 @@ class BenchUnit : public axonvex::core::ProcessingUnit {
 
 } // namespace
 
-// state.range(0): 0 = threadSafe port (locked), 1 = non-threadSafe (unlocked).
+// state.range(0): 0 = non-threadSafe port (unlocked), 1 = threadSafe (locked).
 static void BM_PortWriteRead(benchmark::State& state) {
     const bool threadSafe = state.range(0) != 0;
     BenchUnit producer("producer");

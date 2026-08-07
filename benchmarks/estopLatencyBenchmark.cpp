@@ -25,8 +25,12 @@ class NoopHandler : public axonvex::core::Callback<axonvex::safety::SafetyEvent>
   public:
     void callbackPerform(const axonvex::safety::SafetyEvent event) override {
         // Touch the event so the compiler can't prove the handler is dead
-        // code and elide the dispatch this benchmark is measuring.
-        benchmark::DoNotOptimize(event.level);
+        // code and elide the dispatch this benchmark is measuring. Copy to a
+        // non-const local first -- DoNotOptimize(const T&) is deprecated
+        // precisely because it can be optimized away, which would defeat the
+        // guard this line exists to provide.
+        axonvex::safety::SafetyLevel level = event.level;
+        benchmark::DoNotOptimize(level);
     }
 };
 

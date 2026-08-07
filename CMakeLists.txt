@@ -3,7 +3,21 @@ cmake_minimum_required(VERSION 3.20)
 set(PROJECT_NAME "axonvex")
 
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
-set(CMAKE_BUILD_TYPE Debug)
+# AXONVEX_BUILD_BENCHMARKS is read here (before its option() declaration
+# below) because a -D on the command line already populates the cache at
+# this point in script execution. Benchmarks need the Release the invoker
+# actually passed (see docs/benchmarks.md): forcing Debug unconditionally
+# made Conan's Release-gated benchmark::benchmark target import zero include
+# dirs/libs (every property in benchmark-Target-release.cmake is behind
+# $<CONFIG:Release>), yet CMakeCache still read CMAKE_BUILD_TYPE=Release --
+# a silent-looking configure success followed by a compile-time failure.
+if(AXONVEX_BUILD_BENCHMARKS)
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Release)
+    endif()
+else()
+    set(CMAKE_BUILD_TYPE Debug)
+endif()
 
 set(CMAKE_ENABLE_EXPORTS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
