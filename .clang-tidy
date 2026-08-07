@@ -1,0 +1,160 @@
+# AxonVex clang-tidy configuration.
+#
+# This is a REAL, enforced gate (see .github/workflows/ci.yml, "Run
+# clang-tidy" step): `WarningsAsErrors` turns matching diagnostics into a
+# nonzero clang-tidy exit code, which the CI step propagates as a failure.
+# Every exclusion below was verified against the actual tree, not guessed —
+# see the two-tier design and the triage counts further down.
+#
+# --- C++14 ceiling (checks removed from Checks entirely) -------------------
+# The project builds strictly as C++14 (CLAUDE.md). These two checks are
+# actively wrong for this codebase, not just "not yet fixed", so they are
+# excluded from `Checks` itself rather than merely deferred below:
+#   - portability-avoid-pragma-once: STYLE_GUIDE.md mandates `#pragma once`
+#     for header guards. This check tells you to do the opposite.
+#   - readability-use-concise-preprocessor-directives: suggests `#elifdef` /
+#     `#elifndef`, which are C23/C++23 preprocessor directives — invalid in
+#     a C++14 translation unit.
+# Also excluded for the same C++14-ceiling reason (no current hits, but each
+# assumes >=C++17 and would actively break the build if it ever fired):
+#   - modernize-use-nodiscard        ([[nodiscard]] is a C++17 attribute)
+#   - modernize-unary-static-assert  (single-arg static_assert is C++17)
+#   - modernize-concat-nested-namespaces (rewrites to `namespace a::b {},
+#     which CLAUDE.md explicitly forbids regardless of standard)
+#   - modernize-use-designated-initializers (C++20)
+#   - modernize-type-traits (would suggest `std::is_same_v` etc. under
+#     C++17; CLAUDE.md explicitly forbids `std::is_*_v` — belt and braces
+#     even though the compile flags already pin the check to C++14)
+#
+# --- Two-tier rollout (checks kept in Checks, but not all WarningsAsErrors) -
+# `Checks` below is intentionally broad: every enabled check still runs and
+# prints, so violations are visible in CI log output for humans to triage.
+# `WarningsAsErrors` is the enforced subset — everything enabled EXCEPT the
+# checks the tree already violates today. Baseline triage against ad1564d
+# (18 src/**/*.cpp translation units, headers seen transitively, run with
+# `clang-tidy -p build`) found real, still-open violations in the following
+# checks; each is excluded from WarningsAsErrors so the gate is green today,
+# with its current hit count as of this triage so regressions are visible
+# (a maintainer re-running the same command should see these counts go down,
+# not up, before ever promoting one into WarningsAsErrors):
+#   misc-include-cleaner (289), misc-const-correctness (289),
+#   readability-braces-around-statements (60) [mechanical, cheap follow-up:
+#     this is literally STYLE_GUIDE.md's "always brace single statements"
+#     rule already being violated 60x — good first check to promote],
+#   readability-implicit-bool-conversion (47), modernize-pass-by-value (21),
+#   bugprone-narrowing-conversions (17) [worth a dedicated correctness pass,
+#     not blanket auto-fix: several hits are on RT-path numeric code],
+#   performance-enum-size (15), modernize-use-emplace (11),
+#   modernize-avoid-c-arrays (11), readability-math-missing-parentheses (10),
+#   readability-convert-member-functions-to-static (10),
+#   readability-else-after-return (9),
+#   bugprone-implicit-widening-of-multiplication-result (9),
+#   concurrency-mt-unsafe (7) [flag for the thread-safety-focused reviewer:
+#     worth checking each hit isn't masking a real TSan-relevant issue],
+#   readability-function-cognitive-complexity (7),
+#   performance-unnecessary-value-param (5), modernize-return-braced-init-list (5),
+#   readability-qualified-auto (4), readability-inconsistent-ifelse-braces (4),
+#   performance-avoid-endl (4), modernize-use-default-member-init (4),
+#   bugprone-empty-catch (4) [flag: this is exactly the project's named
+#     "silent failure" bug class (CLAUDE.md) — at least one hit is in
+#     system.cpp, currently owned by a parallel work track; do not fix
+#     piecemeal, fix all 4 together once that file is free],
+#   readability-redundant-member-init (3), readability-named-parameter (3),
+#   readability-isolate-declaration (3), modernize-use-auto (3),
+#   readability-ambiguous-smartptr-reset-call (2), performance-move-const-arg (2),
+#   modernize-use-equals-default (2), misc-unused-parameters (2),
+#   bugprone-multi-level-implicit-pointer-conversion (2), bugprone-argument-comment (2),
+#   readability-use-std-min-max (1), readability-use-anyofallof (1),
+#   readability-simplify-boolean-expr (1), readability-redundant-string-cstr (1),
+#   readability-redundant-casting (1), readability-make-member-function-const (1),
+#   readability-avoid-const-params-in-decls (1), modernize-use-override (1),
+#   modernize-loop-convert (1), bugprone-inc-dec-in-conditions (1),
+#   bugprone-exception-escape (1), bugprone-branch-clone (1).
+#
+# readability-identifier-naming is deliberately left unconfigured (no
+# *Case/*Prefix/*Suffix options set below): with zero options it performs no
+# checks, so enabling it today is a no-op, not a silent gap. Configuring it
+# to assert docs/STYLE_GUIDE.md's naming rules (PascalCase classes, camelCase
+# methods, snake_case_ members, UPPER_CASE constants) is real, separate
+# follow-up work — land it once verified clean, not as a wall of new red.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  concurrency-*,
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+  -misc-no-recursion,
+  modernize-*,
+  -modernize-use-nodiscard,
+  -modernize-unary-static-assert,
+  -modernize-concat-nested-namespaces,
+  -modernize-use-trailing-return-type,
+  -modernize-type-traits,
+  -modernize-use-designated-initializers,
+  performance-*,
+  portability-*,
+  -portability-avoid-pragma-once,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-uppercase-literal-suffix,
+  -readability-use-concise-preprocessor-directives
+
+WarningsAsErrors: >
+  *,
+  -misc-include-cleaner,
+  -misc-const-correctness,
+  -readability-braces-around-statements,
+  -readability-implicit-bool-conversion,
+  -modernize-pass-by-value,
+  -bugprone-narrowing-conversions,
+  -performance-enum-size,
+  -modernize-use-emplace,
+  -modernize-avoid-c-arrays,
+  -readability-math-missing-parentheses,
+  -readability-convert-member-functions-to-static,
+  -readability-else-after-return,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -concurrency-mt-unsafe,
+  -readability-function-cognitive-complexity,
+  -performance-unnecessary-value-param,
+  -modernize-return-braced-init-list,
+  -readability-qualified-auto,
+  -readability-inconsistent-ifelse-braces,
+  -performance-avoid-endl,
+  -modernize-use-default-member-init,
+  -bugprone-empty-catch,
+  -readability-redundant-member-init,
+  -readability-named-parameter,
+  -readability-isolate-declaration,
+  -modernize-use-auto,
+  -readability-ambiguous-smartptr-reset-call,
+  -performance-move-const-arg,
+  -modernize-use-equals-default,
+  -misc-unused-parameters,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -bugprone-argument-comment,
+  -readability-use-std-min-max,
+  -readability-use-anyofallof,
+  -readability-simplify-boolean-expr,
+  -readability-redundant-string-cstr,
+  -readability-redundant-casting,
+  -readability-make-member-function-const,
+  -readability-avoid-const-params-in-decls,
+  -modernize-use-override,
+  -modernize-loop-convert,
+  -bugprone-inc-dec-in-conditions,
+  -bugprone-exception-escape,
+  -bugprone-branch-clone
+
+# Only fail on diagnostics from AxonVex's own headers, not system/ROS2/
+# nlohmann/gtest headers pulled in transitively.
+HeaderFilterRegex: '(^|/)(src|tests|examples|plugins)/.*\.hpp$'
+
+FormatStyle: file
+
+CheckOptions:
+  - key: readability-braces-around-statements.ShortStatementLines
+    value: '0'

@@ -208,7 +208,23 @@ jobs:
     - name: Run clang-tidy
       run: |
         cd build
-        find ../src -name "*.cpp" -o -name "*.hpp" | xargs clang-tidy -p .
+        # .cpp only: clang-tidy resolves a header's compiler flags by
+        # locating a compile-command entry for it, and headers have none of
+        # their own in compile_commands.json. Passing them directly here
+        # made clang-tidy fall back to parsing them with no include paths at
+        # all (spurious "file not found" on every stdlib include) rather
+        # than analyzing them for real. .clang-tidy's HeaderFilterRegex
+        # still surfaces diagnostics from src/**.hpp — they get analyzed
+        # transitively, with real flags, via whichever .cpp includes them.
+        # (tests/examples/plugins are not covered by this glob or by
+        # HeaderFilterRegex; extending scope beyond `src` is a follow-up.)
+        #
+        # No `--warnings-as-errors` flag here: .clang-tidy's own
+        # WarningsAsErrors field already encodes which checks are enforced
+        # vs. deferred-but-visible (see the file for the current triage) —
+        # passing `*` on the command line would override that and promote
+        # every deferred, still-open finding straight to a build failure.
+        find ../src -name "*.cpp" | xargs clang-tidy -p .
 
   documentation:
     name: Documentation Check
