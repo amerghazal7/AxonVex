@@ -164,6 +164,7 @@ if(BUILD_TESTING)
             tests/core/soakScalabilityTest.cpp
             tests/adapters/adapterContractTest.cpp
             tests/core/typeCasterRegistryTest.cpp
+            tests/visualization/telemetryBusTest.cpp
         )
         target_link_libraries(test_core
             PRIVATE
