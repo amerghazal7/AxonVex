@@ -9,6 +9,9 @@ add_subdirectory(axonvex_plugins)
 ##################### Build axonvex_interfaces Lib ##########################
 add_subdirectory(axonvex_interfaces)
 
+##################### Build axonvex_net Lib ##########################
+add_subdirectory(axonvex_net)
+
 ##################### Build axonvex_safety Lib ##########################
 add_subdirectory(axonvex_safety)
 
