@@ -512,7 +512,12 @@ inline void Logger::log(LogLevel level, const std::string& category, const std::
 
     // Update peak queue size
     size_t current_size = message_queue_->size();
-    size_t peak = stats_.peak_queue_size.load(relaxed);
+    // peak_queue_size is atomic<uint64_t>; compare_exchange_weak's expected
+    // parameter is a reference and requires an exact type match. size_t and
+    // uint64_t are the same type on Linux/Windows but distinct on Apple
+    // platforms (unsigned long vs unsigned long long) — a size_t local here
+    // fails to bind and breaks the macOS build.
+    uint64_t peak = stats_.peak_queue_size.load(relaxed);
     while (current_size > peak &&
            !stats_.peak_queue_size.compare_exchange_weak(peak, current_size, relaxed)) {
         // Loop until we successfully update peak or find a higher value
