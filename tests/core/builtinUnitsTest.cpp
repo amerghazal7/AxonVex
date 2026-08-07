@@ -11,19 +11,19 @@
 #include <cstdlib>
 #include <gtest/gtest.h>
 
-namespace {
-
 // ---------------------------------------------------------------------------
 // Global operator new/delete override, gated by an atomic flag, so a test
 // can prove a code region performs zero heap allocations. Delegates to
 // malloc/free exactly like the default implementation — the only added
 // behavior is an atomic increment while tracking is enabled, so this is
 // inert (and zero-cost when tracking is off) for every other test in this
-// binary.
+// binary. Deliberately at TU (external-linkage) scope, NOT in an unnamed
+// namespace: timingControllerTest.cpp's scheduler-hot-path allocation
+// regression test (same test_core binary, one process-wide operator new)
+// reuses this exact counter via `extern` rather than defining a second,
+// conflicting global operator new/delete override.
 std::atomic<bool> g_trackAllocs{false};
 std::atomic<long> g_allocCount{0};
-
-} // namespace
 
 void* operator new(std::size_t size) {
     if (g_trackAllocs.load(std::memory_order_relaxed)) {

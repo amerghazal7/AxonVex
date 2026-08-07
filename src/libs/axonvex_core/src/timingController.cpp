@@ -481,9 +481,9 @@ void RealTimeScheduler::schedulerLoop() {
         // contract): it needs its own small reactivation pass here since it
         // never calls that helper, and a task-count cap since scheduleCustom()
         // has no ready-set of its own to size the loop against.
-        std::vector<uint32_t> readyTaskIds;
         size_t taskCount = 0;
         if (policy_ == SchedulingPolicy::CUSTOM) {
+            readyTaskIds_.clear(); // not used on this path -- see the loop below
             std::lock_guard<std::mutex> lock(tasksMutex_);
             for (auto& kv : tasks_) {
                 SchedulerTask* task = kv.second;
@@ -495,8 +495,8 @@ void RealTimeScheduler::schedulerLoop() {
             }
             taskCount = tasks_.size();
         } else {
-            readyTaskIds = selectReadyTasksForCycle();
-            taskCount = readyTaskIds.size();
+            selectReadyTasksForCycle(); // fills readyTaskIds_ (HIGH fix: no per-cycle heap alloc)
+            taskCount = readyTaskIds_.size();
         }
 
         // Execute every ready task this cycle, not just one (C1). Each task is
@@ -510,8 +510,8 @@ void RealTimeScheduler::schedulerLoop() {
             uint32_t selectedTaskId = 0;
             if (policy_ == SchedulingPolicy::CUSTOM) {
                 selectedTaskId = scheduleCustom();
-            } else if (executed < readyTaskIds.size()) {
-                selectedTaskId = readyTaskIds[executed];
+            } else if (executed < readyTaskIds_.size()) {
+                selectedTaskId = readyTaskIds_[executed];
             }
 
             if (selectedTaskId == 0) {
@@ -542,7 +542,13 @@ void RealTimeScheduler::schedulerLoop() {
                 updateGlobalStatistics(result.success, result.executionTime,
                                        outcome.missedDeadline);
 
-                // Unlocked dispatch (C18/C1).
+                // Unlocked dispatch (C18/C1). CRITICAL fix: use
+                // outcome.unit, captured under tasksMutex_ inside
+                // finalizeTaskExecution() BEFORE it may deallocate `task`
+                // back to taskPool_ (pendingRemoval branch). `task` itself
+                // must not be dereferenced here any more -- a concurrent
+                // removeTask() during execution can have already returned
+                // this exact block to the pool's free list by this point.
                 if (!result.success && errorCallback_) {
                     if (outcome.deactivated) {
                         // Bounded, zero-heap (V2): %.180s caps the embedded
@@ -555,9 +561,9 @@ void RealTimeScheduler::schedulerLoop() {
                             "Task temporarily deactivated after %llu consecutive failures: %.180s",
                             static_cast<unsigned long long>(kMaxConsecutiveFailures),
                             result.errorMessage);
-                        errorCallback_(task->unit, std::string(buf));
+                        errorCallback_(outcome.unit, std::string(buf));
                     }
-                    errorCallback_(task->unit, std::string(result.errorMessage));
+                    errorCallback_(outcome.unit, std::string(result.errorMessage));
                 }
             }
         }
@@ -683,22 +689,13 @@ uint32_t RealTimeScheduler::scheduleRoundRobin() {
     return 0;
 }
 
-namespace {
-// V4: sort key snapshot for one candidate task, copied out from under
-// tasksMutex_ by value (never a pointer -- the task may be removed and
-// deallocated the instant the lock below is released, since it is not yet
-// claimed/executing). Claiming re-validates by id under the lock exactly
-// like the pre-rework code did, so nothing here can dangle.
-struct ReadyCandidate {
-    uint32_t taskId;
-    SchedulerPriority priority;
-    std::chrono::steady_clock::time_point deadline;
-    std::chrono::microseconds period;
-};
-} // namespace
-
-std::vector<uint32_t> RealTimeScheduler::selectReadyTasksForCycle() {
-    std::vector<ReadyCandidate> candidates;
+void RealTimeScheduler::selectReadyTasksForCycle() {
+    // HIGH fix: reuse the persistent member buffers instead of fresh locals
+    // -- clear() keeps each vector's capacity, so once the ready-set size
+    // stabilizes this cycle allocates nothing (see the members' declaration
+    // comment and ReadyCandidate's comment on the struct itself).
+    auto& candidates = readyCandidates_;
+    candidates.clear();
     auto now = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(tasksMutex_);
@@ -764,7 +761,8 @@ std::vector<uint32_t> RealTimeScheduler::selectReadyTasksForCycle() {
             break; // not used for CUSTOM -- schedulerLoop keeps the old per-call path
     }
 
-    std::vector<uint32_t> ids;
+    auto& ids = readyTaskIds_;
+    ids.clear();
     ids.reserve(candidates.size());
     for (const auto& c : candidates) {
         ids.push_back(c.taskId);
@@ -776,7 +774,6 @@ std::vector<uint32_t> RealTimeScheduler::selectReadyTasksForCycle() {
         std::lock_guard<std::mutex> lock(tasksMutex_);
         lastSelectedTask_ = ids.back();
     }
-    return ids;
 }
 
 uint32_t RealTimeScheduler::scheduleCustom() {
@@ -865,6 +862,13 @@ RealTimeScheduler::TaskFinalizeOutcome RealTimeScheduler::finalizeTaskExecution(
     // executeTask() -- unchanged from before this rework.
     TaskFinalizeOutcome outcome;
     std::lock_guard<std::mutex> lock(tasksMutex_);
+
+    // CRITICAL fix: copy the unit pointer out while `task` is still
+    // guaranteed alive (this lock is the only thing standing between here
+    // and the pendingRemoval deallocate below). schedulerLoop's error
+    // dispatch happens after this function returns and after the lock is
+    // released, so it must use this copy, never `task.unit` directly.
+    outcome.unit = task.unit;
 
     if (result.success) {
         updateTaskStatistics(task, result.executionTime);

@@ -13,6 +13,14 @@
 using namespace axonvex::core;
 using namespace std::chrono_literals;
 
+// Shared with builtinUnitsTest.cpp (same test_core binary): that TU defines
+// the process-wide operator new/delete override, gated by g_trackAllocs, that
+// counts heap allocations. Reused here (rather than a second, conflicting
+// override) to prove selectReadyTasksForCycle() performs zero heap
+// allocations per scheduler cycle in steady state (HIGH review fix).
+extern std::atomic<bool> g_trackAllocs;
+extern std::atomic<long> g_allocCount;
+
 namespace axonvex::core {
 // C45: grants direct, single-threaded access to the otherwise-private
 // scheduleRoundRobin() so the regression test below can drive it
@@ -532,6 +540,78 @@ TEST_F(TimingControllerTest, AllReadyTasksExecutePerCycle) {
     EXPECT_GE(unit3->getProcessCallCount(), 35u);
 }
 
+// HIGH regression: V4's selectReadyTasksForCycle() used fresh local vectors
+// (`candidates`, and the returned `ids`) every scheduler cycle -- a
+// `.reserve()`/heap allocation on the scheduler thread even in a fully idle
+// cycle, violating CLAUDE.md rule 2 ("no heap allocation" on the scheduler
+// hot path) in the very change whose purpose was RT-path cleanup. Fix: both
+// became clear()-only persistent members (readyCandidates_/readyTaskIds_),
+// so steady-state cycles allocate nothing.
+//
+// Measured via the process-wide allocation counter defined in
+// builtinUnitsTest.cpp (see the `extern` declarations near the top of this
+// file): the task body samples the counter on every call, so the delta
+// between two consecutive calls captures everything the scheduler thread
+// allocated in between -- which necessarily includes one or more
+// selectReadyTasksForCycle() passes (period 1ms vs. a 200us timer
+// resolution means several idle cycles run between executions).
+TEST_F(TimingControllerTest, SchedulerReadySetSelectionAllocatesNoHeapInSteadyState) {
+    class AllocationProbeUnit : public MockProcessingUnit {
+      public:
+        explicit AllocationProbeUnit(const std::string& name) : MockProcessingUnit(name) {}
+        void processSync() override {
+            // callCount_ is polled from the main thread below while this
+            // runs on the scheduler thread -- must be atomic (TSan-caught
+            // race on a plain uint32_t here, in an earlier version of this
+            // test). lastCount_ is scheduler-thread-only (read+written only
+            // from here), so it stays a plain long.
+            uint32_t n = callCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+            long count = g_allocCount.load(std::memory_order_relaxed);
+            long delta = count - lastCount_;
+            lastCount_ = count;
+            // Skip the first 20 calls: capacity has not yet reached its
+            // high-water mark, so a one-time growth allocation there is
+            // expected and not a regression.
+            if (n > 20 && delta > maxDeltaAfterWarmup.load(std::memory_order_relaxed)) {
+                maxDeltaAfterWarmup.store(delta, std::memory_order_relaxed);
+            }
+        }
+        uint32_t getCallCount() const {
+            return callCount_.load(std::memory_order_relaxed);
+        }
+        std::atomic<long> maxDeltaAfterWarmup{0};
+
+      private:
+        std::atomic<uint32_t> callCount_{0};
+        long lastCount_{0};
+    };
+
+    AllocationProbeUnit probeUnit("AllocProbe");
+    probeUnit.initialize();
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(1);
+    controller->scheduleProcessingUnit(&probeUnit, constraints);
+    controller->setTimerResolution(std::chrono::microseconds(200));
+
+    g_allocCount.store(0, std::memory_order_relaxed);
+    g_trackAllocs.store(true, std::memory_order_relaxed);
+    controller->start();
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (probeUnit.getCallCount() < 200 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    g_trackAllocs.store(false, std::memory_order_relaxed);
+    controller->stop();
+
+    ASSERT_GE(probeUnit.getCallCount(), 200u);
+    EXPECT_EQ(probeUnit.maxDeltaAfterWarmup.load(std::memory_order_relaxed), 0)
+        << "scheduler thread heap-allocated between two consecutive task "
+           "executions after warmup -- selectReadyTasksForCycle() is "
+           "allocating on the RT path";
+}
+
 // Regression test for C1: removing a task while it executes must not destroy
 // the task out from under the scheduler (use-after-free guarded by ASan runs).
 TEST_F(TimingControllerTest, RemoveTaskDuringExecutionIsSafe) {
@@ -557,6 +637,109 @@ TEST_F(TimingControllerTest, RemoveTaskDuringExecutionIsSafe) {
     // Remove while (likely) mid-execution: must not crash or corrupt the pool
     EXPECT_TRUE(controller->removeProcessingUnit(taskId));
     controller->stop();
+}
+
+// V6 use-after-free regression (CRITICAL, C18-shape): schedulerLoop()
+// dispatches errorCallback_ using `task->unit` AFTER finalizeTaskExecution()
+// may already have deallocated `task` back to taskPool_ (the pendingRemoval
+// branch, taken when removeTask() runs while the task is still "executing").
+//
+// Deterministic single-threaded repro (no races needed): the failing unit
+// removes ITSELF on its 10th consecutive failure -- still safe to do from
+// inside processSync(), since executeTask() holds no lock while user code
+// runs. That 10th failure is also the one that sets outcome.deactivated,
+// so schedulerLoop makes TWO error-callback calls for it. From inside the
+// FIRST call, we schedule a brand-new task: the pool's Treiber-stack (LIFO)
+// free list hands it the exact block just freed by finalizeTaskExecution(),
+// overwriting its `unit` field. Pre-fix, the SECOND call re-reads
+// `task->unit` from that now-reused block and reports the WRONG
+// ProcessingUnit*; post-fix it uses TaskFinalizeOutcome::unit, captured
+// under tasksMutex_ before any deallocation could happen.
+TEST_F(TimingControllerTest, ErrorCallbackAfterSelfRemovalReportsOriginalUnit) {
+    class SelfRemovingUnit : public MockProcessingUnit {
+      public:
+        explicit SelfRemovingUnit(const std::string& name) : MockProcessingUnit(name) {}
+        void setController(TimingController* controller) {
+            controller_ = controller;
+        }
+        void setTaskId(uint32_t id) {
+            taskId_ = id;
+        }
+        void processSync() override {
+            // 10 == RealTimeScheduler::kMaxConsecutiveFailures (private);
+            // this is the call that pushes consecutiveFailures to 10, lining
+            // up self-removal with outcome.deactivated becoming true.
+            if (++callCount_ == 10) {
+                controller_->removeProcessingUnit(taskId_);
+            }
+            throw std::runtime_error("forced failure");
+        }
+
+      private:
+        TimingController* controller_{nullptr};
+        uint32_t taskId_{0};
+        int callCount_{0};
+    };
+
+    SelfRemovingUnit failingUnit("SelfRemoving");
+    failingUnit.setController(controller.get());
+    failingUnit.initialize();
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(1);
+    uint32_t taskId = controller->scheduleProcessingUnit(&failingUnit, constraints);
+    ASSERT_GT(taskId, 0u);
+    failingUnit.setTaskId(taskId);
+
+    // errorCallback_ fires once per failure (calls 1-9: consecutiveFailures
+    // < 10, one dispatch each) and TWICE on call 10 (the deactivation
+    // message, then the regular one) -- 9 + 2 = 11 total, then never again
+    // (the task is erased from tasks_ by the self-removal on call 10).
+    constexpr size_t kExpectedTotalCalls = 11;
+
+    // observedUnits is only ever read from the main thread AFTER
+    // controller->stop() below has joined the scheduler thread -- that join
+    // is the synchronization point. The POLL condition below must not touch
+    // it directly (the scheduler thread is still writing it concurrently at
+    // that point); poll on this atomic counter instead (TSan-caught race on
+    // observedUnits.size() in an earlier version of this test).
+    std::vector<ProcessingUnit*> observedUnits;
+    std::atomic<size_t> callbackCount{0};
+    bool reused = false;
+    controller->setErrorCallback([&](ProcessingUnit* u, const std::string& msg) {
+        observedUnits.push_back(u);
+        // Only the FIRST of the deactivation pair carries this message; fire
+        // the reuse trick right there so the SECOND call for this SAME
+        // failure is the one that would read the corrupted block pre-fix.
+        if (!reused && msg.find("deactivated") != std::string::npos) {
+            reused = true;
+            // Force the pool's just-freed block to be handed to a NEW task
+            // from inside this callback, before the pair's second callback
+            // runs.
+            TimingConstraints reuseConstraints;
+            reuseConstraints.period = std::chrono::milliseconds(50);
+            controller->scheduleProcessingUnit(unit2.get(), reuseConstraints);
+        }
+        callbackCount.fetch_add(1, std::memory_order_relaxed);
+    });
+
+    controller->setTimerResolution(std::chrono::microseconds(200));
+    controller->start();
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (callbackCount.load(std::memory_order_relaxed) < kExpectedTotalCalls &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    controller->stop();
+
+    ASSERT_EQ(observedUnits.size(), kExpectedTotalCalls)
+        << "expected exactly " << kExpectedTotalCalls
+        << " error-callback dispatches (9 single failures + the deactivating "
+           "pair), then none more once the task self-removes";
+    EXPECT_EQ(observedUnits.back(), &failingUnit)
+        << "last callback of the deactivating pair reported a different "
+           "ProcessingUnit* -- use-after-free on the deallocated SchedulerTask";
 }
 
 TEST_F(TimingControllerTest, CustomScheduling) {

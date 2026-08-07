@@ -301,7 +301,29 @@ class RealTimeScheduler {
     // Not used for SchedulingPolicy::CUSTOM -- scheduleCustom() keeps its
     // own per-call snapshot/dispatch (V1's contract), which schedulerLoop
     // still drives with its own per-call loop.
-    std::vector<uint32_t> selectReadyTasksForCycle();
+    //
+    // Sort key snapshot for one candidate task, copied out from under
+    // tasksMutex_ by value (never a pointer -- the task may be removed and
+    // deallocated the instant the lock below is released, since it is not
+    // yet claimed/executing). Claiming re-validates by id under the lock
+    // exactly like the pre-rework code did, so nothing here can dangle.
+    struct ReadyCandidate {
+        uint32_t taskId;
+        SchedulerPriority priority;
+        std::chrono::steady_clock::time_point deadline;
+        std::chrono::microseconds period;
+    };
+    // Fills readyCandidates_/readyTaskIds_ (below) rather than returning by
+    // value: the HIGH-severity RT-path fix for this rework. A return-by-
+    // value vector (or a fresh local `candidates`/`ids` per call) heap-
+    // allocates on the scheduler thread every single cycle, including idle
+    // ones -- exactly the "no heap allocation on the hot path" rule
+    // (CLAUDE.md #2) this rework was supposed to be cleaning up, not
+    // reintroducing. void return + persistent, clear()-only member buffers
+    // mirrors the existing customSchedulerSnapshot_ pattern below: capacity
+    // is retained across calls, so steady-state allocation is zero once the
+    // ready-set size stabilizes.
+    void selectReadyTasksForCycle();
 
     // Task execution. executeTask() runs the user code UNLOCKED and returns
     // the outcome without touching any lock itself; finalizeTaskExecution()
@@ -324,6 +346,13 @@ class RealTimeScheduler {
     struct TaskFinalizeOutcome {
         bool deactivated{false};
         bool missedDeadline{false};
+        // CRITICAL fix: captured under tasksMutex_ (same acquisition that
+        // may deallocate `task` back to taskPool_ via the pendingRemoval
+        // branch below) so schedulerLoop's UNLOCKED error-callback dispatch
+        // never dereferences `task->unit` after the task may already be
+        // pool-recycled -- the exact C18 dangle shape, just reached through
+        // this rework's finalizeTaskExecution() split instead of a raw lock.
+        ProcessingUnit* unit{nullptr};
     };
 
     TaskExecutionResult executeTask(SchedulerTask& task);
@@ -367,6 +396,15 @@ class RealTimeScheduler {
     // instances' schedulerMutex_-independent threads. Now per-instance,
     // guarded by tasksMutex_ (the lock scheduleRoundRobin already holds).
     uint32_t lastSelectedTask_{0};
+
+    // HIGH fix: selectReadyTasksForCycle()'s scratch buffers, scheduler-
+    // thread-only (that method is only ever called from schedulerLoop()),
+    // refilled via clear() + push_back every cycle instead of being fresh
+    // locals. Same reuse contract as customSchedulerSnapshot_ below: once
+    // the ready-set size stabilizes, capacity is retained and steady-state
+    // refills allocate nothing.
+    std::vector<ReadyCandidate> readyCandidates_;
+    std::vector<uint32_t> readyTaskIds_;
 
     // Scheduler thread
     std::unique_ptr<std::thread> schedulerThread_;
