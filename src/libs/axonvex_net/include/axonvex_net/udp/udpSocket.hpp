@@ -4,6 +4,7 @@
 #include <axonvex_interfaces/detail/dispatchBarrier.hpp>
 #include <axonvex_interfaces/protocolInterface.hpp>
 #include <axonvex_net/detail/addressResolver.hpp>
+#include <axonvex_net/net_export.hpp>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -17,7 +18,7 @@ namespace udp {
 
 /// UDP needs no framing header: each datagram is exactly one message frame
 /// (contrast TcpClient's magic+length wire format, C11).
-class UdpSocket : public axonvex::interfaces::ProtocolInterface {
+class AXONVEX_NET_API UdpSocket : public axonvex::interfaces::ProtocolInterface {
   public:
     explicit UdpSocket(std::string bindAddress = "0.0.0.0", uint16_t port = 9001);
 

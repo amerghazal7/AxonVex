@@ -8,4 +8,16 @@ find_dependency(TBB REQUIRED)
 
 include("${CMAKE_CURRENT_LIST_DIR}/axonvexTargets.cmake")
 
+# check_required_components() (below) only passes a `find_package(axonvex
+# COMPONENTS ...)` request if axonvex_<component>_FOUND is set for each
+# component asked for — CMake does not infer that from the imported targets
+# above. Guarded by TARGET existence since axonvex::ros2 is conditional
+# (only exported when the recipe/build actually built the ROS2 plugin).
+foreach(_axonvex_component core net interfaces safety io visualization plugins adapters ros2)
+    if(TARGET axonvex::${_axonvex_component})
+        set(axonvex_${_axonvex_component}_FOUND TRUE)
+    endif()
+endforeach()
+unset(_axonvex_component)
+
 check_required_components(axonvex)
