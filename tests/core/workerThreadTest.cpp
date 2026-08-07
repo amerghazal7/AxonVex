@@ -271,6 +271,11 @@ TEST(WorkerThreadTest, ConcurrentStartJoinDoesNotHang) {
     WorkerThread worker;
     std::atomic<bool> stopFlag{false};
     std::atomic<bool> loopShouldExit{false};
+    // Set strictly after each racer's own while(!stopFlag) loop has
+    // permanently exited -- see the teardown comment below for why this
+    // fixed a real (reproduced) hang in this harness.
+    std::atomic<bool> starterDone{false};
+    std::atomic<bool> joinerDone{false};
 
     // Both loops yield each iteration. Without it they spin flat out on the
     // WorkerThread mutex, and on a low-core machine (a 2-core CI runner, and
@@ -289,6 +294,7 @@ TEST(WorkerThreadTest, ConcurrentStartJoinDoesNotHang) {
             });
             std::this_thread::yield();
         }
+        starterDone.store(true);
     });
     std::thread joiner([&] {
         while (!stopFlag.load()) {
@@ -297,6 +303,7 @@ TEST(WorkerThreadTest, ConcurrentStartJoinDoesNotHang) {
             loopShouldExit.store(false);
             std::this_thread::yield();
         }
+        joinerDone.store(true);
     });
 
     auto raceDeadline = std::chrono::steady_clock::now() + 1000ms;
@@ -304,7 +311,35 @@ TEST(WorkerThreadTest, ConcurrentStartJoinDoesNotHang) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     stopFlag.store(true);
+
+    // Harness bug found via reproduction (TSan on 1 core hung at iteration
+    // ~120 with this exact watchdog message, zero TSan warnings -- confirmed
+    // by a gdb backtrace showing the main thread stuck in this file's
+    // deterministic worker.join() below, waiting on a freshly-spawned loop
+    // spinning on loopShouldExit forever): a single one-shot
+    // loopShouldExit.store(true) here races against joiner's own
+    // per-iteration loopShouldExit.store(false) reset above. If that reset
+    // lands after this store but before joiner observes stopFlag, the stop
+    // signal is silently overwritten back to false; if starter then births
+    // one more generation before it, too, observes stopFlag, that generation
+    // is born already-doomed -- both racers are about to exit their loops
+    // for good and nothing else will ever write loopShouldExit again, so it
+    // spins forever and the worker.join() below blocks forever. This is a
+    // lost-wakeup in the test's own signal, not a WorkerThread defect --
+    // TSan sees only atomic ops, no data race, so it stays silent while the
+    // process hangs. Fix: keep re-asserting the stop signal until both
+    // racers have durably exited (starterDone/joinerDone are each set
+    // strictly after that thread's own while(!stopFlag) loop, so once both
+    // are true neither thread will ever touch loopShouldExit or handle_
+    // again), then issue one final store that is provably the last write --
+    // any live generation must have been born before starterDone flipped
+    // true and will observe this one.
+    while (!starterDone.load() || !joinerDone.load()) {
+        loopShouldExit.store(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     loopShouldExit.store(true);
+
     starter.join();
     joiner.join();
     worker.join(); // deterministic teardown
