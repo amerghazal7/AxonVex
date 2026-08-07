@@ -90,8 +90,10 @@ Visual representation of the system architecture including:
 git clone https://github.com/amerghazal7/AxonVex.git
 cd AxonVex
 
-# Install dependencies via Conan
-conan install . --output-folder=build --build=missing
+# Install dependencies via Conan.
+# -s build_type must match the -DCMAKE_BUILD_TYPE below: Conan's CMakeDeps gates
+# every target property behind $<CONFIG:...>, so a mismatch links no libraries at all.
+conan install . --output-folder=build --build=missing -s build_type=Debug
 
 # Configure and build
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
