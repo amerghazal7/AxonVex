@@ -1,6 +1,5 @@
-#include <gtest/gtest.h>
 #include <axonvex_core/utils/utils.hpp>
-
+#include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 using axonvex::utils::serialization::JSONSerializer;

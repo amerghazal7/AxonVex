@@ -7,23 +7,22 @@ namespace axonvex::core {
 /**
  * @brief Result returned by MissionElement::execute() each tick
  */
-enum class TransitionResult {
-    Awaiting,
-    Default,
-    Option1,
-    Option2,
-    Option3,
-    Failed
-};
+enum class TransitionResult { Awaiting, Default, Option1, Option2, Option3, Failed };
 
 inline std::string transitionResultToString(TransitionResult r) {
     switch (r) {
-        case TransitionResult::Awaiting: return "Awaiting";
-        case TransitionResult::Default:  return "Default";
-        case TransitionResult::Option1:  return "Option1";
-        case TransitionResult::Option2:  return "Option2";
-        case TransitionResult::Option3:  return "Option3";
-        case TransitionResult::Failed:   return "Failed";
+        case TransitionResult::Awaiting:
+            return "Awaiting";
+        case TransitionResult::Default:
+            return "Default";
+        case TransitionResult::Option1:
+            return "Option1";
+        case TransitionResult::Option2:
+            return "Option2";
+        case TransitionResult::Option3:
+            return "Option3";
+        case TransitionResult::Failed:
+            return "Failed";
     }
     return "Unknown";
 }
@@ -63,7 +62,9 @@ class MissionElement {
      */
     virtual void reset() {}
 
-    const std::string& name() const { return name_; }
+    const std::string& name() const {
+        return name_;
+    }
 
   private:
     std::string name_;

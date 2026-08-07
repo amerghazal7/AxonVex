@@ -22,15 +22,32 @@ class ImmediateElement : public MissionElement {
                               TransitionResult result = TransitionResult::Default)
         : MissionElement(name), result_(result) {}
 
-    TransitionResult execute() override { execCount_++; return result_; }
-    void onEnter() override { enterCount_++; }
-    void onExit() override { exitCount_++; }
-    void reset() override { execCount_ = enterCount_ = exitCount_ = 0; }
+    TransitionResult execute() override {
+        execCount_++;
+        return result_;
+    }
+    void onEnter() override {
+        enterCount_++;
+    }
+    void onExit() override {
+        exitCount_++;
+    }
+    void reset() override {
+        execCount_ = enterCount_ = exitCount_ = 0;
+    }
 
-    void setResult(TransitionResult r) { result_ = r; }
-    int execCount() const { return execCount_; }
-    int enterCount() const { return enterCount_; }
-    int exitCount() const { return exitCount_; }
+    void setResult(TransitionResult r) {
+        result_ = r;
+    }
+    int execCount() const {
+        return execCount_;
+    }
+    int enterCount() const {
+        return enterCount_;
+    }
+    int exitCount() const {
+        return exitCount_;
+    }
 
   private:
     TransitionResult result_;
@@ -46,17 +63,31 @@ class DelayedElement : public MissionElement {
 
     TransitionResult execute() override {
         ticks_++;
-        if (ticks_ >= ticksToWait_) return TransitionResult::Default;
+        if (ticks_ >= ticksToWait_)
+            return TransitionResult::Default;
         return TransitionResult::Awaiting;
     }
 
-    void onEnter() override { entered_ = true; }
-    void onExit() override { exited_ = true; }
-    void reset() override { ticks_ = 0; entered_ = exited_ = false; }
+    void onEnter() override {
+        entered_ = true;
+    }
+    void onExit() override {
+        exited_ = true;
+    }
+    void reset() override {
+        ticks_ = 0;
+        entered_ = exited_ = false;
+    }
 
-    int ticks() const { return ticks_; }
-    bool entered() const { return entered_; }
-    bool exited() const { return exited_; }
+    int ticks() const {
+        return ticks_;
+    }
+    bool entered() const {
+        return entered_;
+    }
+    bool exited() const {
+        return exited_;
+    }
 
   private:
     int ticksToWait_;
@@ -562,17 +593,30 @@ class OrderTrackingElement : public MissionElement {
     explicit OrderTrackingElement(const std::string& name) : MissionElement(name) {}
 
     TransitionResult execute() override {
-        if (enterCount_ == 0) executeBeforeEnter_ = true;
+        if (enterCount_ == 0)
+            executeBeforeEnter_ = true;
         execCount_++;
         return TransitionResult::Default;
     }
-    void onEnter() override { enterCount_++; }
-    void onExit() override { exitCount_++; }
+    void onEnter() override {
+        enterCount_++;
+    }
+    void onExit() override {
+        exitCount_++;
+    }
 
-    int execCount() const { return execCount_; }
-    int enterCount() const { return enterCount_; }
-    int exitCount() const { return exitCount_; }
-    bool executeRanBeforeEnter() const { return executeBeforeEnter_; }
+    int execCount() const {
+        return execCount_;
+    }
+    int enterCount() const {
+        return enterCount_;
+    }
+    int exitCount() const {
+        return exitCount_;
+    }
+    bool executeRanBeforeEnter() const {
+        return executeBeforeEnter_;
+    }
 
   private:
     int execCount_{0};

@@ -1,10 +1,9 @@
 #include <axonvex_core/detail/filesystem_compat.hpp>
 #include <axonvex_core/replay/traceReplay.hpp>
 #include <axonvex_core/system.hpp>
-#include <gtest/gtest.h>
-
 #include <chrono>
 #include <cstdio>
+#include <gtest/gtest.h>
 #include <sstream>
 #include <string>
 
@@ -33,8 +32,8 @@ TEST(TraceReplayTest, RecordAndRoundTripFile) {
     TraceRecorder rec;
     makeEvent(SystemEvent::Type::STATE_CHANGE, SystemState::UNINITIALIZED,
               SystemState::INITIALIZING, "init", rec);
-    makeEvent(SystemEvent::Type::STATE_CHANGE, SystemState::INITIALIZING,
-              SystemState::INITIALIZED, "ready", rec);
+    makeEvent(SystemEvent::Type::STATE_CHANGE, SystemState::INITIALIZING, SystemState::INITIALIZED,
+              "ready", rec);
 
     ASSERT_EQ(rec.size(), 2u);
 

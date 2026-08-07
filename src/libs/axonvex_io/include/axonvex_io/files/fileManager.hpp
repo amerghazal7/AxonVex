@@ -8,7 +8,7 @@
 namespace axonvex::io::files {
 
 class FileManager {
-public:
+  public:
     static bool exists(const std::string& path) {
         return axonvex_fs::exists(path);
     }
@@ -21,13 +21,15 @@ public:
 
     static std::string readText(const std::string& path) {
         std::ifstream ifs(path);
-        if (!ifs.is_open()) return {};
+        if (!ifs.is_open())
+            return {};
         return std::string((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     }
 
     static bool writeText(const std::string& path, const std::string& content) {
         std::ofstream ofs(path);
-        if (!ofs.is_open()) return false;
+        if (!ofs.is_open())
+            return false;
         ofs << content;
         return true;
     }
