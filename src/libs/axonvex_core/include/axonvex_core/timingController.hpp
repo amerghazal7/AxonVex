@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <axonvex_core/detail/workerThread.hpp>
 #include <axonvex_core/precisionTimer.hpp>
 #include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <axonvex_core/utils/containers/threadSafeQueue.hpp>
@@ -223,10 +224,10 @@ class RealTimeScheduler {
         return paused_.load();
     }
     // C42: true iff called from this scheduler's own thread — the id is
-    // published by schedulerLoop() itself (first act) and cleared on every
-    // exit path (last act). Lets stop() detect a self-call (a ProcessingUnit
+    // published/cleared by schedulerWorker_ (detail::WorkerThread) around
+    // schedulerLoop(). Lets stop() detect a self-call (a ProcessingUnit
     // task body, or the error callback, calling stop() from inside
-    // executeTask()) without joining schedulerThread_, which would be a
+    // executeTask()) without joining schedulerWorker_, which would be a
     // self-join.
     bool isOnSchedulerThread() const noexcept;
 
@@ -406,32 +407,32 @@ class RealTimeScheduler {
     std::vector<ReadyCandidate> readyCandidates_;
     std::vector<uint32_t> readyTaskIds_;
 
-    // Scheduler thread
-    std::unique_ptr<std::thread> schedulerThread_;
+    // Scheduler thread. Phase 2 core decomposition, migration step 3 (see
+    // docs/superpowers/specs/2026-08-06-phase2-core-decomposition-design.md
+    // section 1.2): the thread-id publish/clear (C41/C42), join-before-
+    // assign (C39), and self-join-refusal (C33-shape) discipline that used
+    // to be hand-written here now lives in detail::WorkerThread.
+    detail::WorkerThread schedulerWorker_;
     std::condition_variable schedulerCondition_;
     std::mutex schedulerMutex_;
-    // C46 (Part 1 lifecycle hang): serializes start()/stop() against each
-    // other. schedulerThread_ is a plain unique_ptr<thread> -- not atomic,
-    // no lock -- so an external thread's start() (e.g.
+    // C46 (Part 1 lifecycle hang): serializes the running_ flag against
+    // start()/stop()'s calls into schedulerWorker_. WorkerThread's own
+    // internal lock (see its class comment) keeps ITS handle consistent
+    // across concurrent start()/join(), but running_ is a RealTimeScheduler
+    // member WorkerThread knows nothing about -- without this mutex, an
+    // external thread's start() (e.g.
     // AxonVexSystem::start()/startComponents()) racing an event-callback's
     // stop() (e.g. AxonVexSystem::emergencyShutdown(), which can run on the
-    // event-processing thread) could read/write it concurrently: one
-    // assigning a fresh std::thread while the other decides what to join
-    // from a torn/stale read. The result is a join() on a thread id that
-    // was never actually the live scheduler thread -- pthread_join blocks
-    // on a futex nothing will ever signal, an unbounded hang (reproduced
-    // and confirmed via gdb: stop()'s schedulerThread_->join() stuck
-    // forever with no matching live thread in the process). halt() (the
-    // non-blocking half stop() calls, and TimingController::emergencyStop()
-    // calls directly per design spec Sec6.3's hot e-stop path) stays
-    // lock-free and outside this mutex -- only the handle-manipulating
-    // parts of start()/stop() take it.
+    // event-processing thread) could still leave running_ permanently true
+    // after a "stop-then-start" ordering even with the handle itself safe,
+    // reproducing the same unbounded hang (confirmed via gdb pre-fix:
+    // stop()'s join() stuck forever with no matching live thread in the
+    // process) one level up. halt() (the non-blocking half stop() calls,
+    // and TimingController::emergencyStop() calls directly per design spec
+    // Sec6.3's hot e-stop path) stays lock-free and outside this mutex --
+    // only the running_/schedulerWorker_ manipulation in start()/stop()
+    // takes it.
     std::mutex lifecycleMutex_;
-    // C42: published by schedulerLoop() itself as its first act, cleared as
-    // its last (every exit path) — never read from schedulerThread_ (which
-    // stop() is busy tearing down). Same discipline as system.cpp's
-    // monitoringThreadId_/eventThreadId_ (C41).
-    std::atomic<std::thread::id> schedulerThreadId_{};
 
     // Bounded e-stop halt telemetry (design spec §6.3), stored as nanosecond
     // counts rather than std::atomic<time_point> to guarantee a genuinely
