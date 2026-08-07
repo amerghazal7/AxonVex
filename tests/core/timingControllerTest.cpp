@@ -908,6 +908,42 @@ TEST_F(TimingControllerTest, EmergencyStopFromTaskBodyIsSafe) {
     controller->stop(); // must return -- no self-join, no terminate
 }
 
+// V5 (CLAUDE.md #8: lock-free claims require a TSan-clean stress test plus a
+// memory-ordering comment -- the comment lives on RealTimeScheduler's
+// AtomicStatistics member). Hammer getPerformanceMetrics()/
+// resetPerformanceMetrics() from a separate thread while the scheduler
+// thread continuously executes tasks (the sole writer of statistics_), for
+// long enough that a real race would have a chance to fire. No assertion on
+// the numbers themselves -- this test's only job is to run cleanly under
+// ThreadSanitizer (see the tsan ctest invocation); a plain build merely
+// checks it doesn't crash/hang.
+TEST_F(TimingControllerTest, ConcurrentStatsReadDuringExecutionIsRaceFree) {
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(1);
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+    controller->start();
+
+    std::atomic<bool> stop{false};
+    std::thread reader([this, &stop]() {
+        while (!stop.load()) {
+            auto stats = controller->getPerformanceMetrics();
+            (void)stats;
+            controller->resetPerformanceMetrics();
+        }
+    });
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    stop.store(true);
+    reader.join();
+    controller->stop();
+
+    SUCCEED(); // reaching here without a TSan report / crash / hang is the test
+}
+
 // Thread Safety Tests
 TEST_F(TimingControllerTest, ConcurrentTaskManagement) {
     // Test was failing due to priority scheduler bug - now fixed, keeping original priority-based
