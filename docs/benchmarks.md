@@ -22,6 +22,50 @@ deployment profile below and paste real output — with CPU model, kernel
 version, and governor/isolation settings — before any number is added to
 this file.
 
+### Untuned baseline (2026-08-07) — NOT the reference-platform numbers
+
+Recorded because it is the first optimized measurement this project has ever
+been able to take: until the C49 fix landed, a plain `set(CMAKE_BUILD_TYPE
+Debug)` shadowed the cache variable, so `-DCMAKE_BUILD_TYPE=Release` was
+silently ignored and **every build in the project's history was `-O0`**.
+
+This run does **not** satisfy the RT deployment profile below and must not be
+quoted as the framework's performance. It is a sanity baseline only.
+
+- Platform: 13th Gen Intel Core i9-13900K, 32 logical CPUs, kernel
+  6.8.0-136-generic, gcc 11, `-O3 -DNDEBUG -std=gnu++14`, Conan 2.31.2.
+- Tuning: **none.** `powersave` governor, no `isolcpus`, no `SCHED_FIFO`, no
+  `mlockall`, no IRQ affinity, shared desktop under load.
+- Command: `--benchmark_min_time=0.05s` (short run; the reference-platform
+  run must use the full default time and more repeats).
+
+| Benchmark | Result |
+|---|---|
+| Port write+read, non-thread-safe | 43.5 ns/op — 23.0 M msgs/s |
+| Port write+read, thread-safe (locked) | 67.7 ns/op — 14.8 M msgs/s |
+| Pipeline latency, 2 stages | p50 0.199 µs, p99 0.201 µs, max 11.2 µs |
+| Pipeline latency, 5 stages | p50 0.491 µs, p99 0.495 µs, max 3.77 µs |
+| Pipeline latency, 10 stages | p50 0.980 µs, p99 1.24 µs, max 5.09 µs |
+| E-stop latency | p50 0.090 µs, p99 0.094 µs, max 2.86 µs |
+| Scheduler jitter, 1 ms period | p50 8.1 µs, p99 45.0 µs (period offset 45.1 µs) |
+| Scheduler jitter, 5 ms period | p50 3.5 µs, p99 49.8 µs (period offset 49.8 µs) |
+
+What this does and does not support, stated plainly:
+
+- **Throughput and latency claims look sound.** The README's "1M+ msgs/sec"
+  is conservative against 23.0 M/s here, and "sub-millisecond latency" holds
+  by three orders of magnitude. Thread safety costs ~24 ns/op (~56%), which
+  is the expected direction — an earlier revision of this benchmark had its
+  argument labels inverted and would have published the opposite.
+- **The "<1 µs class" timing claim is NOT demonstrated by this run.** p99
+  scheduler jitter is ~45–50 µs on an untuned desktop. That is what an
+  untuned box costs, not necessarily a framework limit — but the claim stands
+  or falls on the tuned reference-platform run, which has not happened. Do not
+  cite it until it does.
+- `period_offset` is reported separately from jitter on purpose: it is the
+  systematic gap between requested and achieved period, and folding it into
+  "jitter" (as an earlier revision did) overstated jitter by roughly 17×.
+
 ### RT deployment profile (set this up first)
 
 The harness itself does none of this — it is plain userspace code with no
