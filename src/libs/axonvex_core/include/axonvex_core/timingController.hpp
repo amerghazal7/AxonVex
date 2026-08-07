@@ -204,6 +204,16 @@ class RealTimeScheduler {
     // Scheduler control
     void start();
     void stop();
+    // Bounded e-stop primitive (design spec §6.3): non-blocking. Stops
+    // dispatching further tasks -- running_.store(false) + notify_all(),
+    // nothing else -- WITHOUT joining. Safe to call from ANY thread,
+    // including the scheduler thread itself (no self-join hazard: there is
+    // no join here to defer, unlike stop()'s C33/C42 guard). Idempotent:
+    // repeated calls are just extra store+notify, no state machine to
+    // corrupt. stop() = halt() + join; call halt() directly when the "no
+    // further tasks" guarantee is needed fast and the join can be deferred
+    // (see TimingController::emergencyStop()).
+    void halt() noexcept;
     void pause();
     void resume();
     bool isRunning() const {
@@ -229,6 +239,14 @@ class RealTimeScheduler {
     // Statistics and monitoring
     SchedulerStatistics getStatistics() const;
     void resetStatistics();
+
+    // Wall-clock bound from the most recent halt()/stop() request to the
+    // last in-flight task's return (design spec §6.2:
+    // B = max task WCET + one timer resolution). Zero if halt() has never
+    // been called, or if no task has returned since it was called (still
+    // executing -- this is telemetry, not a synchronization signal; check
+    // again once isRunning() is false).
+    std::chrono::microseconds getHaltLatency() const noexcept;
 
     // Task inspection
     std::vector<uint32_t> getActiveTaskIds() const;
@@ -313,6 +331,17 @@ class RealTimeScheduler {
     // stop() is busy tearing down). Same discipline as system.cpp's
     // monitoringThreadId_/eventThreadId_ (C41).
     std::atomic<std::thread::id> schedulerThreadId_{};
+
+    // Bounded e-stop halt telemetry (design spec §6.3), stored as nanosecond
+    // counts rather than std::atomic<time_point> to guarantee a genuinely
+    // lock-free atomic on every platform. haltRequestedAt_ is written by
+    // whichever thread calls halt() -- if two callers race a duplicate
+    // e-stop, "last write wins" is fine, this is diagnostic, not a gate.
+    // lastTaskReturnAt_ is written ONLY by the scheduler thread, right after
+    // executeTask() returns (reuses a timestamp already taken for execution
+    // timing). Both read with relaxed loads in getHaltLatency().
+    std::atomic<int64_t> haltRequestedAtNs_{0};
+    std::atomic<int64_t> lastTaskReturnAtNs_{0};
 
     // Thread affinity
     uint32_t cpuCore_{0};
@@ -409,6 +438,8 @@ class TimingController {
     // TimingController constructor and never reset, but the check costs
     // nothing and avoids relying on that invariant here).
     bool isOnSchedulerThread() const noexcept;
+    // Forwards to RealTimeScheduler::getHaltLatency() -- see its doc.
+    std::chrono::microseconds getHaltLatency() const noexcept;
 
     // Advanced features
     void setCustomScheduler(RealTimeScheduler::CustomSchedulerCallback callback);

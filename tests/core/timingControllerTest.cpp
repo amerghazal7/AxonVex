@@ -826,6 +826,88 @@ TEST_F(TimingControllerTest, EmergencyStop) {
     EXPECT_TRUE(failsafeCalled.load());
 }
 
+// Bounded e-stop halt (design spec §6): emergencyStop() must be the
+// non-blocking primitive -- it must not wait for the in-flight task's WCET.
+// Before the fix, TimingController::emergencyStop() called
+// RealTimeScheduler::stop(), which joins the scheduler thread and therefore
+// blocks for as long as the currently-executing task takes.
+TEST_F(TimingControllerTest, EmergencyStopIsNonBlockingWithinBound) {
+    unit1->setProcessingDelay(std::chrono::milliseconds(80));
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+    controller->start();
+
+    // Poll until the unit has started executing at least once, so
+    // emergencyStop() below races a genuinely in-flight ~80ms task.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (unit1->getProcessCallCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_GT(unit1->getProcessCallCount(), 0u);
+
+    auto before = std::chrono::steady_clock::now();
+    controller->emergencyStop();
+    auto elapsed = std::chrono::steady_clock::now() - before;
+
+    // Loose, CI-safe bound: the primitive must return long before the
+    // ~80ms in-flight task does. The real number is a Phase 3 benchmark
+    // concern (docs/benchmarks.md); this test only asserts "bounded at all".
+    EXPECT_LT(elapsed, std::chrono::milliseconds(50));
+    EXPECT_FALSE(controller->isRunning());
+}
+
+// halt() (via emergencyStop()) must be safe to call from the scheduler
+// thread itself -- a task body invoking it is a realistic shape (a policy
+// evaluated on-demand from inside a task). It must not deadlock or
+// std::terminate (the C33/C42 self-join shape stop() already guards
+// against); unlike stop(), halt() never joins, so there is no self-join
+// hazard to defer -- this test proves that holds through the public API.
+class SelfEmergencyStoppingUnit : public MockProcessingUnit {
+  public:
+    SelfEmergencyStoppingUnit(const std::string& name, TimingController* controller,
+                              std::shared_ptr<std::atomic<bool>> attempted)
+        : MockProcessingUnit(name), controller_(controller), attempted_(std::move(attempted)) {}
+
+    void processSync() override {
+        if (!attempted_->exchange(true)) {
+            controller_->emergencyStop();
+        }
+    }
+
+  private:
+    TimingController* controller_;
+    std::shared_ptr<std::atomic<bool>> attempted_;
+};
+
+TEST_F(TimingControllerTest, EmergencyStopFromTaskBodyIsSafe) {
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto selfStopper =
+        std::make_unique<SelfEmergencyStoppingUnit>("SelfStopper", controller.get(), attempted);
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    controller->scheduleProcessingUnit(selfStopper.get(), constraints);
+    controller->start();
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!attempted->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(attempted->load()) << "self emergencyStop() was never attempted";
+
+    // Scheduler must actually wind down (running_ false) after the
+    // self-triggered halt, and a normal stop() from this (external) thread
+    // afterwards must complete (join) without hanging.
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (controller->isRunning() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_FALSE(controller->isRunning());
+    controller->stop(); // must return -- no self-join, no terminate
+}
+
 // Thread Safety Tests
 TEST_F(TimingControllerTest, ConcurrentTaskManagement) {
     // Test was failing due to priority scheduler bug - now fixed, keeping original priority-based
