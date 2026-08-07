@@ -3,9 +3,8 @@
 #include <axonvex_core/timingController.hpp>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
-#include <iostream>
-#include <sstream>
 #include <stdexcept>
 
 #ifdef __linux__
@@ -722,7 +721,6 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         const uint64_t MAX_CONSECUTIVE_FAILURES = 10;
         bool deactivated = false;
         bool missedDeadline = false;
-        uint64_t consecutiveFailures = 0;
 
         // Task bookkeeping under tasksMutex_ (races updateTaskConstraints
         // otherwise), then global stats under statsMutex_ — same order as the
@@ -733,7 +731,6 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
             task.totalExecutionTime += executionTime;
             task.consecutiveFailures++;
             task.lastFailureTime = executionEnd;
-            consecutiveFailures = task.consecutiveFailures;
 
             // Temporarily deactivate task if too many consecutive failures
             const auto FAILURE_BACKOFF_TIME = std::chrono::milliseconds(100);
@@ -759,20 +756,30 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
             }
         }
 
-        // User callback + I/O with no locks held (C18/C1)
+        // V2: unlocked dispatch (C18/C1), and no heap-build/I-O on the RT
+        // thread. The old code concatenated 3 temporary std::strings via
+        // operator+ and unconditionally wrote to std::cerr per failure --
+        // both are ordinary allocation/I-O on the scheduler thread's hot
+        // path. Fix: format into a bounded stack buffer (one snprintf, zero
+        // heap) and drop the std::cerr line outright (errorCallback_ is the
+        // supported failure channel; duplicating it to stderr bought
+        // nothing and cost an unconditional syscall on the RT thread).
+        // errorCallback_ itself still takes `const std::string&` (a
+        // constructor allocation is unavoidable at the call boundary
+        // without changing that public signature) -- moving the dispatch
+        // fully off-thread onto a preallocated ring drained by an event
+        // thread (the original V2 proposal) is the upgrade path if a
+        // benchmark ever shows this allocation matters; RealTimeScheduler
+        // has no event thread of its own to drain one today.
         if (errorCallback_) {
             if (deactivated) {
-                std::string msg = "Task temporarily deactivated after " +
-                                  std::to_string(MAX_CONSECUTIVE_FAILURES) +
-                                  " consecutive failures: " + e.what();
-                errorCallback_(task.unit, msg.c_str());
+                char buf[224];
+                std::snprintf(buf, sizeof(buf),
+                              "Task temporarily deactivated after %llu consecutive failures: %s",
+                              static_cast<unsigned long long>(MAX_CONSECUTIVE_FAILURES), e.what());
+                errorCallback_(task.unit, std::string(buf));
             }
             errorCallback_(task.unit, e.what());
-        }
-
-        // Log error if debugging is enabled (but throttled)
-        if (consecutiveFailures <= MAX_CONSECUTIVE_FAILURES) {
-            std::cerr << "Task execution failed: " << e.what() << std::endl;
         }
     }
     // executing is cleared by the scheduler loop under tasksMutex_ (see schedulerLoop)
