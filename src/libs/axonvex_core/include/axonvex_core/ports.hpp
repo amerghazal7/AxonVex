@@ -104,6 +104,23 @@ class BasePort {
     // Reset functionality
     virtual void reset() = 0;
 
+    /// Type-erased connect/disconnect for callers (the .axv.json spec loader)
+    /// that hold a BasePort* and not the template type. Returns false on a
+    /// kind/type mismatch instead of throwing or silently wiring a type-punned
+    /// connection -- the caller (SpecSystem::initializeBlocksLayout, design
+    /// spec §3.5/§4.2 step 4) turns false into a validation error or, if it
+    /// reaches this after its own pre-flight validation already passed, a
+    /// fatal defect. OutputPort<T>/AsyncOutputPort<T> override via
+    /// dynamic_cast<InputPort<T>*>/<AsyncInputPort<T>*> below; the default
+    /// here (input ports are never the connecting side) stays a refusal.
+    /// Setup-time only -- never called from the data path.
+    virtual bool tryConnect(BasePort* /*target*/) {
+        return false;
+    }
+    virtual bool tryDisconnect(BasePort* /*target*/) {
+        return false;
+    }
+
   protected:
     int id_;
     std::string name_;
@@ -273,6 +290,12 @@ class OutputPort : public BasePort {
     void disconnectAll();
     bool isConnected() const noexcept;
     size_t getConnectionCount() const noexcept;
+
+    /// BasePort::tryConnect/tryDisconnect override: dynamic_cast target to
+    /// InputPort<T>*; false on a null cast (wrong data type) without touching
+    /// connection state, true after delegating to connect()/disconnect().
+    bool tryConnect(BasePort* target) override;
+    bool tryDisconnect(BasePort* target) override;
 
     // Get connected ports
     std::vector<InputPort<T>*> getConnectedPorts() const;
@@ -449,6 +472,11 @@ class AsyncOutputPort : public BasePort {
     void disconnectAll();
     bool isConnected() const noexcept;
     size_t getConnectionCount() const noexcept;
+
+    /// BasePort::tryConnect/tryDisconnect override -- see OutputPort<T>'s
+    /// identical rationale.
+    bool tryConnect(BasePort* target) override;
+    bool tryDisconnect(BasePort* target) override;
 
     // Get connected ports
     std::vector<AsyncInputPort<T>*> getConnectedPorts() const;
@@ -753,6 +781,26 @@ void OutputPort<T>::disconnectAll() {
 }
 
 template <typename T>
+bool OutputPort<T>::tryConnect(BasePort* target) {
+    auto* typed = dynamic_cast<InputPort<T>*>(target);
+    if (!typed) {
+        return false;
+    }
+    connect(typed);
+    return true;
+}
+
+template <typename T>
+bool OutputPort<T>::tryDisconnect(BasePort* target) {
+    auto* typed = dynamic_cast<InputPort<T>*>(target);
+    if (!typed) {
+        return false;
+    }
+    disconnect(typed);
+    return true;
+}
+
+template <typename T>
 bool OutputPort<T>::isConnected() const noexcept {
     ConnectionSnapshot targets = snapshotConnections();
     return targets && !targets->empty();
@@ -1003,6 +1051,26 @@ template <typename T>
 void AsyncOutputPort<T>::disconnectAll() {
     std::lock_guard<std::mutex> lock(connectionMutex_);
     connections_.reset();
+}
+
+template <typename T>
+bool AsyncOutputPort<T>::tryConnect(BasePort* target) {
+    auto* typed = dynamic_cast<AsyncInputPort<T>*>(target);
+    if (!typed) {
+        return false;
+    }
+    connect(typed);
+    return true;
+}
+
+template <typename T>
+bool AsyncOutputPort<T>::tryDisconnect(BasePort* target) {
+    auto* typed = dynamic_cast<AsyncInputPort<T>*>(target);
+    if (!typed) {
+        return false;
+    }
+    disconnect(typed);
+    return true;
 }
 
 template <typename T>

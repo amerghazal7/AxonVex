@@ -166,6 +166,16 @@ TEST_F(InputPortTest, ThreadSafety) {
     EXPECT_EQ(safePort->read(), 50);
 }
 
+// BasePort::tryConnect/tryDisconnect (design spec §3.5, C11-follow-up
+// blocker "Track SPEC"): the type-erased connect the spec loader needs
+// because it only holds BasePort*, never the template type. InputPort<T>
+// never overrides these -- it is never the *connecting* side -- so the
+// BasePort base-class default (return false) must hold here.
+TEST_F(InputPortTest, TryConnectDefaultRefusesInsteadOfSilentlySucceeding) {
+    EXPECT_FALSE(port->tryConnect(port));
+    EXPECT_FALSE(port->tryDisconnect(port));
+}
+
 TEST_F(InputPortTest, Reset) {
     port->writeData(123);
     EXPECT_TRUE(port->hasNewData());
@@ -261,6 +271,35 @@ TEST_F(OutputPortTest, Disconnect) {
     // Writing should not affect disconnected input
     port->write(123);
     EXPECT_FALSE(inputPort->hasNewData());
+}
+
+TEST_F(OutputPortTest, TryConnectWrongDataTypeFailsLoudlyWithoutWiring) {
+    // The loader holds BasePort*, so a spec bug (or a validate()/instantiate()
+    // desync -- the defect class step 4 of the design spec calls out) reaches
+    // this as a dynamic_cast<InputPort<T>*> miss. It must come back false, not
+    // throw and not silently wire a type-punned connection.
+    auto unit2 = std::make_unique<TestProcessingUnit>("TestUnit2");
+    unit2->setBlockUID(2);
+    auto wrongTypeInput = unit2->createInputPort<double>(1, "WrongTypeInput");
+
+    EXPECT_FALSE(port->tryConnect(static_cast<BasePort*>(wrongTypeInput)));
+    EXPECT_FALSE(port->isConnected());
+    EXPECT_EQ(port->getConnectionCount(), 0);
+}
+
+TEST_F(OutputPortTest, TryConnectMatchingTypeWiresJustLikeConnect) {
+    auto unit2 = std::make_unique<TestProcessingUnit>("TestUnit2");
+    unit2->setBlockUID(2);
+    auto inputPort = unit2->createInputPort<int>(1, "TestInput");
+
+    EXPECT_TRUE(port->tryConnect(static_cast<BasePort*>(inputPort)));
+    EXPECT_TRUE(port->isConnected());
+
+    port->write(75);
+    EXPECT_EQ(inputPort->read(), 75);
+
+    EXPECT_TRUE(port->tryDisconnect(static_cast<BasePort*>(inputPort)));
+    EXPECT_FALSE(port->isConnected());
 }
 
 // Tests for AsyncInputPort
@@ -380,6 +419,30 @@ TEST_F(AsyncOutputPortTest, MultipleAsyncConnections) {
     EXPECT_TRUE(inputPort2->wasUpdated());
     EXPECT_EQ(inputPort1->read(), 88);
     EXPECT_EQ(inputPort2->read(), 88);
+}
+
+TEST_F(AsyncOutputPortTest, TryConnectWrongDataTypeFailsLoudlyWithoutWiring) {
+    auto unit2 = std::make_unique<TestProcessingUnit>("TestUnit2");
+    unit2->setBlockUID(2);
+    auto wrongTypeInput = unit2->createAsyncInputPort<double>(1, "WrongTypeAsyncInput");
+
+    EXPECT_FALSE(port->tryConnect(static_cast<BasePort*>(wrongTypeInput)));
+    EXPECT_FALSE(port->isConnected());
+}
+
+TEST_F(AsyncOutputPortTest, TryConnectMatchingTypeWiresJustLikeConnect) {
+    auto unit2 = std::make_unique<TestProcessingUnit>("TestUnit2");
+    unit2->setBlockUID(2);
+    auto inputPort = unit2->createAsyncInputPort<int>(1, "TestAsyncInput");
+
+    EXPECT_TRUE(port->tryConnect(static_cast<BasePort*>(inputPort)));
+    EXPECT_TRUE(port->isConnected());
+
+    port->write(55);
+    EXPECT_EQ(inputPort->read(), 55);
+
+    EXPECT_TRUE(port->tryDisconnect(static_cast<BasePort*>(inputPort)));
+    EXPECT_FALSE(port->isConnected());
 }
 
 // Tests for NaN validation
