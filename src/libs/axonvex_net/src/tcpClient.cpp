@@ -13,6 +13,7 @@
 #endif
 
 #include <array>
+#include <system_error>
 
 namespace axonvex {
 namespace interfaces {
@@ -235,7 +236,7 @@ bool TcpClient::send(const std::vector<uint8_t>& data) {
                 poisonConnectionLocked();
                 sendError = "tcp: send failed after " + std::to_string(sent) + " of " +
                             std::to_string(sizeof(header)) +
-                            " header bytes: " + std::string(strerror(errno));
+                            " header bytes: " + std::generic_category().message(errno);
             } else if (!data.empty() && !sendAll(data.data(), data.size(), sent)) {
                 // A partial frame write (header out, payload cut short — or a
                 // truncated header) leaves the peer waiting for bytes that will
@@ -246,7 +247,7 @@ bool TcpClient::send(const std::vector<uint8_t>& data) {
                 poisonConnectionLocked();
                 sendError = "tcp: send failed after " + std::to_string(sent) + " of " +
                             std::to_string(data.size()) +
-                            " payload bytes: " + std::string(strerror(errno));
+                            " payload bytes: " + std::generic_category().message(errno);
             } else {
                 stats_.messagesSent.fetch_add(1, std::memory_order_relaxed);
                 stats_.bytesSent.fetch_add(static_cast<uint64_t>(kFrameHeaderSize + data.size()),
@@ -464,7 +465,13 @@ void TcpClient::recvLoop() {
                 continue;
             const bool selfInitiated =
                 !running_.load() || !connectionAlive_.load(std::memory_order_acquire);
-            const std::string reason = strerror(errno);
+            // strerror(errno) is not required to be thread-safe by POSIX (it
+            // may format into a shared static buffer); generic_category's
+            // message() is the reentrant equivalent (libstdc++ uses
+            // strerror_r internally) — this path runs on a per-connection
+            // recv thread and a concurrent error on another connection's
+            // thread must not race this read (same defect class as C37).
+            const std::string reason = std::generic_category().message(errno);
             connectionAlive_.store(false, std::memory_order_release);
             if (!selfInitiated)
                 reportError("tcp: recv error: " + reason);
