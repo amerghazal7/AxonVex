@@ -20,6 +20,7 @@ class AdapterInterface;
 
 #include <atomic>
 #include <axonvex_core/configuration.hpp>
+#include <axonvex_core/detail/workerThread.hpp>
 #include <axonvex_core/logger.hpp>
 #include <axonvex_core/path.hpp>
 #include <axonvex_core/precisionTimer.hpp>
@@ -237,13 +238,19 @@ class AxonVexSystem {
      * unique_ptr going out of scope, the last shared_ptr dropped, a stack
      * object unwinding) is released from inside a worker-thread callback —
      * a ProcessingUnit task, an event callback, a health-check callback —
-     * ~AxonVexSystem runs ON that worker thread and reaches
-     * joinAndClearThreadHandle()'s join on itself: undefined behavior (the
-     * same self-join shape guarded everywhere else in this class with a
-     * refusal or a deferred join — C33/C36/C40/C42 — none of which a
-     * destructor can use). Keep the owning AxonVexSystem alive for its
-     * entire lifetime on a thread outside the system's own workers; call
-     * emergencyShutdown() from a callback if the system must stop itself,
+     * ~AxonVexSystem runs ON that worker thread while destroying members
+     * the callback's own call stack (eventProcessingLoop(), the callback
+     * itself) is still using: undefined behavior once control unwinds back
+     * into it. detail::WorkerThread::join() self-refuses rather than
+     * self-joining (so this specific call no longer throws/deadlocks the
+     * way a raw self-join would — C33/C36 shape), but that only avoids the
+     * crash at the join() call; it does not make destroying `this` out from
+     * under your own live call stack safe (the same self-join shape guarded
+     * everywhere else in this class with a refusal or a deferred join —
+     * C33/C36/C40/C42 — none of which a destructor can use). Keep the
+     * owning AxonVexSystem alive for its entire lifetime on a thread
+     * outside the system's own workers; call emergencyShutdown() from a
+     * callback if the system must stop itself,
      * and destroy the object afterward from an external thread.
      *
      * @note virtual: AxonVexSystem is already polymorphic (initializeBlocksLayout()
@@ -770,21 +777,20 @@ class AxonVexSystem {
     // Statistics and monitoring
     mutable SystemStatistics statistics_;
     mutable std::mutex statisticsMutex_;
-    std::unique_ptr<std::thread> monitoringThread_;
+    // Phase 2 core decomposition, migration step 3 (see
+    // docs/superpowers/specs/2026-08-06-phase2-core-decomposition-design.md
+    // section 1.2): the thread-id publish/clear (C41), join-before-assign
+    // (C39), and self-join-refusal discipline that used to be a hand-
+    // written unique_ptr<thread> + atomic<thread::id> pair here now lives
+    // in detail::WorkerThread.
+    detail::WorkerThread monitoringWorker_;
     std::atomic<bool> monitoringEnabled_{false};
-    // C41: published by monitoringLoop() itself as its first act, cleared as
-    // its last (every exit path) — never read from the thread handle. Lets
-    // isOnWorkerThread() answer "am I this worker?" without touching
-    // monitoringThread_ (which lifecycle calls are busy tearing down).
-    std::atomic<std::thread::id> monitoringThreadId_{};
 
     // Event system
     std::unique_ptr<ThreadSafeQueue<SystemEvent*>> eventQueue_;
     std::unique_ptr<MemoryPool<SystemEvent>> eventPool_;
-    std::unique_ptr<std::thread> eventProcessingThread_;
+    detail::WorkerThread eventWorker_;
     std::atomic<bool> eventProcessingRunning_{false};
-    // C41: same discipline as monitoringThreadId_, for eventProcessingLoop().
-    std::atomic<std::thread::id> eventThreadId_{};
     std::vector<EventCallback> eventCallbacks_;
     std::vector<HealthCheckCallback> healthCheckCallbacks_;
     mutable std::mutex callbacksMutex_;
@@ -803,32 +809,13 @@ class AxonVexSystem {
     void drainEventQueue() noexcept;
 
     /**
-     * C39: joins and clears a worker-thread handle if it is joinable.
-     * Called before every assignment over a thread-handle member: assigning
-     * over a joinable std::thread is std::terminate. The reachable
-     * stale-handle producers are a throw between thread-start and
-     * INITIALIZED (catch path leaves threads running, ERROR permits retry)
-     * and emergencyShutdown's deferred self-join.
-     *
-     * C41 tightened contract: callers must not run on the thread `handle`
-     * names. This used to have a self-join guard (detach instead of join
-     * when called from the named thread itself), reachable because
-     * initialize() could be invoked from a callback running on one of our
-     * own worker threads. initialize() now refuses on a worker thread
-     * (isOnWorkerThread()) before it ever reaches this helper, so that case
-     * cannot occur here anymore — the guard was removed rather than kept as
-     * unreachable defense-in-depth for a path that no longer exists.
-     */
-    void joinAndClearThreadHandle(std::unique_ptr<std::thread>& handle);
-
-    /**
-     * C41/C42: true iff called from eventProcessingThread_,
-     * monitoringThread_, or RealTimeScheduler's own scheduler thread (via
-     * timingController_->isOnSchedulerThread()) — the ids/atomics each loop
-     * publishes on entry and clears on exit. Lifecycle calls that tear down
-     * or replace components those threads' own stacks are using
-     * (initialize(), stop(), reset()) must refuse rather than run on a
-     * worker thread.
+     * C41/C42: true iff called from eventWorker_, monitoringWorker_, or
+     * RealTimeScheduler's own scheduler thread (via
+     * timingController_->isOnSchedulerThread()) — each WorkerThread answers
+     * from the id it publishes on entry and clears on exit (see
+     * detail::WorkerThread). Lifecycle calls that tear down or replace
+     * components those threads' own stacks are using (initialize(), stop(),
+     * reset()) must refuse rather than run on a worker thread.
      */
     bool isOnWorkerThread() const noexcept;
 

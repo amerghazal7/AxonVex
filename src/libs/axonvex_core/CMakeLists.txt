@@ -21,6 +21,7 @@ add_library(axonvex_core SHARED
     src/unitFactory.cpp
     src/unitMetadata.cpp
     src/unitRegistry.cpp
+    src/workerThread.cpp
 )
 
 set_target_properties(axonvex_core PROPERTIES
