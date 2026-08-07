@@ -2,6 +2,7 @@
 *.d
 build*/
 install/
+CMakeUserPresets.json
 *.log
 .cache/
 .vscode/*.db*

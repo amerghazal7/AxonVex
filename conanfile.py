@@ -6,15 +6,17 @@ the same CMakeDeps/CMakeToolchain files conanfile.txt did), and `conan
 create .` additionally builds+packages axonvex itself and runs
 test_package/ against the result.
 
-NOT VERIFIED IN THIS ENVIRONMENT: conan is not installed here (see the
-worktree's task notes) — this recipe has been written against the
-documented Conan 2 ConanFile/CMake/CMakeDeps/CMakeToolchain API but never
-run through `conan install .` or `conan create .`. A maintainer with conan
-available must run both before trusting this file; report any failure
-verbatim rather than assuming it's close enough.
+Verified with Conan 2.31.2 / gcc 11.4 (default profile, Release): both
+`conan install . --output-folder=<dir> --build=missing -s build_type=Release`
+and `conan create . --build=missing -s build_type=Release` succeed —
+including test_package's downstream_consumer, which builds and runs against
+the just-packaged axonvex (COMPONENTS core, ros2 present because this
+environment happens to have rclcpp). Not exercised here: other compilers/OS,
+`build_plugins=False`, and any build_type besides Release/Debug — a
+maintainer changing those should re-run both commands.
 """
 from conan import ConanFile
-from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
+from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain
 from conan.tools.files import copy
 
 
@@ -53,21 +55,30 @@ class AxonVexConan(ConanFile):
         # install .` at the repo root matching the old conanfile.txt exactly.
         self.test_requires("gtest/1.14.0")
 
-    def layout(self):
-        cmake_layout(self)
+    # No layout()/cmake_layout(): this recipe's `conan install .
+    # --output-folder=build` must drop conan_toolchain.cmake directly under
+    # that output folder (matching README.md / CLAUDE.md / CI, which all
+    # pass -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake). cmake_layout()
+    # relocates it to build/<BuildType>/generators/conan_toolchain.cmake
+    # instead, breaking every one of those documented/CI invocations.
 
     def generate(self):
         deps = CMakeDeps(self)
         deps.generate()
         tc = CMakeToolchain(self)
-        tc.variables["BUILD_TESTING"] = "OFF"
-        tc.variables["BUILD_EXAMPLES"] = "OFF"
         tc.variables["BUILD_PLUGINS"] = "ON" if self.options.build_plugins else "OFF"
         tc.generate()
 
     def build(self):
         cmake = CMake(self)
-        cmake.configure()
+        # BUILD_TESTING/BUILD_EXAMPLES are forced OFF only for this recipe's
+        # own package build (a minimal `conan create .` package build has no
+        # need for tests/examples) — NOT via generate()'s CMakeToolchain,
+        # which is the same toolchain file local dev builds and CI configure
+        # against; baking them there silently zeroed CI's test count (C48-
+        # adjacent: a build_type/config mismatch isn't the only way a shared
+        # toolchain variable silently defeats a caller's own -D flag).
+        cmake.configure(variables={"BUILD_TESTING": "OFF", "BUILD_EXAMPLES": "OFF"})
         cmake.build()
 
     def package(self):
@@ -84,9 +95,20 @@ class AxonVexConan(ConanFile):
         self.cpp_info.set_property("cmake_file_name", "axonvex")
         self.cpp_info.set_property("cmake_target_name", "axonvex::axonvex")
 
+        # install()'s per-component layout is axonvex_<lib>/libs (shared libs
+        # only — interfaces/adapters/safety/io/visualization/plugins are
+        # INTERFACE targets, header-only, no .libs) and axonvex_<lib>/include
+        # (all components) — see src/libs/*/CMakeLists.txt and plugins/
+        # axonvex_ros2/CMakeLists.txt install(TARGETS/DIRECTORY) calls. conan
+        # defaults to lib/ and include/, which install() never populates, so
+        # every component needs its libdirs/includedirs pointed at the real
+        # location or a consumer's find_package(axonvex) links against
+        # nothing.
         core = self.cpp_info.components["core"]
         core.set_property("cmake_target_name", "axonvex::core")
         core.libs = ["axonvex_core"]
+        core.libdirs = ["axonvex_core/libs"]
+        core.includedirs = ["axonvex_core/include"]
         core.requires = ["nlohmann_json::nlohmann_json", "onetbb::onetbb"]
 
         for name, requires in (
@@ -99,15 +121,21 @@ class AxonVexConan(ConanFile):
         ):
             comp = self.cpp_info.components[name]
             comp.set_property("cmake_target_name", "axonvex::{}".format(name))
+            comp.libdirs = []
+            comp.includedirs = ["axonvex_{}/include".format(name)]
             comp.requires = requires
 
         net = self.cpp_info.components["net"]
         net.set_property("cmake_target_name", "axonvex::net")
         net.libs = ["axonvex_net"]
+        net.libdirs = ["axonvex_net/libs"]
+        net.includedirs = ["axonvex_net/include"]
         net.requires = ["core", "interfaces"]
 
         if self.options.build_plugins:
             ros2 = self.cpp_info.components["ros2"]
             ros2.set_property("cmake_target_name", "axonvex::ros2")
             ros2.libs = ["axonvex_ros2"]
+            ros2.libdirs = ["axonvex_ros2/libs"]
+            ros2.includedirs = ["axonvex_ros2/include"]
             ros2.requires = ["core"]
