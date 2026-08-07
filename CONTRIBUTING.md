@@ -14,7 +14,7 @@ ctest --test-dir build --output-on-failure
 
 - **Zero warnings.** The build must stay warning-free; a change that introduces a warning is not done.
 - **C++14 only.** No C++17-or-later features. Use the in-tree compat layers (`optional.hpp`, `filesystem_compat.hpp`) instead of `std::optional`/`std::filesystem`.
-- **Formatting.** Run `clang-format` with the repo's `.clang-format`; follow [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md).
+- **Formatting.** Run `clang-format` with the repo's `.clang-format`; follow [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md). CI enforces clang-format **18.1.8** and clang-tidy **18.1.1** exactly (see `.github/workflows/ci.yml`) — different majors format/lint some constructs differently, so install the same versions locally: `pip install "clang-format==18.1.8" "clang-tidy==18.1.1"`.
 - **Tests first.** New features are developed TDD-style; every bug fix lands with a regression test that fails without the fix.
 - **Defect IDs.** Fixes for audited defects reference their ID (C1–C24, defined in [docs/v1_release_plan.md §3](docs/v1_release_plan.md)) in the commit message, e.g. `fix(core): C4 swap MemoryPool isEmpty/isFull`.
 - **Branches.** Branch off a `feature/*` branch; do not commit directly to `main`.

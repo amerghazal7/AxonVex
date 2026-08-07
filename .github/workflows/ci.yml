@@ -60,9 +60,13 @@ jobs:
       with:
         python-version: '3.x'
 
+    # Pinned: Conan's dependency resolution/lockfile behavior can shift
+    # between releases (same class of drift as clang-format/clang-tidy
+    # below); 2.31.2 is the version this workflow and the local dev
+    # environment (CLAUDE.md) were verified against.
     - name: Install Conan
       run: |
-        pip install conan
+        pip install "conan==2.31.2"
         conan profile detect --force
 
     - name: Cache Conan packages
@@ -155,9 +159,10 @@ jobs:
       with:
         python-version: '3.x'
 
+    # Pinned: see the build-and-test job's "Install Conan" step above for why.
     - name: Install Conan
       run: |
-        pip install conan
+        pip install "conan==2.31.2"
         conan profile detect --force
 
     - name: Cache Conan packages
@@ -215,13 +220,43 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install clang-format and clang-tidy
+    # Pinned, not `apt-get install -y clang-format clang-tidy`: that resolves
+    # to whatever major version the runner image ships, which drifts (this
+    # gate hit exactly that in the real run this hardening is for — Ubuntu
+    # 24.04 happened to ship 18.x, but a contributor on 22.x formats their
+    # tree "correctly" for their own clang-format and CI rejects it). pip's
+    # prebuilt wheels give the identical binary on any OS, so this is also
+    # what a contributor should run locally (see CONTRIBUTING.md) — same
+    # version everywhere, not just "same version on this runner image".
+    # clang-tidy 18.1.1 is the newest 18.1.x pip has mirrored (no 18.1.8
+    # wheel exists for it); same major/minor as clang-format 18.1.8, so its
+    # check set matches .clang-tidy's triage. Bump both together, deliberately,
+    # when there's a reason to move — never let apt silently carry one forward.
+    # The version check below turns "pip silently resolved something else"
+    # into a hard failure instead of a quietly-different gate.
+    - name: Install pinned clang-format and clang-tidy
+      env:
+        CLANG_FORMAT_VERSION: "18.1.8"
+        CLANG_TIDY_VERSION: "18.1.1"
       run: |
-        sudo apt-get update
-        sudo apt-get install -y clang-format clang-tidy
+        set -e
+        pip install "clang-format==${CLANG_FORMAT_VERSION}" "clang-tidy==${CLANG_TIDY_VERSION}"
+        got_cf="$(clang-format --version)"
+        got_ct="$(clang-tidy --version)"
+        echo "$got_cf"
+        echo "$got_ct"
+        case "$got_cf" in
+          *"$CLANG_FORMAT_VERSION"*) ;;
+          *) echo "::error::clang-format version mismatch: expected $CLANG_FORMAT_VERSION, got: $got_cf"; exit 1 ;;
+        esac
+        case "$got_ct" in
+          *"$CLANG_TIDY_VERSION"*) ;;
+          *) echo "::error::clang-tidy version mismatch: expected $CLANG_TIDY_VERSION, got: $got_ct"; exit 1 ;;
+        esac
 
     - name: Check code formatting
       run: |
+        set -e
         # Verified: `src tests examples` are find's search roots, not a
         # boolean test, so `-name *.hpp -o -name *.cpp` (no parens) already
         # restricts both branches to those three trees — confirmed by
@@ -229,16 +264,25 @@ jobs:
         # files outside src/tests/examples. No live bug here; the explicit
         # \( -o \) grouping below is defensive clarity only (guards against
         # a future third `-o` clause silently changing precedence).
-        find src tests examples \( -name "*.hpp" -o -name "*.cpp" \) | xargs clang-format --dry-run --Werror
+        files="$(find src tests examples \( -name "*.hpp" -o -name "*.cpp" \))"
+        # `find | xargs` with zero matches runs clang-format zero times and
+        # exits 0 — a renamed/emptied source tree would make this gate pass
+        # while checking nothing. Fail loudly instead of silently no-oping.
+        if [ -z "$files" ]; then
+          echo "::error::no .hpp/.cpp files found under src, tests, examples — formatting check would silently check nothing"
+          exit 1
+        fi
+        echo "$files" | xargs clang-format --dry-run --Werror
 
     - name: Setup Python for Conan
       uses: actions/setup-python@v4
       with:
         python-version: '3.x'
 
+    # Pinned: see the build-and-test job's "Install Conan" step for why.
     - name: Install Conan
       run: |
-        pip install conan
+        pip install "conan==2.31.2"
         conan profile detect --force
 
     - name: Configure for clang-tidy
@@ -256,6 +300,7 @@ jobs:
 
     - name: Run clang-tidy
       run: |
+        set -e
         cd build
         # .cpp only: clang-tidy resolves a header's compiler flags by
         # locating a compile-command entry for it, and headers have none of
@@ -273,7 +318,14 @@ jobs:
         # vs. deferred-but-visible (see the file for the current triage) —
         # passing `*` on the command line would override that and promote
         # every deferred, still-open finding straight to a build failure.
-        find ../src -name "*.cpp" | xargs clang-tidy -p .
+        files="$(find ../src -name "*.cpp")"
+        # Same "zero matches = silent pass" trap as the clang-format step:
+        # `find | xargs` with no files runs clang-tidy zero times and exits 0.
+        if [ -z "$files" ]; then
+          echo "::error::no .cpp files found under src — clang-tidy gate would silently check nothing"
+          exit 1
+        fi
+        echo "$files" | xargs clang-tidy -p .
 
   documentation:
     name: Documentation Check
@@ -285,13 +337,19 @@ jobs:
 
     - name: Check documentation files
       run: |
+        # `test -f X && echo ok` on its own line is a silent-failure trap:
+        # bash's `-e` does not apply to the left side of `&&` (per POSIX/bash
+        # semantics, only the final command in a && / || list is subject to
+        # -e), and the script's overall exit code was the last unconditional
+        # echo, so this job passed even with every doc file missing. `|| exit
+        # 1` makes the failure explicit instead of relying on -e.
         echo "Checking for required documentation files..."
-        test -f README.md && echo "✓ README.md exists"
-        test -f LICENSE && echo "✓ LICENSE exists"
-        test -f docs/software_requirements_specification.md && echo "✓ SRS exists"
-        test -f docs/architecture_and_design.md && echo "✓ Architecture doc exists"
-        test -f docs/implementation_plan.md && echo "✓ Implementation plan exists"
-        test -f docs/project_backlog.md && echo "✓ Project backlog exists"
+        test -f README.md && echo "✓ README.md exists" || { echo "::error::README.md is missing"; exit 1; }
+        test -f LICENSE && echo "✓ LICENSE exists" || { echo "::error::LICENSE is missing"; exit 1; }
+        test -f docs/software_requirements_specification.md && echo "✓ SRS exists" || { echo "::error::docs/software_requirements_specification.md is missing"; exit 1; }
+        test -f docs/architecture_and_design.md && echo "✓ Architecture doc exists" || { echo "::error::docs/architecture_and_design.md is missing"; exit 1; }
+        test -f docs/implementation_plan.md && echo "✓ Implementation plan exists" || { echo "::error::docs/implementation_plan.md is missing"; exit 1; }
+        test -f docs/project_backlog.md && echo "✓ Project backlog exists" || { echo "::error::docs/project_backlog.md is missing"; exit 1; }
         echo "Documentation check completed"
 
   performance-benchmark:
@@ -308,9 +366,10 @@ jobs:
       with:
         python-version: '3.x'
 
+    # Pinned: see the build-and-test job's "Install Conan" step for why.
     - name: Install Conan
       run: |
-        pip install conan
+        pip install "conan==2.31.2"
         conan profile detect --force
 
     - name: Build Release version
