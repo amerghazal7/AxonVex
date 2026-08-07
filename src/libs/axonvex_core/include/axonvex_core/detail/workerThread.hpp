@@ -47,6 +47,17 @@ namespace axonvex::core::detail {
  *    the reported hang (join() blocking on a torn/stale thread id nothing
  *    will ever signal). This is the one thing the three original copies
  *    did NOT share; every caller of this class gets it for free.
+ *  - Review fix (Part 2 follow-up): the isOnThisThread() self-checks in
+ *    join(), start(), and the destructor all run BEFORE handleMutex_ is
+ *    acquired, never after. A first version of this extraction checked
+ *    after the lock, which widened C33's critical section: a self-call
+ *    made while an external thread already held handleMutex_ blocked
+ *    inside a genuine handle_->join() (waiting for exactly this thread to
+ *    return) would itself block on the same mutex instead of refusing --
+ *    permanent two-thread deadlock. isOnThisThread() is lock-free by
+ *    construction for exactly this reason; the self-checks must stay
+ *    lock-free too, or the property they exist to provide (a self-call
+ *    never blocks) stops holding under contention.
  *
  * Threading contract: start()/join()/withHandle() are safe to call
  * concurrently from multiple external threads. The caller-supplied `loop`
@@ -60,11 +71,13 @@ namespace axonvex::core::detail {
  * start()'s precondition: the caller has already refused if
  * isOnThisThread() -- this class does not know the caller's refusal
  * policy (system.cpp/timingController.cpp each log a different message),
- * so that check and its error handling stay at the call site. Calling
- * start() from the worker's own thread is undefined by this class (it
- * will attempt to join its own running thread, which throws
- * system_error synchronously rather than deadlocking, but that exception
- * is the caller's to handle or avoid).
+ * so that check and its error handling (e.g. logging) stay at the call
+ * site. Calling start() from the worker's own thread is still undefined
+ * behavior by contract (it would run two loop bodies over the same handle
+ * concurrently), but this class defends itself at the mechanical level:
+ * it self-checks isOnThisThread() before touching handleMutex_ and is a
+ * silent no-op rather than a synchronous throw or a lock-contention
+ * deadlock.
  */
 class WorkerThread {
   public:
