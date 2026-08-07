@@ -1,9 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <axonvex_core/missionElement.hpp>
 #include <axonvex_core/processingUnit.hpp>
-
-#include <atomic>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -11,32 +10,31 @@
 
 namespace axonvex::core {
 
-enum class PipelineStatus {
-    Idle,
-    Executing,
-    Paused,
-    Finished,
-    Aborted,
-    Failed
-};
+enum class PipelineStatus { Idle, Executing, Paused, Finished, Aborted, Failed };
 
 inline std::string pipelineStatusToString(PipelineStatus s) {
     switch (s) {
-        case PipelineStatus::Idle:      return "Idle";
-        case PipelineStatus::Executing: return "Executing";
-        case PipelineStatus::Paused:    return "Paused";
-        case PipelineStatus::Finished:  return "Finished";
-        case PipelineStatus::Aborted:   return "Aborted";
-        case PipelineStatus::Failed:    return "Failed";
+        case PipelineStatus::Idle:
+            return "Idle";
+        case PipelineStatus::Executing:
+            return "Executing";
+        case PipelineStatus::Paused:
+            return "Paused";
+        case PipelineStatus::Finished:
+            return "Finished";
+        case PipelineStatus::Aborted:
+            return "Aborted";
+        case PipelineStatus::Failed:
+            return "Failed";
     }
     return "Unknown";
 }
 
 namespace PipelineControl {
-constexpr int ABORT   = 1;
+constexpr int ABORT = 1;
 constexpr int RESTART = 2;
-constexpr int PAUSE   = 3;
-constexpr int RESUME  = 4;
+constexpr int PAUSE = 3;
+constexpr int RESUME = 4;
 } // namespace PipelineControl
 
 /**
@@ -66,7 +64,7 @@ class MissionPipeline : public ProcessingUnit {
         // Without this, update()/read() race on the plain (non-threadSafe)
         // path (TSan-confirmed while building this fix).
         controlPort_ = createAsyncInputPort<int>(0, "control", /*threadSafe=*/true);
-        statusPort_  = createOutputPort<int>(0, "status");
+        statusPort_ = createOutputPort<int>(0, "status");
     }
 
     // -----------------------------------------------------------------
@@ -398,14 +396,20 @@ class MissionPipeline : public ProcessingUnit {
         pendingReset_.store(true);
     }
 
-    std::string getTypeDescription() override { return "MissionPipeline"; }
+    std::string getTypeDescription() override {
+        return "MissionPipeline";
+    }
 
     // -----------------------------------------------------------------
     // Port accessors
     // -----------------------------------------------------------------
 
-    AsyncInputPort<int>* getControlPort() { return controlPort_; }
-    OutputPort<int>* getStatusPort() { return statusPort_; }
+    AsyncInputPort<int>* getControlPort() {
+        return controlPort_;
+    }
+    OutputPort<int>* getStatusPort() {
+        return statusPort_;
+    }
 
   private:
     struct Transition {

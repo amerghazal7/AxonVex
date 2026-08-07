@@ -51,7 +51,7 @@ Follow the pattern in `src/libs/axonvex_core/CMakeLists.txt`. Add the subdirecto
 
 ### Conan dependencies
 
-Defined in `conanfile.txt`: nlohmann_json, gtest, onetbb. To add a dependency, update `conanfile.txt` and the relevant library's `CMakeLists.txt` find/link calls.
+Defined in `conanfile.py`: nlohmann_json, gtest, onetbb, benchmark (test_requires). To add a dependency, update `conanfile.py` and the relevant library's `CMakeLists.txt` find/link calls.
 
 ## Testing — TDD Workflow
 
