@@ -28,6 +28,10 @@
 
 #include <iostream>
 
+// Version constants (generated from version.hpp.in; see that file's header
+// comment for why this is the source of truth, not a hardcoded string here).
+#include <axonvex_core/version.hpp>
+
 // Core timing utilities
 #include <axonvex_core/precisionTimer.hpp>
 
@@ -70,8 +74,8 @@
 #include <axonvex_core/missionPipeline.hpp>
 
 // Optional Phase 3 modules (header-first exposure)
-#include <axonvex_core/utils/utils.hpp>
 #include <axonvex_core/types/types.hpp>
+#include <axonvex_core/utils/utils.hpp>
 
 /**
  * @namespace axonvex
@@ -106,7 +110,7 @@ namespace core {
  * @brief Print welcome message with version information
  */
 inline void printWelcome() {
-    std::cout << "AxonVex Framework v1.0.0" << std::endl;
+    std::cout << "AxonVex Framework v" << axonvex::core::kVersionString << std::endl;
     std::cout << "High-Performance Real-Time Processing Framework" << std::endl;
     std::cout << "Built with real-time optimizations for microsecond precision" << std::endl;
     std::cout << "Ready for real-time processing..." << std::endl;

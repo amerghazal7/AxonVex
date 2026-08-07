@@ -3,6 +3,7 @@
 #include <atomic>
 #include <axonvex_interfaces/detail/dispatchBarrier.hpp>
 #include <axonvex_interfaces/protocolInterface.hpp>
+#include <axonvex_net/net_export.hpp>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -32,7 +33,7 @@ constexpr size_t kFrameHeaderSize = 6;
 /// ProtocolConfiguration field if a real consumer ever needs bigger.
 constexpr uint32_t kMaxFrameLength = 16u * 1024u * 1024u;
 
-class TcpClient : public axonvex::interfaces::ProtocolInterface {
+class AXONVEX_NET_API TcpClient : public axonvex::interfaces::ProtocolInterface {
   public:
     explicit TcpClient(std::string host = "127.0.0.1", uint16_t port = 9000);
 

@@ -7,7 +7,7 @@ set_target_properties(axonvex_safety PROPERTIES EXPORT_NAME safety)
 target_include_directories(axonvex_safety
     INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:axonvex_safety/include/axonvex_safety>
+        $<INSTALL_INTERFACE:axonvex_safety/include>
 )
 
 target_link_libraries(axonvex_safety
@@ -19,4 +19,4 @@ install(TARGETS axonvex_safety
         EXPORT axonvexTargets)
 
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
-        DESTINATION axonvex_safety/include/axonvex_safety)
+        DESTINATION axonvex_safety/include)
