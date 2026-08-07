@@ -1,21 +1,56 @@
 #pragma once
 
+#include <atomic>
+#include <axonvex_core/callback.hpp>
+#include <axonvex_core/callerKeyed.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
-#include <axonvex_core/callerKeyed.hpp>
-#include <axonvex_core/callback.hpp>
 
 namespace axonvex::interfaces {
 
+/// Snapshot of a transport's counters, returned by value to callers.
 struct ProtocolStatistics {
     uint64_t bytesSent{0};
     uint64_t bytesReceived{0};
     uint64_t messagesSent{0};
     uint64_t messagesReceived{0};
-    void reset() { bytesSent=bytesReceived=messagesSent=messagesReceived=0; }
+    void reset() {
+        bytesSent = bytesReceived = messagesSent = messagesReceived = 0;
+    }
+};
+
+/// Live counters for a transport. Send and receive run on different threads, so
+/// the counters a transport increments must be atomic even though the snapshot
+/// handed back to callers is plain (C24).
+///
+/// Relaxed ordering throughout: these count events, they order nothing. A
+/// snapshot is therefore per-counter atomic but not consistent across all four
+/// — a reader can catch bytesSent updated and messagesSent not yet. That is
+/// acceptable for statistics and must not be used to derive control decisions.
+struct AtomicProtocolStatistics {
+    std::atomic<uint64_t> bytesSent{0};
+    std::atomic<uint64_t> bytesReceived{0};
+    std::atomic<uint64_t> messagesSent{0};
+    std::atomic<uint64_t> messagesReceived{0};
+
+    ProtocolStatistics snapshot() const noexcept {
+        ProtocolStatistics out;
+        out.bytesSent = bytesSent.load(std::memory_order_relaxed);
+        out.bytesReceived = bytesReceived.load(std::memory_order_relaxed);
+        out.messagesSent = messagesSent.load(std::memory_order_relaxed);
+        out.messagesReceived = messagesReceived.load(std::memory_order_relaxed);
+        return out;
+    }
+
+    void reset() noexcept {
+        bytesSent.store(0, std::memory_order_relaxed);
+        bytesReceived.store(0, std::memory_order_relaxed);
+        messagesSent.store(0, std::memory_order_relaxed);
+        messagesReceived.store(0, std::memory_order_relaxed);
+    }
 };
 
 // Transport-agnostic protocol interface

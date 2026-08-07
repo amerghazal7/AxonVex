@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <axonvex_core/utils/alignedNew.hpp>
+#include <axonvex_core/utils/optional.hpp>
 #include <chrono>
 #include <memory>
 #include <new>
-#include <optional>
 #include <thread>
+#include <type_traits>
 
 namespace axonvex::utils::containers {
 
@@ -17,11 +19,21 @@ struct QueueStatistics {
     std::atomic<uint64_t> dequeue_failures{0};
     std::atomic<uint64_t> max_size_reached{0};
 
-    uint64_t getEnqueueCount() const noexcept { return enqueue_count.load(); }
-    uint64_t getDequeueCount() const noexcept { return dequeue_count.load(); }
-    uint64_t getEnqueueFailures() const noexcept { return enqueue_failures.load(); }
-    uint64_t getDequeueFailures() const noexcept { return dequeue_failures.load(); }
-    uint64_t getMaxSizeReached() const noexcept { return max_size_reached.load(); }
+    uint64_t getEnqueueCount() const noexcept {
+        return enqueue_count.load();
+    }
+    uint64_t getDequeueCount() const noexcept {
+        return dequeue_count.load();
+    }
+    uint64_t getEnqueueFailures() const noexcept {
+        return enqueue_failures.load();
+    }
+    uint64_t getDequeueFailures() const noexcept {
+        return dequeue_failures.load();
+    }
+    uint64_t getMaxSizeReached() const noexcept {
+        return max_size_reached.load();
+    }
 
     void reset() noexcept {
         enqueue_count.store(0);
@@ -35,6 +47,10 @@ struct QueueStatistics {
 template <typename T>
 class ThreadSafeQueue {
   public:
+    // Cache-line-aligned members make this type over-aligned; C++14's plain
+    // new does not honour that (see alignedNew.hpp).
+    AXONVEX_ALIGNED_NEW(ThreadSafeQueue)
+
     static constexpr size_t DEFAULT_CAPACITY = 1024;
     static constexpr size_t MIN_CAPACITY = 16;
     static constexpr size_t MAX_CAPACITY = 1024 * 1024;
@@ -49,8 +65,8 @@ class ThreadSafeQueue {
 
     bool enqueue(const T& item) noexcept;
     bool enqueue(T&& item) noexcept;
-    std::optional<T> dequeue() noexcept;
-    std::optional<T> tryDequeue(const std::chrono::nanoseconds& timeout) noexcept;
+    axonvex::optional<T> dequeue() noexcept;
+    axonvex::optional<T> tryDequeue(const std::chrono::nanoseconds& timeout) noexcept;
     bool isEmpty() const noexcept;
     bool isFull() const noexcept;
     size_t size() const noexcept;
@@ -61,12 +77,27 @@ class ThreadSafeQueue {
 
   private:
     struct alignas(64) Slot {
+        // Allocated as Slot[]; the array form of new ignores over-alignment in
+        // C++14 the same way the scalar form does. Trivially destructible, so
+        // no array cookie shifts the elements off the cache line.
+        AXONVEX_ALIGNED_NEW(Slot)
+
         std::atomic<uint64_t> sequence{0};
         alignas(T) char storage[sizeof(T)];
-        Slot() = default; ~Slot() = default;
-        T* data() noexcept { return reinterpret_cast<T*>(storage); }
-        const T* data() const noexcept { return reinterpret_cast<const T*>(storage); }
+        Slot() = default;
+        ~Slot() = default;
+        T* data() noexcept {
+            return reinterpret_cast<T*>(storage);
+        }
+        const T* data() const noexcept {
+            return reinterpret_cast<const T*>(storage);
+        }
     };
+
+    static_assert(std::is_trivially_destructible<Slot>::value,
+                  "Slot must stay trivially destructible: a non-trivial destructor makes array "
+                  "new emit a cookie, which shifts every element off its cache line");
+    static_assert(alignof(Slot) >= 64, "Slot must stay cache-line aligned");
 
     const size_t capacity_;
     const size_t capacity_mask_;
@@ -88,11 +119,15 @@ template <typename T>
 ThreadSafeQueue<T>::ThreadSafeQueue(size_t capacity)
     : capacity_(std::max(MIN_CAPACITY, std::min(MAX_CAPACITY, nextPowerOf2(capacity)))),
       capacity_mask_(capacity_ - 1), slots_(std::make_unique<Slot[]>(capacity_)) {
-    for (size_t i = 0; i < capacity_; ++i) { slots_[i].sequence.store(i, relaxed); }
+    for (size_t i = 0; i < capacity_; ++i) {
+        slots_[i].sequence.store(i, relaxed);
+    }
 }
 
 template <typename T>
-ThreadSafeQueue<T>::~ThreadSafeQueue() { clear(); }
+ThreadSafeQueue<T>::~ThreadSafeQueue() {
+    clear();
+}
 
 template <typename T>
 bool ThreadSafeQueue<T>::enqueue(const T& item) noexcept {
@@ -151,7 +186,7 @@ bool ThreadSafeQueue<T>::enqueue(T&& item) noexcept {
 }
 
 template <typename T>
-std::optional<T> ThreadSafeQueue<T>::dequeue() noexcept {
+axonvex::optional<T> ThreadSafeQueue<T>::dequeue() noexcept {
     try {
         uint64_t pos = dequeue_pos_.load(relaxed);
         for (;;) {
@@ -167,25 +202,28 @@ std::optional<T> ThreadSafeQueue<T>::dequeue() noexcept {
                 }
             } else if (seq < pos + 1) {
                 stats_.dequeue_failures.fetch_add(1, relaxed);
-                return std::nullopt;
+                return axonvex::nullopt;
             } else {
                 pos = dequeue_pos_.load(relaxed);
             }
         }
     } catch (...) {
         stats_.dequeue_failures.fetch_add(1, relaxed);
-        return std::nullopt;
+        return axonvex::nullopt;
     }
 }
 
 template <typename T>
-std::optional<T> ThreadSafeQueue<T>::tryDequeue(const std::chrono::nanoseconds& timeout) noexcept {
+axonvex::optional<T> ThreadSafeQueue<T>::tryDequeue(
+    const std::chrono::nanoseconds& timeout) noexcept {
     auto start_time = std::chrono::high_resolution_clock::now();
     while (true) {
         auto result = dequeue();
-        if (result.has_value()) return result;
+        if (result.has_value())
+            return result;
         auto current_time = std::chrono::high_resolution_clock::now();
-        if (current_time - start_time >= timeout) return std::nullopt;
+        if (current_time - start_time >= timeout)
+            return axonvex::nullopt;
         std::this_thread::sleep_for(std::chrono::nanoseconds(1));
     }
 }
@@ -212,22 +250,33 @@ size_t ThreadSafeQueue<T>::size() const noexcept {
 }
 
 template <typename T>
-size_t ThreadSafeQueue<T>::capacity() const noexcept { return capacity_; }
+size_t ThreadSafeQueue<T>::capacity() const noexcept {
+    return capacity_;
+}
 
 template <typename T>
-const QueueStatistics& ThreadSafeQueue<T>::getStatistics() const noexcept { return stats_; }
+const QueueStatistics& ThreadSafeQueue<T>::getStatistics() const noexcept {
+    return stats_;
+}
 
 template <typename T>
-void ThreadSafeQueue<T>::resetStatistics() noexcept { stats_.reset(); }
+void ThreadSafeQueue<T>::resetStatistics() noexcept {
+    stats_.reset();
+}
 
 template <typename T>
 void ThreadSafeQueue<T>::clear() noexcept {
     uint64_t enq_pos = enqueue_pos_.load(relaxed);
     uint64_t deq_pos = dequeue_pos_.load(relaxed);
-    for (uint64_t i = deq_pos; i < enq_pos; ++i) { Slot& slot = slots_[i & capacity_mask_]; slot.data()->~T(); }
+    for (uint64_t i = deq_pos; i < enq_pos; ++i) {
+        Slot& slot = slots_[i & capacity_mask_];
+        slot.data()->~T();
+    }
     enqueue_pos_.store(0, relaxed);
     dequeue_pos_.store(0, relaxed);
-    for (size_t i = 0; i < capacity_; ++i) { slots_[i].sequence.store(i, relaxed); }
+    for (size_t i = 0; i < capacity_; ++i) {
+        slots_[i].sequence.store(i, relaxed);
+    }
 }
 
 template <typename T>
@@ -241,8 +290,15 @@ size_t ThreadSafeQueue<T>::nextPowerOf2(size_t value) noexcept {
     value |= value >> 4;
     value |= value >> 8;
     value |= value >> 16;
-    value |= value >> 32;
+    value |= (value >> 16) >> 16; // two shifts: '>> 32' is UB when size_t is 32-bit
     return ++value;
 }
+
+template <typename T>
+constexpr size_t ThreadSafeQueue<T>::DEFAULT_CAPACITY;
+template <typename T>
+constexpr size_t ThreadSafeQueue<T>::MIN_CAPACITY;
+template <typename T>
+constexpr size_t ThreadSafeQueue<T>::MAX_CAPACITY;
 
 } // namespace axonvex::utils::containers

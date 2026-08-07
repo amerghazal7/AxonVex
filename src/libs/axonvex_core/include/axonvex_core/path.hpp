@@ -1,11 +1,11 @@
 #pragma once
 
-#include <filesystem>
+#include <axonvex_core/detail/filesystem_compat.hpp>
+#include <axonvex_core/utils/optional.hpp>
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -30,8 +30,8 @@ namespace axonvex::core {
  * Performance characteristics:
  * - Path operations: O(1) for most operations
  * - Path composition: Efficient string concatenation
- * - Filesystem operations: Delegated to std::filesystem
- * - Memory usage: Minimal overhead over std::filesystem::path
+ * - Filesystem operations: Delegated to axonvex_fs
+ * - Memory usage: Minimal overhead over axonvex_fs::path
  *
  * @example Basic usage:
  * @code
@@ -93,16 +93,27 @@ class Path {
     enum class FileMode { READ_ONLY, WRITE_ONLY, READ_WRITE, APPEND, CREATE_NEW, TRUNCATE };
 
   private:
-    std::filesystem::path path_;
-    static std::unordered_map<DefaultDir, std::filesystem::path> default_dirs_;
+    axonvex_fs::path path_;
+    // C15(d): default_dirs_ is NOT immutable after init — setDefaultDir()
+    // and resetDefaultDirs() both mutate it post-init, under static_mutex_.
+    // Every reader (getDefaultDir, isInWhitelist) must take that same lock.
+    static std::unordered_map<DefaultDir, axonvex_fs::path> default_dirs_;
     static SecurityLevel default_security_level_;
-    static bool initialized_;
 
     // Thread-safe initialization
+    // C15(a): the three ctors used to double-check a plain bool
+    // (`initialized_`) outside static_mutex_ before deciding whether to
+    // lock and run initializeDefaultDirs() — a racing thread could observe
+    // the bool as true while default_dirs_'s writes were not yet visible
+    // to it (classic broken DCLP; the bool has no happens-before edge to
+    // the writes on its own). ensureInitialized() replaces that with a
+    // C++11 magic static, which gives exactly-once execution with the
+    // required synchronization guarantee.
+    static void ensureInitialized();
     static void initializeDefaultDirs();
-    static std::filesystem::path getHomeDirectory();
-    static std::filesystem::path getSystemAppDataDirectory();
-    static std::filesystem::path getCurrentWorkingDirectory();
+    static axonvex_fs::path getHomeDirectory();
+    static axonvex_fs::path getSystemAppDataDirectory();
+    static axonvex_fs::path getCurrentWorkingDirectory();
 
   public:
     //==========================================================================
@@ -129,11 +140,11 @@ class Path {
     explicit Path(const char* path_str);
 
     /**
-     * @brief Construct from std::filesystem::path
+     * @brief Construct from axonvex_fs::path
      *
      * @param fs_path Filesystem path object
      */
-    explicit Path(const std::filesystem::path& fs_path);
+    explicit Path(const axonvex_fs::path& fs_path);
 
     /**
      * @brief Copy constructor
@@ -418,7 +429,7 @@ class Path {
      *
      * @return Last write time as filesystem time
      */
-    std::filesystem::file_time_type lastWriteTime() const;
+    axonvex_fs::file_time_type lastWriteTime() const;
 
     /**
      * @brief Check if file/directory is readable
@@ -505,21 +516,6 @@ class Path {
      */
     bool moveTo(const Path& destination) const;
 
-    /**
-     * @brief Create atomic backup of file
-     *
-     * @param backup_suffix Suffix for backup file (default: ".bak")
-     * @return Path to backup file
-     */
-    Path createBackup(const std::string& backup_suffix = ".bak") const;
-
-    /**
-     * @brief Get unique filename (append number if file exists)
-     *
-     * @return Path with unique filename
-     */
-    Path getUniqueFilename() const;
-
     //==========================================================================
     // String Conversion and Comparison
     //==========================================================================
@@ -546,11 +542,11 @@ class Path {
     const char* c_str() const;
 
     /**
-     * @brief Get underlying std::filesystem::path
+     * @brief Get underlying axonvex_fs::path
      *
      * @return Reference to filesystem path
      */
-    const std::filesystem::path& native() const noexcept;
+    const axonvex_fs::path& native() const noexcept;
 
     /**
      * @brief Equality comparison
@@ -589,30 +585,6 @@ class Path {
      * @return Current default security level
      */
     static SecurityLevel getDefaultSecurityLevel();
-
-    /**
-     * @brief Register custom path validator
-     *
-     * @param name Validator name
-     * @param validator Validation function
-     */
-    static void registerValidator(const std::string& name,
-                                  std::function<bool(const Path&)> validator);
-
-    /**
-     * @brief Validate path using custom validator
-     *
-     * @param validator_name Name of registered validator
-     * @return true if validation passes
-     */
-    bool validateWith(const std::string& validator_name) const;
-
-    /**
-     * @brief Get system information about path limits
-     *
-     * @return Map of system path limits and capabilities
-     */
-    static std::unordered_map<std::string, std::string> getSystemInfo();
 
     //==========================================================================
     // Integration with AxonVex Components
@@ -654,12 +626,11 @@ class Path {
     bool exceedsPathLimits() const;
 
     // Cached string for performance
-    mutable std::optional<std::string> cached_string_;
+    mutable axonvex::optional<std::string> cached_string_;
     mutable bool string_cache_valid_ = false;
 
     // Thread-safe static data
     static std::mutex static_mutex_;
-    static std::unordered_map<std::string, std::function<bool(const Path&)>> custom_validators_;
 };
 
 //==============================================================================

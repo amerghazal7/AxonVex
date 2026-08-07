@@ -1,10 +1,10 @@
 #pragma once
 
+#include <axonvex_core/detail/filesystem_compat.hpp>
+#include <axonvex_core/utils/optional.hpp>
+#include <fstream>
 #include <nlohmann/json.hpp>
 #include <string>
-#include <fstream>
-#include <filesystem>
-#include <optional>
 
 namespace axonvex::utils::serialization {
 
@@ -32,8 +32,8 @@ public:
         return j.get<T>(); // relies on from_json overload
     }
 
-    static void toFile(const json& j, const std::filesystem::path& path, int indent = 2) {
-        std::filesystem::create_directories(path.parent_path());
+    static void toFile(const json& j, const axonvex_fs::path& path, int indent = 2) {
+        axonvex_fs::create_directories(path.parent_path());
         std::ofstream ofs(path, std::ios::binary);
         if (!ofs) {
             throw std::runtime_error("JSONSerializer: cannot open file for writing: " + path.string());
@@ -44,7 +44,7 @@ public:
         }
     }
 
-    static json fromFile(const std::filesystem::path& path) {
+    static json fromFile(const axonvex_fs::path& path) {
         std::ifstream ifs(path, std::ios::binary);
         if (!ifs) {
             throw std::runtime_error("JSONSerializer: cannot open file for reading: " + path.string());
@@ -54,25 +54,25 @@ public:
     }
 
     // Non-throwing variants
-    static bool toFileNoThrow(const json& j, const std::filesystem::path& path, int indent = 2) {
+    static bool toFileNoThrow(const json& j, const axonvex_fs::path& path, int indent = 2) {
         try { toFile(j, path, indent); return true; } catch (...) { return false; }
     }
 
-    static std::optional<json> fromFileNoThrow(const std::filesystem::path& path) {
-        try { return fromFile(path); } catch (...) { return std::nullopt; }
+    static axonvex::optional<json> fromFileNoThrow(const axonvex_fs::path& path) {
+        try { return fromFile(path); } catch (...) { return axonvex::nullopt; }
     }
 
     template <typename T>
-    static void serializeToFile(const T& obj, const std::filesystem::path& path, int indent = 2) {
+    static void serializeToFile(const T& obj, const axonvex_fs::path& path, int indent = 2) {
         json j = obj;
         toFile(j, path, indent);
     }
 
     template <typename T>
-    static std::optional<T> deserializeFromFileNoThrow(const std::filesystem::path& path) {
+    static axonvex::optional<T> deserializeFromFileNoThrow(const axonvex_fs::path& path) {
         auto j = fromFileNoThrow(path);
-        if (!j) return std::nullopt;
-        try { return j->template get<T>(); } catch (...) { return std::nullopt; }
+        if (!j) return axonvex::nullopt;
+        try { return j.value().template get<T>(); } catch (...) { return axonvex::nullopt; }
     }
 };
 

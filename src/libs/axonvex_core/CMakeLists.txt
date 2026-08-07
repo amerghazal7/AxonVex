@@ -14,9 +14,15 @@ add_library(axonvex_core SHARED
     src/processingUnit.cpp
     src/system.cpp
     src/timingController.cpp
+    src/traceReplay.cpp
 )
 
 set_target_properties(axonvex_core PROPERTIES EXPORT_NAME core)
+
+target_compile_definitions(axonvex_core
+    PUBLIC
+        $<$<PLATFORM_ID:Linux>:AXONVEX_PLATFORM_LINUX>
+)
 
 target_include_directories(axonvex_core
     PUBLIC
@@ -32,6 +38,13 @@ target_link_libraries(axonvex_core
     PRIVATE
         $<$<PLATFORM_ID:Linux>:rt>
 )
+
+# C++14 std::experimental::filesystem
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_libraries(axonvex_core PUBLIC stdc++fs)
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT APPLE)
+    target_link_libraries(axonvex_core PUBLIC stdc++fs)
+endif()
 
 install(TARGETS axonvex_core
         EXPORT axonvexTargets

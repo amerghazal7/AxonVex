@@ -17,9 +17,9 @@
 #include "ports.hpp"
 
 #include <atomic>
+#include <axonvex_core/detail/filesystem_compat.hpp>
 #include <axonvex_core/precisionTimer.hpp>
 #include <chrono>
-#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
@@ -63,11 +63,13 @@ class ProcessingUnit {
     explicit ProcessingUnit(const std::string& name);
     virtual ~ProcessingUnit();
 
-    // Non-copyable, movable
+    // Non-copyable, non-movable: the unit owns two mutexes (moves would be
+    // defined-as-deleted anyway) and ports/system hold stable raw pointers
+    // to it — relocation would dangle them (C8).
     ProcessingUnit(const ProcessingUnit&) = delete;
     ProcessingUnit& operator=(const ProcessingUnit&) = delete;
-    ProcessingUnit(ProcessingUnit&&) = default;
-    ProcessingUnit& operator=(ProcessingUnit&&) = default;
+    ProcessingUnit(ProcessingUnit&&) = delete;
+    ProcessingUnit& operator=(ProcessingUnit&&) = delete;
 
     // =================================================================
     // CORE PROCESSING INTERFACE
@@ -145,40 +147,46 @@ class ProcessingUnit {
      *
      * @param idx Integer index for the port (must be unique)
      * @param name Descriptive name for the port
+     * @param threadSafe Lock data access. Fixed for the port's lifetime (C31).
      * @return Pointer to created input port
      */
     template <typename T>
-    InputPort<T>* createInputPort(int idx, const std::string& name);
+    InputPort<T>* createInputPort(int idx, const std::string& name, bool threadSafe = false);
 
     /**
      * @brief Create synchronous output port
      *
      * @param idx Integer index for the port (must be unique)
      * @param name Descriptive name for the port
+     * @param threadSafe Lock data access. Fixed for the port's lifetime (C31).
      * @return Pointer to created output port
      */
     template <typename T>
-    OutputPort<T>* createOutputPort(int idx, const std::string& name);
+    OutputPort<T>* createOutputPort(int idx, const std::string& name, bool threadSafe = false);
 
     /**
      * @brief Create asynchronous input port
      *
      * @param idx Integer index for the port (must be unique)
      * @param name Descriptive name for the port
+     * @param threadSafe Lock data access. Fixed for the port's lifetime (C31).
      * @return Pointer to created async input port
      */
     template <typename T>
-    AsyncInputPort<T>* createAsyncInputPort(int idx, const std::string& name);
+    AsyncInputPort<T>* createAsyncInputPort(int idx, const std::string& name,
+                                            bool threadSafe = false);
 
     /**
      * @brief Create asynchronous output port
      *
      * @param idx Integer index for the port (must be unique)
      * @param name Descriptive name for the port
+     * @param threadSafe Lock data access. Fixed for the port's lifetime (C31).
      * @return Pointer to created async output port
      */
     template <typename T>
-    AsyncOutputPort<T>* createAsyncOutputPort(int idx, const std::string& name);
+    AsyncOutputPort<T>* createAsyncOutputPort(int idx, const std::string& name,
+                                              bool threadSafe = false);
 
     /**
      * @brief Get synchronous input port by index
@@ -331,14 +339,14 @@ class ProcessingUnit {
     /**
      * @brief Get relative URL
      */
-    std::filesystem::path getRelativeURL() const {
+    axonvex_fs::path getRelativeURL() const {
         return relativeURL_;
     }
 
     /**
      * @brief Get absolute URL
      */
-    std::filesystem::path getAbsoluteURL() const {
+    axonvex_fs::path getAbsoluteURL() const {
         return absoluteURL_;
     }
 
@@ -402,11 +410,6 @@ class ProcessingUnit {
      * @brief Reset all ports
      */
     void resetPorts();
-
-    /**
-     * @brief Set thread safety for all ports
-     */
-    void setPortsThreadSafe(bool threadSafe);
 
     // =================================================================
     // IDENTIFICATION AND DESCRIPTION
@@ -552,8 +555,8 @@ class ProcessingUnit {
     std::chrono::microseconds samplingPeriod_{std::chrono::milliseconds(10)};
 
     // Hierarchical addressing
-    std::filesystem::path relativeURL_;
-    std::filesystem::path absoluteURL_;
+    axonvex_fs::path relativeURL_;
+    axonvex_fs::path absoluteURL_;
     ProcessingUnit* parentBlock_{nullptr};
     bool hasURLBeenSet_{false};
 
@@ -585,7 +588,7 @@ class ProcessingUnit {
 // Template implementations
 
 template <typename T>
-InputPort<T>* ProcessingUnit::createInputPort(int idx, const std::string& name) {
+InputPort<T>* ProcessingUnit::createInputPort(int idx, const std::string& name, bool threadSafe) {
     std::lock_guard<std::mutex> lock(portsMutex_);
 
     // Check if port with this index already exists
@@ -595,7 +598,7 @@ InputPort<T>* ProcessingUnit::createInputPort(int idx, const std::string& name) 
     }
 
     // Create the port
-    auto port = std::make_unique<InputPort<T>>(idx, name, this);
+    auto port = std::make_unique<InputPort<T>>(idx, name, this, threadSafe);
     auto* portPtr = port.get();
 
     // Store in maps
@@ -614,7 +617,7 @@ InputPort<T>* ProcessingUnit::createInputPort(int idx, const std::string& name) 
 }
 
 template <typename T>
-OutputPort<T>* ProcessingUnit::createOutputPort(int idx, const std::string& name) {
+OutputPort<T>* ProcessingUnit::createOutputPort(int idx, const std::string& name, bool threadSafe) {
     std::lock_guard<std::mutex> lock(portsMutex_);
 
     if (outputPorts_.find(idx) != outputPorts_.end()) {
@@ -622,7 +625,7 @@ OutputPort<T>* ProcessingUnit::createOutputPort(int idx, const std::string& name
                                  " already exists");
     }
 
-    auto port = std::make_unique<OutputPort<T>>(idx, name, this);
+    auto port = std::make_unique<OutputPort<T>>(idx, name, this, threadSafe);
     auto* portPtr = port.get();
 
     outputPorts_[idx] = portPtr;
@@ -637,7 +640,8 @@ OutputPort<T>* ProcessingUnit::createOutputPort(int idx, const std::string& name
 }
 
 template <typename T>
-AsyncInputPort<T>* ProcessingUnit::createAsyncInputPort(int idx, const std::string& name) {
+AsyncInputPort<T>* ProcessingUnit::createAsyncInputPort(int idx, const std::string& name,
+                                                        bool threadSafe) {
     std::lock_guard<std::mutex> lock(portsMutex_);
 
     if (asyncInputPorts_.find(idx) != asyncInputPorts_.end()) {
@@ -645,7 +649,7 @@ AsyncInputPort<T>* ProcessingUnit::createAsyncInputPort(int idx, const std::stri
                                  " already exists");
     }
 
-    auto port = std::make_unique<AsyncInputPort<T>>(idx, name, this);
+    auto port = std::make_unique<AsyncInputPort<T>>(idx, name, this, threadSafe);
     auto* portPtr = port.get();
 
     asyncInputPorts_[idx] = portPtr;
@@ -660,7 +664,8 @@ AsyncInputPort<T>* ProcessingUnit::createAsyncInputPort(int idx, const std::stri
 }
 
 template <typename T>
-AsyncOutputPort<T>* ProcessingUnit::createAsyncOutputPort(int idx, const std::string& name) {
+AsyncOutputPort<T>* ProcessingUnit::createAsyncOutputPort(int idx, const std::string& name,
+                                                          bool threadSafe) {
     std::lock_guard<std::mutex> lock(portsMutex_);
 
     if (asyncOutputPorts_.find(idx) != asyncOutputPorts_.end()) {
@@ -668,7 +673,7 @@ AsyncOutputPort<T>* ProcessingUnit::createAsyncOutputPort(int idx, const std::st
                                  " already exists");
     }
 
-    auto port = std::make_unique<AsyncOutputPort<T>>(idx, name, this);
+    auto port = std::make_unique<AsyncOutputPort<T>>(idx, name, this, threadSafe);
     auto* portPtr = port.get();
 
     asyncOutputPorts_[idx] = portPtr;
@@ -743,9 +748,9 @@ AsyncInputPort<T>* ProcessingUnit::getAsyncInputPort() {
     std::lock_guard<std::mutex> lock(portsMutex_);
     if (asyncInputPorts_.size() == 3) { // 3 because reset and disable ports are defaults
         // Find the non-control port
-        for (auto& [idx, port] : asyncInputPorts_) {
-            if (idx != ControlPorts::RESET && idx != ControlPorts::DISABLE) {
-                return static_cast<AsyncInputPort<T>*>(port);
+        for (auto& kv : asyncInputPorts_) {
+            if (kv.first != ControlPorts::RESET && kv.first != ControlPorts::DISABLE) {
+                return static_cast<AsyncInputPort<T>*>(kv.second);
             }
         }
     }

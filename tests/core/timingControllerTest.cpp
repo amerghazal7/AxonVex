@@ -77,6 +77,37 @@ class MockProcessingUnit : public ProcessingUnit {
     }
 };
 
+// C42 regression: a task body running on the scheduler thread itself (via
+// executeTask()) that calls RealTimeScheduler::stop()/TimingController::stop()
+// used to join the scheduler thread on itself -- std::thread::join throws
+// system_error("Resource deadlock avoided"), unwinding out of the thread
+// entry lambda into std::terminate (C33/C36's exact shape; this is that
+// defect's scheduler-thread instance). stop() must defer the join instead of
+// self-joining.
+class SelfStoppingUnit : public MockProcessingUnit {
+  public:
+    SelfStoppingUnit(const std::string& name, TimingController* controller,
+                     std::shared_ptr<std::atomic<bool>> attempted,
+                     std::shared_ptr<std::atomic<bool>> finished)
+        : MockProcessingUnit(name), controller_(controller), attempted_(std::move(attempted)),
+          finished_(std::move(finished)) {}
+
+    void processSync() override {
+        if (!attempted_->exchange(true)) {
+            controller_->stop(); // must defer the join, not self-join
+            // Set only after stop() returns: the poller below must never
+            // observe "done" before the deferred-stop side effects it checks
+            // for (isRunning() == false) are actually in place.
+            finished_->store(true);
+        }
+    }
+
+  private:
+    TimingController* controller_;
+    std::shared_ptr<std::atomic<bool>> attempted_;
+    std::shared_ptr<std::atomic<bool>> finished_;
+};
+
 class TimingControllerTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -294,6 +325,79 @@ TEST_F(TimingControllerTest, SchedulerReset) {
     EXPECT_FALSE(controller->isRunning());
 }
 
+TEST_F(TimingControllerTest, StopFromTaskBodyDefersJoinInsteadOfSelfJoining) {
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    TimingController* ctrl = controller.get();
+
+    auto selfStopper = std::make_unique<SelfStoppingUnit>("SelfStopper", ctrl, attempted, finished);
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    controller->scheduleProcessingUnit(selfStopper.get(), constraints);
+    controller->start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(finished->load());
+
+    // The self-stop must not have crashed the process to get here. It left
+    // running_ false (schedulerLoop() exits on its own) but deferred the
+    // join/handle reset; a stop() from this external thread must absorb it
+    // without hanging or throwing.
+    EXPECT_FALSE(controller->isRunning());
+    controller->stop();
+}
+
+// C42 follow-up (review finding): after a deferred self-stop, running_ is
+// false but schedulerThread_ is still joinable (see the test above). start()
+// used to assign a fresh std::thread straight over that handle with no
+// joinable check -- unique_ptr::operator= destroying a joinable std::thread
+// is std::terminate, uncatchable, no log. The exact C39 shape one layer
+// down. start() now joins the leftover handle (external-thread restart) or
+// refuses outright (restart called from the scheduler thread itself, still
+// inside the deferring call's own stack).
+TEST_F(TimingControllerTest, StartAfterDeferredSelfStopReclaimsHandleAndRunsAgain) {
+    auto attempted = std::make_shared<std::atomic<bool>>(false);
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    TimingController* ctrl = controller.get();
+
+    auto selfStopper = std::make_unique<SelfStoppingUnit>("SelfStopper", ctrl, attempted, finished);
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+    controller->scheduleProcessingUnit(selfStopper.get(), constraints);
+    controller->scheduleProcessingUnit(unit2.get(), constraints);
+    controller->start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!finished->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(finished->load());
+    EXPECT_FALSE(controller->isRunning());
+
+    // Restart from this external (test) thread while schedulerThread_ is
+    // still the joinable handle the deferred self-stop left behind.
+    // Pre-fix: std::terminate here, uncaught, no log.
+    controller->start();
+    EXPECT_TRUE(controller->isRunning());
+
+    // The scheduler must actually be running again, not just report it.
+    uint32_t countAfterRestart = unit2->getProcessCallCount();
+    auto pollDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (unit2->getProcessCallCount() <= countAfterRestart &&
+           std::chrono::steady_clock::now() < pollDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_GT(unit2->getProcessCallCount(), countAfterRestart)
+        << "scheduler must actually execute tasks again after the restart";
+
+    controller->stop();
+}
+
 // Scheduling Policy Tests
 TEST_F(TimingControllerTest, PriorityBasedScheduling) {
     controller->setSchedulingPolicy(SchedulingPolicy::PRIORITY_BASED);
@@ -379,6 +483,66 @@ TEST_F(TimingControllerTest, RoundRobinScheduling) {
     uint32_t maxCount = std::max({count1, count2, count3});
     uint32_t minCount = std::min({count1, count2, count3});
     EXPECT_LE(maxCount - minCount, maxCount / 2); // Within 50% of each other
+}
+
+// Regression test for C1: the scheduler must execute ALL ready tasks each cycle,
+// not one. With tick == period, three same-priority tasks are all ready every
+// cycle; one-task-per-cycle caps total throughput at ~1/3 of the required rate.
+TEST_F(TimingControllerTest, AllReadyTasksExecutePerCycle) {
+    controller->setTimerResolution(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(10)));
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(10);
+    constraints.priority = SchedulerPriority::NORMAL;
+
+    controller->scheduleProcessingUnit(unit1.get(), constraints);
+    controller->scheduleProcessingUnit(unit2.get(), constraints);
+    controller->scheduleProcessingUnit(unit3.get(), constraints);
+
+    controller->start();
+
+    // Poll until every unit reaches the threshold (or 3s timeout). With tick ==
+    // period == 10ms all three should get there in ~350ms; one-task-per-cycle
+    // starves at least one unit forever, so the timeout is the failure path.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while ((unit1->getProcessCallCount() < 35u || unit2->getProcessCallCount() < 35u ||
+            unit3->getProcessCallCount() < 35u) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    controller->stop();
+
+    EXPECT_GE(unit1->getProcessCallCount(), 35u);
+    EXPECT_GE(unit2->getProcessCallCount(), 35u);
+    EXPECT_GE(unit3->getProcessCallCount(), 35u);
+}
+
+// Regression test for C1: removing a task while it executes must not destroy
+// the task out from under the scheduler (use-after-free guarded by ASan runs).
+TEST_F(TimingControllerTest, RemoveTaskDuringExecutionIsSafe) {
+    controller->setTimerResolution(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(1)));
+    unit1->setProcessingDelay(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(50)));
+
+    TimingConstraints constraints;
+    constraints.period = std::chrono::milliseconds(5);
+
+    uint32_t taskId = controller->scheduleProcessingUnit(unit1.get(), constraints);
+    EXPECT_GT(taskId, 0u);
+    controller->start();
+
+    // Poll until the unit has started executing at least once
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (unit1->getProcessCallCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_GT(unit1->getProcessCallCount(), 0u);
+
+    // Remove while (likely) mid-execution: must not crash or corrupt the pool
+    EXPECT_TRUE(controller->removeProcessingUnit(taskId));
+    controller->stop();
 }
 
 TEST_F(TimingControllerTest, CustomScheduling) {

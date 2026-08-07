@@ -1,5 +1,7 @@
 name: AxonVex CI/CD Pipeline
 
+# C++ standard is set in CMakeLists.txt (currently C++14). Builds pick it up via the Conan toolchain.
+
 on:
   push:
     branches: [ main, develop ]
@@ -100,6 +102,75 @@ jobs:
         echo "=== Testing Path Example ==="
         ./path_example.exe
 
+  sanitizers:
+    name: Sanitizer (${{ matrix.sanitizer }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread, undefined]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    - name: Install Conan
+      run: |
+        pip install conan
+        conan profile detect --force
+
+    - name: Cache Conan packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.conan2
+        key: ${{ runner.os }}-conan-${{ hashFiles('**/conanfile.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-conan-
+
+    # Tests only: examples and plugins add build time without adding sanitizer
+    # coverage, since every code path they touch is exercised by the suite.
+    - name: Configure
+      run: |
+        mkdir -p build-san
+        cd build-san
+        conan install .. --output-folder=. --build=missing --settings=build_type=Debug
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
+                 -DCMAKE_BUILD_TYPE=Debug \
+                 -DBUILD_TESTING=ON -DBUILD_EXAMPLES=OFF -DBUILD_PLUGINS=OFF \
+                 -DAXONVEX_SANITIZER=${{ matrix.sanitizer }}
+
+    - name: Build
+      run: cmake --build build-san --parallel
+
+    # Quarantined below — keep this list honest, every entry needs a reason:
+    #   *PerformanceTest, PerformanceBenchmarkTest, HighLoadPerformance,
+    #   SchedulerPauseAndResume
+    #       throughput/latency asserts that cannot hold under a sanitizer's
+    #       slowdown (MemoryPoolTest.PerformanceTest asserts >10M ops/s).
+    #   core_tests   runs the whole binary as one test, so it re-includes
+    #                every quarantined case above.
+    # No known races remain quarantined: every entry here is a timing assert.
+    # Anything else failing here is a real finding: fix it, do not extend this.
+    - name: Run tests
+      env:
+        UBSAN_OPTIONS: print_stacktrace=1
+        ASAN_OPTIONS: detect_leaks=1
+      run: |
+        EXCLUDE='(PerformanceTest|PerformanceBenchmarkTest|HighLoadPerformance|SchedulerPauseAndResume|^core_tests$)'
+        echo "::notice::Quarantined from the ${{ matrix.sanitizer }} gate: $EXCLUDE"
+        # TSan aborts during test discovery on kernels with high mmap_rnd_bits
+        # (6.6+) unless ASLR is disabled for the process tree.
+        if [ "${{ matrix.sanitizer }}" = "thread" ]; then
+          setarch "$(uname -m)" -R ctest --test-dir build-san --output-on-failure -E "$EXCLUDE"
+        else
+          ctest --test-dir build-san --output-on-failure -E "$EXCLUDE"
+        fi
+
   code-quality:
     name: Code Quality Checks
     runs-on: ubuntu-latest
@@ -115,7 +186,7 @@ jobs:
 
     - name: Check code formatting
       run: |
-        find include src tests examples -name "*.hpp" -o -name "*.cpp" | xargs clang-format --dry-run --Werror
+        find src tests examples -name "*.hpp" -o -name "*.cpp" | xargs clang-format --dry-run --Werror
 
     - name: Setup Python for Conan
       uses: actions/setup-python@v4
@@ -137,7 +208,7 @@ jobs:
     - name: Run clang-tidy
       run: |
         cd build
-        find ../src ../include -name "*.cpp" -o -name "*.hpp" | xargs clang-tidy -p .
+        find ../src -name "*.cpp" -o -name "*.hpp" | xargs clang-tidy -p .
 
   documentation:
     name: Documentation Check
@@ -152,8 +223,10 @@ jobs:
         echo "Checking for required documentation files..."
         test -f README.md && echo "✓ README.md exists"
         test -f LICENSE && echo "✓ LICENSE exists"
-        test -f AxonVex_Technical_Specification.md && echo "✓ Technical specification exists"
-        test -f AxonVex_Implementation_Plan.md && echo "✓ Implementation plan exists"
+        test -f docs/software_requirements_specification.md && echo "✓ SRS exists"
+        test -f docs/architecture_and_design.md && echo "✓ Architecture doc exists"
+        test -f docs/implementation_plan.md && echo "✓ Implementation plan exists"
+        test -f docs/project_backlog.md && echo "✓ Project backlog exists"
         echo "Documentation check completed"
 
   performance-benchmark:

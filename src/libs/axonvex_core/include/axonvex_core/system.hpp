@@ -14,15 +14,19 @@
 
 #pragma once
 
+namespace axonvex::adapters {
+class AdapterInterface;
+}
+
 #include <atomic>
 #include <axonvex_core/configuration.hpp>
 #include <axonvex_core/logger.hpp>
-#include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <axonvex_core/path.hpp>
 #include <axonvex_core/precisionTimer.hpp>
 #include <axonvex_core/processingUnit.hpp>
-#include <axonvex_core/utils/containers/threadSafeQueue.hpp>
 #include <axonvex_core/timingController.hpp>
+#include <axonvex_core/utils/containers/memoryPool.hpp>
+#include <axonvex_core/utils/containers/threadSafeQueue.hpp>
 #include <chrono>
 #include <functional>
 #include <future>
@@ -38,6 +42,8 @@ namespace axonvex::core {
 // Bring utils containers into core namespace for convenience
 using axonvex::utils::containers::MemoryPool;
 using axonvex::utils::containers::ThreadSafeQueue;
+
+class SafetyHook; // core-owned safety hook interface (safetyHook.hpp)
 
 /**
  * @brief System state enumeration
@@ -211,7 +217,6 @@ class AxonVexSystem {
   public:
     using EventCallback = std::function<void(const SystemEvent&)>;
     using HealthCheckCallback = std::function<SystemHealth()>;
-    using RecoveryCallback = std::function<bool(const std::string&)>;
 
     /**
      * @brief Constructor with optional configuration
@@ -220,6 +225,24 @@ class AxonVexSystem {
 
     /**
      * @brief Destructor - ensures clean shutdown
+     *
+     * @warning Never let this object be destroyed from a system worker
+     * thread — event-processing, monitoring, or the scheduler thread
+     * (anywhere isOnWorkerThread() would return true). initialize(),
+     * stop(), and reset() can refuse a worker-thread call because they are
+     * ordinary member functions with a return value to refuse through; a
+     * destructor has no such escape. If the last owning reference (a
+     * unique_ptr going out of scope, the last shared_ptr dropped, a stack
+     * object unwinding) is released from inside a worker-thread callback —
+     * a ProcessingUnit task, an event callback, a health-check callback —
+     * ~AxonVexSystem runs ON that worker thread and reaches
+     * joinAndClearThreadHandle()'s join on itself: undefined behavior (the
+     * same self-join shape guarded everywhere else in this class with a
+     * refusal or a deferred join — C33/C36/C40/C42 — none of which a
+     * destructor can use). Keep the owning AxonVexSystem alive for its
+     * entire lifetime on a thread outside the system's own workers; call
+     * emergencyShutdown() from a callback if the system must stop itself,
+     * and destroy the object afterward from an external thread.
      */
     ~AxonVexSystem();
 
@@ -238,16 +261,21 @@ class AxonVexSystem {
      *
      * @param configPath Path to configuration file (optional)
      * @return true if initialization successful
+     *
+     * @note C41: refused (returns false, logs an error) when called from the
+     * event-processing or monitoring thread. That teardown/replace of
+     * logger_/eventPool_/eventQueue_/timingController_ would run out from
+     * under the calling worker's own live stack. Use emergencyShutdown()
+     * for in-callback shutdown; reinitialize from outside the worker
+     * threads afterward.
+     *
+     * @note C42 (fixed): the scheduler thread is covered too. A
+     * ProcessingUnit task body (or any callback RealTimeScheduler invokes
+     * on its own worker thread, e.g. the error callback) is detected by
+     * isOnWorkerThread() via TimingController::isOnSchedulerThread() and
+     * refused exactly like the event/monitoring threads.
      */
     bool initialize(const std::string& configPath = "");
-
-    /**
-     * @brief Initialize from existing configuration object
-     *
-     * @param config Configuration object
-     * @return true if initialization successful
-     */
-    bool initialize(const Configuration& config);
 
   protected:
     /**
@@ -265,6 +293,14 @@ class AxonVexSystem {
      * @return true if block layout initialization successful, false otherwise
      */
     virtual bool initializeBlocksLayout() = 0;
+
+    /**
+     * @brief Retrieve a previously registered adapter by URI
+     *
+     * Available inside initializeBlocksLayout(). Cast to the concrete
+     * adapter type to access typed unit creation methods.
+     */
+    axonvex::adapters::AdapterInterface* getAdapter(const std::string& uri) const;
 
   public:
     /**
@@ -292,7 +328,18 @@ class AxonVexSystem {
      * @brief Stop the system gracefully
      *
      * @param timeoutMs Maximum time to wait for graceful shutdown
-     * @return true if stop successful
+     * @return true if stop successful; false if it fails, or if called from
+     * a system worker thread (event-processing or monitoring) — stop() joins
+     * those threads and destroys components, so a worker calling it would
+     * join/destroy itself (C40). A refused call leaves currentState_
+     * untouched. Use emergencyShutdown() from an event/health callback
+     * instead.
+     *
+     * @note C42 (fixed): the scheduler thread is covered too. A
+     * ProcessingUnit task body (or any callback RealTimeScheduler invokes
+     * on its own worker thread, e.g. the error callback) is detected by
+     * isOnWorkerThread() via TimingController::isOnSchedulerThread() and
+     * refused exactly like the event/monitoring threads.
      */
     bool stop(std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(5000));
 
@@ -303,6 +350,31 @@ class AxonVexSystem {
 
     /**
      * @brief Reset the system to uninitialized state
+     *
+     * @note Refuses and returns immediately, without touching any state, if
+     * called from a system worker thread (event-processing or monitoring) —
+     * reset() destroys timingController_/configuration_/logger_, which a
+     * worker's own call stack may still be using (C40). Use
+     * emergencyShutdown() from an event/health callback instead.
+     *
+     * @note C42 (fixed): the scheduler thread is covered too. A
+     * ProcessingUnit task body (or any callback RealTimeScheduler invokes
+     * on its own worker thread, e.g. the error callback) is detected by
+     * isOnWorkerThread() via TimingController::isOnSchedulerThread() and
+     * refused exactly like the event/monitoring threads.
+     *
+     * @note Not safe against concurrent lifecycle calls otherwise. reset()
+     * forces an emergencyShutdown() (which unconditionally reaches
+     * FATAL_ERROR), waits for any in-flight teardown to finish (blocks on the
+     * same mutex emergencyShutdown()/the destructor use), and then
+     * transitions FATAL_ERROR -> UNINITIALIZED. If another thread's
+     * initialize()/start()/reset() moves currentState_ away from FATAL_ERROR
+     * during that window, the UNINITIALIZED transition is rejected (logged as
+     * a warning) and reset() proceeds to tear down containers,
+     * timingController_, configuration_, and logger_ regardless — getState()
+     * can then transiently report a state (e.g. INITIALIZING) that no longer
+     * has a live system behind it. Callers must serialize reset() with other
+     * lifecycle calls externally; reset() does not do it for them.
      */
     void reset();
 
@@ -386,6 +458,42 @@ class AxonVexSystem {
     size_t getProcessingUnitCount() const noexcept;
 
     // =================================================================
+    // ADAPTER INJECTION
+    // =================================================================
+
+    /**
+     * @brief Register an adapter with the system under a URI key
+     *
+     * Call before initialize(). The system does NOT own the adapter —
+     * the caller manages its lifetime. Retrieve inside
+     * initializeBlocksLayout() via getAdapter().
+     */
+    void addAdapter(axonvex::adapters::AdapterInterface* adapter, const std::string& uri);
+
+    // =================================================================
+    // SAFETY HOOK INJECTION
+    // =================================================================
+
+    /**
+     * @brief Register a core-owned SafetyHook with the system (C2)
+     *
+     * The system registers an emergency callback on the hook: when the hook's
+     * emergency stop engages, the system performs an emergency shutdown.
+     * Call before initialize(). The system does NOT own the hook — the caller
+     * manages its lifetime. The hook must outlive the system OR be cleared
+     * (setSafetyHook(nullptr)) before the hook is destroyed; the system's
+     * destructor clears its registration on the hook automatically. Passing
+     * nullptr clears the registration.
+     */
+    void setSafetyHook(SafetyHook* hook);
+
+    /**
+     * @brief Retrieve the previously registered SafetyHook
+     *
+     * @return Pointer to the SafetyHook or nullptr if none registered
+     */
+    SafetyHook* getSafetyHook() const;
+    // =================================================================
     // CONFIGURATION MANAGEMENT
     // =================================================================
 
@@ -416,14 +524,6 @@ class AxonVexSystem {
      */
     bool loadConfiguration(const Path& filePath);
 
-    /**
-     * @brief Save configuration to file
-     *
-     * @param filePath Configuration file path (optional)
-     * @return true if successful
-     */
-    bool saveConfiguration(const Path& filePath = Path{}) const;
-
     // =================================================================
     // EVENT AND CALLBACK MANAGEMENT
     // =================================================================
@@ -451,14 +551,6 @@ class AxonVexSystem {
      */
     uint32_t registerHealthCheckCallback(HealthCheckCallback callback);
 
-    /**
-     * @brief Register recovery callback
-     *
-     * @param callback Recovery callback
-     * @return Callback ID
-     */
-    uint32_t registerRecoveryCallback(RecoveryCallback callback);
-
     // =================================================================
     // RESOURCE MANAGEMENT
     // =================================================================
@@ -472,11 +564,6 @@ class AxonVexSystem {
      * @brief Get peak memory usage in bytes
      */
     size_t getPeakMemoryUsage() const noexcept;
-
-    /**
-     * @brief Trigger garbage collection
-     */
-    void collectGarbage();
 
     /**
      * @brief Get resource utilization report
@@ -507,11 +594,6 @@ class AxonVexSystem {
      * @brief Get comprehensive system report
      */
     std::string getSystemReport() const;
-
-    /**
-     * @brief Export system diagnostics to file
-     */
-    bool exportDiagnostics(const Path& filePath) const;
 
     // =================================================================
     // SYSTEM PORT MANAGEMENT
@@ -659,33 +741,100 @@ class AxonVexSystem {
     std::unordered_map<ProcessingUnit*, uint32_t> unitToIdMap_;
     std::atomic<uint32_t> nextUnitId_{1};
 
+    // Adapter injection
+    std::unordered_map<std::string, axonvex::adapters::AdapterInterface*> adapters_;
+
+    // Safety manager injection
+    SafetyHook* safetyHook_{nullptr};
+
     // System port management
     mutable std::mutex systemPortsMutex_;
     std::unordered_map<std::string, BasePort*> systemInputPorts_;
     std::unordered_map<std::string, BasePort*> systemOutputPorts_;
+
+    /**
+     * C9: acquires this system's and the target's systemPortsMutex_ without a
+     * lock-order deadlock (std::lock), and locks only once when target == this
+     * (locking a non-recursive mutex twice is UB). Second lock is empty in the
+     * self case.
+     */
+    std::pair<std::unique_lock<std::mutex>, std::unique_lock<std::mutex>> lockSystemPortsWith(
+        AxonVexSystem* targetSystem) {
+        std::unique_lock<std::mutex> lock1(systemPortsMutex_, std::defer_lock);
+        std::unique_lock<std::mutex> lock2;
+        if (targetSystem == this) {
+            lock1.lock();
+        } else {
+            lock2 = std::unique_lock<std::mutex>(targetSystem->systemPortsMutex_, std::defer_lock);
+            std::lock(lock1, lock2);
+        }
+        return std::make_pair(std::move(lock1), std::move(lock2));
+    }
 
     // Statistics and monitoring
     mutable SystemStatistics statistics_;
     mutable std::mutex statisticsMutex_;
     std::unique_ptr<std::thread> monitoringThread_;
     std::atomic<bool> monitoringEnabled_{false};
+    // C41: published by monitoringLoop() itself as its first act, cleared as
+    // its last (every exit path) — never read from the thread handle. Lets
+    // isOnWorkerThread() answer "am I this worker?" without touching
+    // monitoringThread_ (which lifecycle calls are busy tearing down).
+    std::atomic<std::thread::id> monitoringThreadId_{};
 
     // Event system
     std::unique_ptr<ThreadSafeQueue<SystemEvent*>> eventQueue_;
     std::unique_ptr<MemoryPool<SystemEvent>> eventPool_;
     std::unique_ptr<std::thread> eventProcessingThread_;
     std::atomic<bool> eventProcessingRunning_{false};
+    // C41: same discipline as monitoringThreadId_, for eventProcessingLoop().
+    std::atomic<std::thread::id> eventThreadId_{};
     std::vector<EventCallback> eventCallbacks_;
     std::vector<HealthCheckCallback> healthCheckCallbacks_;
-    std::vector<RecoveryCallback> recoveryCallbacks_;
     mutable std::mutex callbacksMutex_;
     std::atomic<uint32_t> nextCallbackId_{1};
 
     // Health and recovery
-    mutable SystemHealth lastHealth_;
     std::atomic<bool> debugMode_{false};
     std::atomic<uint32_t> currentRecoveryAttempts_{0};
     std::atomic<bool> isShuttingDown_{false}; // New flag for graceful shutdown
+    // Serializes thread-handle teardown between stop() and emergencyShutdown(),
+    // which can now fire from any thread via the SafetyHook (C2)
+    std::mutex shutdownMutex_;
+
+    // Returns undispatched queued events to the pool after the event thread
+    // has been joined (C25 leak fix)
+    void drainEventQueue() noexcept;
+
+    /**
+     * C39: joins and clears a worker-thread handle if it is joinable.
+     * Called before every assignment over a thread-handle member: assigning
+     * over a joinable std::thread is std::terminate. The reachable
+     * stale-handle producers are a throw between thread-start and
+     * INITIALIZED (catch path leaves threads running, ERROR permits retry)
+     * and emergencyShutdown's deferred self-join.
+     *
+     * C41 tightened contract: callers must not run on the thread `handle`
+     * names. This used to have a self-join guard (detach instead of join
+     * when called from the named thread itself), reachable because
+     * initialize() could be invoked from a callback running on one of our
+     * own worker threads. initialize() now refuses on a worker thread
+     * (isOnWorkerThread()) before it ever reaches this helper, so that case
+     * cannot occur here anymore — the guard was removed rather than kept as
+     * unreachable defense-in-depth for a path that no longer exists.
+     */
+    void joinAndClearThreadHandle(std::unique_ptr<std::thread>& handle);
+
+    /**
+     * C41/C42: true iff called from eventProcessingThread_,
+     * monitoringThread_, or RealTimeScheduler's own scheduler thread (via
+     * timingController_->isOnSchedulerThread()) — the ids/atomics each loop
+     * publishes on entry and clears on exit. Lifecycle calls that tear down
+     * or replace components those threads' own stacks are using
+     * (initialize(), stop(), reset()) must refuse rather than run on a
+     * worker thread.
+     */
+    bool isOnWorkerThread() const noexcept;
 
     // =================================================================
     // INTERNAL METHODS
@@ -753,8 +902,7 @@ bool AxonVexSystem::connectToSystem(const std::string& outputPortName, AxonVexSy
         return false;
     }
 
-    std::lock_guard<std::mutex> lock1(systemPortsMutex_);
-    std::lock_guard<std::mutex> lock2(targetSystem->systemPortsMutex_);
+    auto portLocks = lockSystemPortsWith(targetSystem);
 
     // Find source output port
     auto outputIt = systemOutputPorts_.find(outputPortName);
@@ -813,8 +961,7 @@ bool AxonVexSystem::disconnectFromSystem(const std::string& outputPortName,
         return false;
     }
 
-    std::lock_guard<std::mutex> lock1(systemPortsMutex_);
-    std::lock_guard<std::mutex> lock2(targetSystem->systemPortsMutex_);
+    auto portLocks = lockSystemPortsWith(targetSystem);
 
     // Find source output port
     auto outputIt = systemOutputPorts_.find(outputPortName);

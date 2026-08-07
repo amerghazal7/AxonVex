@@ -1,8 +1,8 @@
-#include <gtest/gtest.h>
+#include <axonvex_core/detail/filesystem_compat.hpp>
 #include <axonvex_io/files/fileManager.hpp>
-#include <filesystem>
+#include <gtest/gtest.h>
 
-namespace fs = std::filesystem;
+namespace fs = axonvex_fs;
 using axonvex::io::files::FileManager;
 
 TEST(FileManagerTest, BasicReadWrite) {

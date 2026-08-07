@@ -62,8 +62,8 @@ TEST_F(MemoryPoolTest, Construction) {
     EXPECT_EQ(pool.getCapacity(), 1024); // Default capacity
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 1024);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
     EXPECT_DOUBLE_EQ(pool.getUtilization(), 0.0);
 }
 
@@ -73,8 +73,8 @@ TEST_F(MemoryPoolTest, CustomCapacityConstruction) {
     EXPECT_EQ(pool.getCapacity(), 512);
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 512);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
 
     // Test power-of-2 rounding
     MemoryPool<int> pool2(500);
@@ -102,8 +102,10 @@ TEST_F(MemoryPoolTest, BasicAllocationDeallocation) {
     EXPECT_TRUE(pool.deallocate(ptr));
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 64);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    // C4 fix: an unused/cleared pool is empty, not full (these assertions previously encoded the
+    // swapped semantics)
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
     EXPECT_DOUBLE_EQ(pool.getUtilization(), 0.0);
 }
 
@@ -155,8 +157,8 @@ TEST_F(MemoryPoolTest, PoolExhaustion) {
 
     EXPECT_EQ(pool.getUsage(), 16);
     EXPECT_EQ(pool.getAvailable(), 0);
-    EXPECT_FALSE(pool.isFull());
-    EXPECT_TRUE(pool.isEmpty());
+    EXPECT_TRUE(pool.isFull());
+    EXPECT_FALSE(pool.isEmpty());
     EXPECT_DOUBLE_EQ(pool.getUtilization(), 1.0);
 
     // Try to allocate more (should fail)
@@ -176,8 +178,8 @@ TEST_F(MemoryPoolTest, PoolExhaustion) {
 
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 16);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
 }
 
 // Test invalid pointer deallocation
@@ -328,8 +330,10 @@ TEST_F(MemoryPoolTest, ClearOperation) {
 
     EXPECT_EQ(pool.getUsage(), 0);
     EXPECT_EQ(pool.getAvailable(), 64);
-    EXPECT_TRUE(pool.isFull());
-    EXPECT_FALSE(pool.isEmpty());
+    // C4 fix: an unused/cleared pool is empty, not full (these assertions previously encoded the
+    // swapped semantics)
+    EXPECT_FALSE(pool.isFull());
+    EXPECT_TRUE(pool.isEmpty());
     EXPECT_DOUBLE_EQ(pool.getUtilization(), 0.0);
 }
 
@@ -546,4 +550,73 @@ TEST_F(MemoryPoolTest, ErrorHandling) {
     // Check error statistics
     const auto& stats = pool.getStatistics();
     EXPECT_EQ(stats.getDeallocationFailures(), 6); // 5 null + 1 double deallocation
+}
+
+// Regression test for defect C4: isEmpty()/isFull() bodies were swapped.
+TEST_F(MemoryPoolTest, EmptyFullPredicates) {
+    MemoryPool<int> pool(4);
+    EXPECT_TRUE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
+
+    std::vector<int*> ptrs;
+    for (size_t i = 0; i < pool.getCapacity(); ++i) {
+        int* p = pool.allocate();
+        ASSERT_NE(p, nullptr);
+        ptrs.push_back(p);
+    }
+    EXPECT_FALSE(pool.isEmpty());
+    EXPECT_TRUE(pool.isFull());
+
+    for (int* p : ptrs) {
+        pool.deallocate(p);
+    }
+    EXPECT_TRUE(pool.isEmpty());
+    EXPECT_FALSE(pool.isFull());
+}
+
+// Regression test for C3 (ABA): concurrent allocate/deallocate on a small pool
+// must never hand the same block to two owners. Each owner stamps its slot and
+// re-checks the stamp; a double-handout overwrites another owner's stamp.
+TEST_F(MemoryPoolTest, ConcurrentAllocateDeallocateNoDoubleHandout) {
+    MemoryPool<uint64_t> pool(16); // MIN_POOL_SIZE: small pool maximizes head churn
+    constexpr int kThreads = 8;
+    constexpr int kItersPerThread = 200000;
+
+    std::atomic<uint64_t> corruptions{0};
+    std::atomic<bool> start{false};
+    std::vector<std::thread> workers;
+
+    for (int t = 0; t < kThreads; ++t) {
+        workers.emplace_back([&pool, &corruptions, &start, t]() {
+            while (!start.load()) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < kItersPerThread; ++i) {
+                uint64_t* slot = pool.allocate();
+                if (slot == nullptr) {
+                    continue; // pool exhausted this instant — fine
+                }
+                const uint64_t stamp =
+                    (static_cast<uint64_t>(t + 1) << 32) | static_cast<uint32_t>(i);
+                *slot = stamp;
+                // Small window for a racing double-owner to overwrite the stamp
+                for (int spin = 0; spin < 8; ++spin) {
+                    std::this_thread::yield();
+                }
+                if (*slot != stamp) {
+                    corruptions.fetch_add(1);
+                }
+                pool.deallocate(slot);
+            }
+        });
+    }
+
+    start.store(true);
+    for (auto& w : workers) {
+        w.join();
+    }
+
+    EXPECT_EQ(corruptions.load(), 0u) << "MemoryPool handed the same block to two owners (C3 ABA)";
+    EXPECT_TRUE(pool.validate());
+    EXPECT_TRUE(pool.isEmpty());
 }

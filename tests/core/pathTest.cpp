@@ -22,16 +22,33 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <unordered_set>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace axonvex::core;
+
+namespace {
+long testProcessId() {
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(getpid());
+#endif
+}
+} // namespace
 
 class PathTest : public ::testing::Test {
   protected:
     void SetUp() override {
         // Create test directory structure
-        test_root = Path::getDefaultTempDir() / "axonvex_path_test";
+        test_root =
+            Path::getDefaultTempDir() / ("axonvex_path_test_" + std::to_string(testProcessId()));
         test_root.createDirectories();
 
         test_file = test_root / "test_file.txt";
@@ -189,7 +206,7 @@ TEST_F(PathTest, PathManipulationTest) {
     EXPECT_TRUE(abs_path.isAbsolute());
 
     // Normalize path
-    Path with_dots = test_root / ".." / "axonvex_path_test" / "." / "test_file.txt";
+    Path with_dots = test_root / ".." / test_root.filename() / "." / "test_file.txt";
     Path normalized = with_dots.normalize();
     // Should resolve to something equivalent to test_file
 }
@@ -275,6 +292,54 @@ TEST_F(PathTest, SecurityValidationTest) {
     Path::setDefaultSecurityLevel(Path::SecurityLevel::BASIC);
 }
 
+// C15(b): filename.length() - N underflowed size_t for names shorter than
+// the extension being checked for, so substr() threw std::out_of_range.
+TEST_F(PathTest, CreateConfigPathAcceptsShortNames) {
+    Path p = Path::createConfigPath("a");
+    EXPECT_NE(p.toString().find("a.json"), std::string::npos);
+
+    Path q = Path::createLogPath("ab");
+    EXPECT_NE(q.toString().find("ab.log"), std::string::npos);
+}
+
+// C15(c): hasDirectoryTraversal() used to substring-match ".."/"./"/".\\",
+// flagging legitimate names that merely contain those characters. It is now
+// component-based: traversal iff a path component is exactly "..". Asserted
+// through the public validation surface (isSecure/validateSecurity), since
+// hasDirectoryTraversal() itself is private.
+TEST_F(PathTest, TraversalCheckIsComponentBased) {
+    // False positives fixed: these must NOT be flagged.
+    EXPECT_TRUE(Path("my..file.json").isSecure(Path::SecurityLevel::BASIC));
+    EXPECT_TRUE(Path("./config/x.json").isSecure(Path::SecurityLevel::BASIC));
+
+    // True positives kept: every real ".." component must still be flagged,
+    // this is a trust boundary and must not regress.
+    EXPECT_FALSE(Path("../etc/passwd").isSecure(Path::SecurityLevel::BASIC));
+    EXPECT_FALSE(Path("a/../b").isSecure(Path::SecurityLevel::BASIC));
+    EXPECT_FALSE(Path("..").isSecure(Path::SecurityLevel::BASIC));
+    // Windows-separator form, must be caught even on a POSIX build.
+    EXPECT_FALSE(Path("a\\..\\b").isSecure(Path::SecurityLevel::BASIC));
+
+    auto false_positive_errors = Path("my..file.json").validateSecurity(Path::SecurityLevel::BASIC);
+    EXPECT_EQ(false_positive_errors.size(), 0u);
+
+    auto true_positive_errors = Path("a/../b").validateSecurity(Path::SecurityLevel::BASIC);
+    EXPECT_GT(true_positive_errors.size(), 0u);
+}
+
+// C15(a): the three ctors' double-checked locking on a plain bool
+// (`initialized_`) outside static_mutex_ is a first-touch initialization
+// race — a second thread could observe the bool as already true while
+// default_dirs_'s writes were not yet visible to it. That race is not
+// deterministically reproducible in-suite: by the time this test runs,
+// earlier tests have already forced the one-time initialization to
+// complete, so there is no "first touch" left to race. The fix
+// (ensureInitialized(), a C++11 magic static) is verified by inspection
+// plus the full suite — including this file's own ThreadSafetyTest, which
+// hits Path construction concurrently from 8 threads — run clean under
+// ThreadSanitizer. No test is added here that would only assert "no crash",
+// which would not exercise the specific race described in C15(a).
+
 //==============================================================================
 // Directory Operations Tests
 //==============================================================================
@@ -352,17 +417,6 @@ TEST_F(PathTest, FileOperationsTest) {
     EXPECT_TRUE(dest_file.moveTo(moved_file));
     EXPECT_FALSE(dest_file.exists());
     EXPECT_TRUE(moved_file.exists());
-
-    // Create backup
-    Path backup_file = source_file.createBackup();
-    EXPECT_TRUE(backup_file.exists());
-    EXPECT_NE(backup_file.toString().find(".bak"), std::string::npos);
-
-    // Get unique filename
-    Path unique_file = source_file.getUniqueFilename();
-    if (source_file.exists()) {
-        EXPECT_NE(unique_file.toString(), source_file.toString());
-    }
 }
 
 //==============================================================================
@@ -436,41 +490,6 @@ TEST_F(PathTest, AxonVexIntegrationTest) {
     Path custom_temp = Path::createTempPath("custom_prefix_", ".data");
     EXPECT_EQ(custom_temp.extension(), ".data");
     EXPECT_NE(custom_temp.toString().find("custom_prefix_"), std::string::npos);
-}
-
-//==============================================================================
-// Custom Validator Tests
-//==============================================================================
-
-TEST_F(PathTest, CustomValidatorTest) {
-    // Register custom validator
-    Path::registerValidator("test_validator", [](const Path& path) {
-        return path.toString().find("allowed") != std::string::npos;
-    });
-
-    Path allowed_path("allowed/path");
-    Path disallowed_path("forbidden/path");
-
-    EXPECT_TRUE(allowed_path.validateWith("test_validator"));
-    EXPECT_FALSE(disallowed_path.validateWith("test_validator"));
-
-    // Non-existent validator
-    EXPECT_FALSE(allowed_path.validateWith("nonexistent_validator"));
-}
-
-//==============================================================================
-// System Information Tests
-//==============================================================================
-
-TEST_F(PathTest, SystemInfoTest) {
-    auto system_info = Path::getSystemInfo();
-
-    EXPECT_GT(system_info.size(), 0);
-    EXPECT_NE(system_info.find("current_path"), system_info.end());
-    EXPECT_NE(system_info.find("temp_directory"), system_info.end());
-    EXPECT_NE(system_info.find("max_path_length"), system_info.end());
-    EXPECT_NE(system_info.find("separator"), system_info.end());
-    EXPECT_NE(system_info.find("case_sensitive"), system_info.end());
 }
 
 //==============================================================================

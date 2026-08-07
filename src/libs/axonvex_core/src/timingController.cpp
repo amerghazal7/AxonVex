@@ -32,8 +32,26 @@ RealTimeScheduler::RealTimeScheduler(SchedulingPolicy policy) : policy_(policy) 
 }
 
 RealTimeScheduler::~RealTimeScheduler() {
-    if (running_.load()) {
-        stop();
+    // C42: unconditional — stop() no longer early-returns on running_ (see
+    // its definition below), so calling it here also reclaims a handle left
+    // behind by an earlier deferred self-stop (running_ already false while
+    // schedulerThread_ is still joinable).
+    stop();
+
+    if (schedulerThread_ && schedulerThread_->joinable()) {
+        // Only reachable when ~RealTimeScheduler itself runs on the
+        // scheduler thread: stop() above just deferred its own join for the
+        // same reason (isOnSchedulerThread() true). That happens when the
+        // owning TimingController/AxonVexSystem is destroyed from inside a
+        // ProcessingUnit task's own call stack — the same contract
+        // violation documented on ~AxonVexSystem (a destructor cannot
+        // refuse), inherited here through TimingController's owning
+        // unique_ptr. Joining would still be a self-join (C33/C36 shape,
+        // std::terminate); detaching avoids the crash, NOT the underlying
+        // use-after-free (a detached schedulerLoop can keep executing after
+        // we free the members it uses). The self-destruction scenario remains
+        // documented UB per the class @warning.
+        schedulerThread_->detach();
     }
 }
 
@@ -42,12 +60,13 @@ uint32_t RealTimeScheduler::addTask(ProcessingUnit* unit, const TimingConstraint
         return 0; // Invalid task ID
     }
 
-    std::lock_guard<std::mutex> lock(tasksMutex_);
+    std::unique_lock<std::mutex> lock(tasksMutex_);
 
     // Allocate a new task from the memory pool
     SchedulerTask* task = taskPool_->allocateObject();
     if (!task) {
-        // Handle pool exhaustion
+        // Handle pool exhaustion — user callback runs outside the lock (C18 rule)
+        lock.unlock();
         if (errorCallback_) {
             errorCallback_(nullptr, "Task pool exhausted");
         }
@@ -78,8 +97,14 @@ bool RealTimeScheduler::removeTask(uint32_t taskId) {
     if (it != tasks_.end()) {
         SchedulerTask* task = it->second;
         task->active.store(false);
-        taskPool_->deallocateObject(task); // Deallocate back to the pool
         tasks_.erase(it);
+        if (task->executing.load()) {
+            // Mid-execution on the scheduler thread: defer deallocation to the
+            // scheduler loop, which checks pendingRemoval under tasksMutex_ (C1)
+            task->pendingRemoval.store(true);
+        } else {
+            taskPool_->deallocateObject(task); // Deallocate back to the pool
+        }
         return true;
     }
     return false;
@@ -88,8 +113,14 @@ bool RealTimeScheduler::removeTask(uint32_t taskId) {
 void RealTimeScheduler::removeAllTasks() {
     std::lock_guard<std::mutex> lock(tasksMutex_);
     for (auto& pair : tasks_) {
-        pair.second->active.store(false);
-        taskPool_->deallocateObject(pair.second);
+        SchedulerTask* task = pair.second;
+        task->active.store(false);
+        if (task->executing.load()) {
+            // Same deferral as removeTask: the scheduler loop deallocates (C1)
+            task->pendingRemoval.store(true);
+        } else {
+            taskPool_->deallocateObject(task);
+        }
     }
     tasks_.clear();
 }
@@ -112,6 +143,30 @@ void RealTimeScheduler::start() {
         return; // Already running
     }
 
+    // C42 follow-up: read the published id before touching schedulerThread_
+    // at all -- same discipline as stop(). Two hazards share this guard:
+    //  1. Restart from the scheduler thread itself (a task, still inside
+    //     this very call stack, calling start() again after its own
+    //     deferred stop()): that thread has not unwound out of
+    //     schedulerLoop() yet, so starting a second thread here would run
+    //     two schedulerLoop()s over the same tasks_/schedulerThreadId_
+    //     concurrently. Refuse outright -- mirrors the system-layer
+    //     refusals (initialize()/stop()/reset() on isOnWorkerThread());
+    //     detaching the old (still-live) loop instead would recreate the
+    //     C41 hazard (its own stack racing what start() hands to a new
+    //     thread).
+    //  2. Restart from a different, external thread after another thread's
+    //     deferred self-stop left schedulerThread_ joinable (running_
+    //     already false, see stop()): assigning a new std::thread over a
+    //     still-joinable one below is std::terminate -- the C39 shape one
+    //     layer down. Join it first.
+    if (isOnSchedulerThread()) {
+        return;
+    }
+    if (schedulerThread_ && schedulerThread_->joinable()) {
+        schedulerThread_->join();
+    }
+
     running_.store(true);
     paused_.store(false);
 
@@ -127,17 +182,42 @@ void RealTimeScheduler::start() {
 }
 
 void RealTimeScheduler::stop() {
-    if (!running_.load()) {
-        return; // Not running
-    }
-
+    // C42: no early return on running_ — after a deferred self-stop below,
+    // the flag is already false while schedulerThread_ still needs
+    // reclaiming, so every step here must be individually idempotent
+    // instead of gated by one flag (SafetyManager/Watchdog C33/C36
+    // precedent).
     running_.store(false);
     schedulerCondition_.notify_all();
+
+    // C42: checked before touching schedulerThread_, and before any lock —
+    // there are none in this function, but the check must still gate the
+    // join below. A ProcessingUnit task body (or the error callback) runs
+    // ON this thread via executeTask(), so self-detection must read only
+    // the published atomic id, never the std::thread object itself (start()
+    // move-assigns it with no happens-before edge to a concurrent reader).
+    if (isOnSchedulerThread()) {
+        // Self-stop: running_ is now false, so schedulerLoop() exits on its
+        // own once this call returns and control unwinds back out through
+        // executeTask()/processSync(). Joining here would be a self-join —
+        // std::thread::join throws system_error, unwinding out of the
+        // scheduler's own thread-entry lambda, i.e. std::terminate (C33's
+        // exact shape; this is that defect's scheduler-thread instance,
+        // C42). Defer the join and the handle reset: absorbed by the next
+        // stop() call from a real external thread (the joinable() check
+        // below runs there instead), or by ~RealTimeScheduler() if stop()
+        // is never called again.
+        return;
+    }
 
     if (schedulerThread_ && schedulerThread_->joinable()) {
         schedulerThread_->join();
     }
     schedulerThread_.reset();
+}
+
+bool RealTimeScheduler::isOnSchedulerThread() const noexcept {
+    return std::this_thread::get_id() == schedulerThreadId_.load();
 }
 
 void RealTimeScheduler::pause() {
@@ -230,7 +310,40 @@ void RealTimeScheduler::setErrorCallback(ErrorCallback callback) {
     errorCallback_ = callback;
 }
 
+namespace {
+/**
+ * C42: publishes the calling thread's id into `slot` on construction and
+ * clears it (back to std::thread::id{}, the "no scheduler thread" sentinel
+ * isOnSchedulerThread() checks against) on destruction — every exit path of
+ * the loop that owns the guard, including an exception escaping the loop
+ * body, runs the clear. Copied from system.cpp's WorkerThreadIdGuard shape
+ * (C41) rather than shared across translation units: same class name is
+ * fine since both are anonymous-namespace (internal linkage), no ODR
+ * conflict. Ids are reusable once a thread exits, so a stale id left behind
+ * after the loop ends could later alias an unrelated thread; the clear is
+ * not optional cleanup, it is the correctness condition.
+ */
+class WorkerThreadIdGuard {
+  public:
+    explicit WorkerThreadIdGuard(std::atomic<std::thread::id>& slot) : slot_(slot) {
+        slot_.store(std::this_thread::get_id());
+    }
+    ~WorkerThreadIdGuard() {
+        slot_.store(std::thread::id{});
+    }
+    WorkerThreadIdGuard(const WorkerThreadIdGuard&) = delete;
+    WorkerThreadIdGuard& operator=(const WorkerThreadIdGuard&) = delete;
+
+  private:
+    std::atomic<std::thread::id>& slot_;
+};
+} // namespace
+
 void RealTimeScheduler::schedulerLoop() {
+    // C42: published first, cleared last (by the guard's destructor, on
+    // every exit path) so isOnSchedulerThread() can identify this thread.
+    WorkerThreadIdGuard idGuard(schedulerThreadId_);
+
     auto nextWakeup = std::chrono::steady_clock::now() + timerResolution_;
     cycleTimer_.start(); // Start the cycle timer
 
@@ -266,49 +379,82 @@ void RealTimeScheduler::schedulerLoop() {
         // Calculate scheduling jitter
         auto expectedCycleTime =
             std::chrono::duration_cast<std::chrono::nanoseconds>(timerResolution_);
-        auto jitter = std::chrono::abs(cycleTime - expectedCycleTime);
+        std::chrono::nanoseconds jitter = cycleTime - expectedCycleTime;
+        if (jitter < std::chrono::nanoseconds::zero()) {
+            jitter = -jitter;
+        }
         updateSchedulingJitter(std::chrono::duration_cast<std::chrono::microseconds>(jitter));
 
         nextWakeup = now + timerResolution_;
 
-        // Select next task to execute based on scheduling policy
-        uint32_t selectedTaskId = 0;
-        switch (policy_) {
-            case SchedulingPolicy::ROUND_ROBIN:
-                selectedTaskId = scheduleRoundRobin();
-                break;
-            case SchedulingPolicy::PRIORITY_BASED:
-                selectedTaskId = schedulePriorityBased();
-                break;
-            case SchedulingPolicy::EARLIEST_DEADLINE_FIRST:
-                selectedTaskId = scheduleEarliestDeadlineFirst();
-                break;
-            case SchedulingPolicy::RATE_MONOTONIC:
-                selectedTaskId = scheduleRateMonotonic();
-                break;
-            case SchedulingPolicy::CUSTOM:
-                selectedTaskId = scheduleCustom();
-                break;
-        }
-
         // Check for tasks that need reactivation
+        size_t taskCount = 0;
         {
             std::lock_guard<std::mutex> lock(tasksMutex_);
-            for (auto& [taskId, task] : tasks_) {
+            for (auto& kv : tasks_) {
+                SchedulerTask* task = kv.second;
                 if (!task->active.load() && task->consecutiveFailures > 0 &&
                     now >= task->reactivationTime) {
                     task->active.store(true);
                     task->consecutiveFailures = 0; // Reset failure count on reactivation
                 }
             }
+            taskCount = tasks_.size();
         }
 
-        // Execute selected task
-        if (selectedTaskId != 0) {
-            std::lock_guard<std::mutex> lock(tasksMutex_);
-            auto it = tasks_.find(selectedTaskId);
-            if (it != tasks_.end() && it->second->active.load()) {
-                executeTask(*it->second);
+        // Execute every ready task this cycle, not just one (C1). Each task is
+        // claimed (executing=true) under tasksMutex_ and its user code then runs
+        // WITHOUT the lock, so addTask/removeTask/getters are never blocked by
+        // user code. The hard cap of taskCount iterations guarantees termination;
+        // note an overloaded task (execution time > period) can be reselected
+        // within one cycle and consume several iterations before the cap hits.
+        for (size_t executed = 0; executed < taskCount && running_.load(); ++executed) {
+            uint32_t selectedTaskId = 0;
+            switch (policy_) {
+                case SchedulingPolicy::ROUND_ROBIN:
+                    selectedTaskId = scheduleRoundRobin();
+                    break;
+                case SchedulingPolicy::PRIORITY_BASED:
+                    selectedTaskId = schedulePriorityBased();
+                    break;
+                case SchedulingPolicy::EARLIEST_DEADLINE_FIRST:
+                    selectedTaskId = scheduleEarliestDeadlineFirst();
+                    break;
+                case SchedulingPolicy::RATE_MONOTONIC:
+                    selectedTaskId = scheduleRateMonotonic();
+                    break;
+                case SchedulingPolicy::CUSTOM:
+                    selectedTaskId = scheduleCustom();
+                    break;
+            }
+
+            if (selectedTaskId == 0) {
+                break; // No more ready tasks this cycle
+            }
+
+            SchedulerTask* task = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(tasksMutex_);
+                auto it = tasks_.find(selectedTaskId);
+                if (it != tasks_.end() && it->second->active.load() &&
+                    !it->second->executing.load()) {
+                    task = it->second;
+                    task->executing.store(true); // Claim before releasing the lock
+                }
+            }
+
+            if (task != nullptr) {
+                executeTask(*task);
+
+                // Release the claim under the lock. removeTask only defers
+                // deallocation (pendingRemoval) while executing is true and only
+                // reads/writes these flags under tasksMutex_, so exactly one side
+                // deallocates and never while the other still uses the task.
+                std::lock_guard<std::mutex> lock(tasksMutex_);
+                task->executing.store(false);
+                if (task->pendingRemoval.load()) {
+                    taskPool_->deallocateObject(task);
+                }
             }
         }
 
@@ -451,11 +597,8 @@ uint32_t RealTimeScheduler::scheduleCustom() {
 }
 
 void RealTimeScheduler::executeTask(SchedulerTask& task) {
-    if (task.executing.load()) {
-        return; // Already executing
-    }
-
-    task.executing.store(true);
+    // Precondition: the caller (scheduler loop) has already claimed the task
+    // (executing=true under tasksMutex_) and releases the claim afterwards.
     auto executionStart = std::chrono::steady_clock::now();
 
     try {
@@ -470,13 +613,23 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         auto executionTime =
             std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
 
-        // Update task statistics
-        updateTaskStatistics(task, executionTime);
+        // Task bookkeeping under tasksMutex_: user code above runs unlocked, but
+        // constraints/nextExecution/lastExecution race updateTaskConstraints()
+        // on user threads without it. Lock order: tasksMutex_ before statsMutex_.
+        bool missedDeadline = false;
+        {
+            std::lock_guard<std::mutex> lock(tasksMutex_);
+            updateTaskStatistics(task, executionTime);
 
-        // Update next execution time
-        task.lastExecution = executionStart;
-        task.nextExecution = calculateNextExecution(task);
-        task.consecutiveFailures = 0; // Reset failure count on successful execution
+            // Update next execution time
+            task.lastExecution = executionStart;
+            task.nextExecution = calculateNextExecution(task);
+            task.consecutiveFailures = 0; // Reset failure count on successful execution
+
+            // Evaluated AFTER nextExecution advances (original semantics): checks
+            // the upcoming slot, not the one that just ran
+            missedDeadline = hasDeadlinePassed(task);
+        }
 
         // Update global statistics
         {
@@ -505,8 +658,7 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
                 }
             }
 
-            // Check for deadline miss
-            if (hasDeadlinePassed(task)) {
+            if (missedDeadline) {
                 statistics_.missedDeadlines++;
             }
         }
@@ -517,50 +669,63 @@ void RealTimeScheduler::executeTask(SchedulerTask& task) {
         auto executionTime =
             std::chrono::duration_cast<std::chrono::microseconds>(executionEnd - executionStart);
 
-        std::lock_guard<std::mutex> lock(statsMutex_);
-        statistics_.totalExecutions++; // Count failed executions in total
-        statistics_.failedExecutions++;
-        statistics_.totalExecutionTime += executionTime;
-
-        // Update task statistics for failed execution
-        task.executionCount++;
-        task.totalExecutionTime += executionTime;
-        task.consecutiveFailures++;
-        task.lastFailureTime = executionEnd;
-
-        // Temporarily deactivate task if too many consecutive failures
         const uint64_t MAX_CONSECUTIVE_FAILURES = 10;
-        const auto FAILURE_BACKOFF_TIME = std::chrono::milliseconds(100);
+        bool deactivated = false;
+        bool missedDeadline = false;
+        uint64_t consecutiveFailures = 0;
 
-        if (task.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-            task.active.store(false);
-            task.reactivationTime = executionEnd + FAILURE_BACKOFF_TIME;
+        // Task bookkeeping under tasksMutex_ (races updateTaskConstraints
+        // otherwise), then global stats under statsMutex_ — same order as the
+        // success path (tasksMutex_ before statsMutex_).
+        {
+            std::lock_guard<std::mutex> lock(tasksMutex_);
+            task.executionCount++;
+            task.totalExecutionTime += executionTime;
+            task.consecutiveFailures++;
+            task.lastFailureTime = executionEnd;
+            consecutiveFailures = task.consecutiveFailures;
 
-            // Log task deactivation
-            if (errorCallback_) {
+            // Temporarily deactivate task if too many consecutive failures
+            const auto FAILURE_BACKOFF_TIME = std::chrono::milliseconds(100);
+            if (task.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                task.active.store(false);
+                task.reactivationTime = executionEnd + FAILURE_BACKOFF_TIME;
+                deactivated = true;
+            }
+
+            missedDeadline = hasDeadlinePassed(task);
+            if (missedDeadline) {
+                task.missedDeadlines++;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(statsMutex_);
+            statistics_.totalExecutions++; // Count failed executions in total
+            statistics_.failedExecutions++;
+            statistics_.totalExecutionTime += executionTime;
+            if (missedDeadline) {
+                statistics_.missedDeadlines++;
+            }
+        }
+
+        // User callback + I/O with no locks held (C18/C1)
+        if (errorCallback_) {
+            if (deactivated) {
                 std::string msg = "Task temporarily deactivated after " +
                                   std::to_string(MAX_CONSECUTIVE_FAILURES) +
                                   " consecutive failures: " + e.what();
                 errorCallback_(task.unit, msg.c_str());
             }
-        }
-
-        // Notify error callback if available
-        if (errorCallback_) {
             errorCallback_(task.unit, e.what());
-        }
-        if (hasDeadlinePassed(task)) {
-            statistics_.missedDeadlines++;
-            task.missedDeadlines++;
         }
 
         // Log error if debugging is enabled (but throttled)
-        if (task.consecutiveFailures <= MAX_CONSECUTIVE_FAILURES) {
+        if (consecutiveFailures <= MAX_CONSECUTIVE_FAILURES) {
             std::cerr << "Task execution failed: " << e.what() << std::endl;
         }
     }
-
-    task.executing.store(false);
+    // executing is cleared by the scheduler loop under tasksMutex_ (see schedulerLoop)
 }
 
 void RealTimeScheduler::updateTaskStatistics(SchedulerTask& task,
@@ -771,6 +936,10 @@ void TimingController::start() {
 
 void TimingController::stop() {
     scheduler_->stop();
+}
+
+bool TimingController::isOnSchedulerThread() const noexcept {
+    return scheduler_ && scheduler_->isOnSchedulerThread();
 }
 
 void TimingController::pause() {

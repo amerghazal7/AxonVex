@@ -21,7 +21,7 @@
         "AXONVEX_VERSION_PATCH=0"
     ],
     "C_Cpp.default.compilerPath": "/usr/bin/g++",
-    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.cppStandard": "c++14",
     "C_Cpp.default.cStandard": "c17",
     "C_Cpp.default.intelliSenseMode": "linux-gcc-x64",
     "C_Cpp.errorSquiggles": "enabled",
@@ -47,5 +47,16 @@
     },
     "chat.tools.terminal.autoApprove": {
         "cp": true
-    }
+    },
+    "ROS2.distro": "humble",
+    "python.autoComplete.extraPaths": [
+        "/usr/local/usd/lib/python",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/usr/local/usd/lib/python",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
 } 

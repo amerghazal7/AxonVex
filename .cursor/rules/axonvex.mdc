@@ -1,0 +1,52 @@
+---
+description: AxonVex project-wide engineering rules (build, test, style, architecture, workflow, docs-sync)
+alwaysApply: true
+---
+
+# AxonVex Rules (Cursor)
+
+Single source of truth: **`CLAUDE.md` at repo root** and **`docs/v1_release_plan.md`** (defect IDs C1–C24, phases 0–10, quality gates, composer foundations §11). Read both before non-trivial work; this file is the condensed always-on subset.
+
+## Build & test (must pass before claiming anything works)
+```bash
+conan install . --output-folder=build --build=missing
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DBUILD_EXAMPLES=ON
+cmake --build build -j$(nproc)
+ctest --test-dir build --output-on-failure
+```
+- Zero-warning policy. New warnings = broken build.
+- TSan/ASan/UBSan configs (once present) are mandatory for thread/atomic/lock/callback changes.
+- Tests: GoogleTest, `tests/<area>/<name>Test.cpp`. No sleep-based synchronization in tests — condition variables / poll-with-timeout only.
+
+## Language & dependencies
+- **C++14 strictly** — no C++17 features. Use `axonvex::utils::optional` and the `axonvex_fs` compat alias (`detail/filesystem_compat.hpp`), not `std::optional`/`std::filesystem`.
+- Dependencies via Conan only; never vendor; new deps need written justification against the plan.
+- Platform `#ifdef` code must fail explicitly where unsupported — **never silently no-op and return success**.
+
+## Architecture (non-negotiable)
+1. `axonvex_core` depends on nothing internal; every other lib depends only on core. Core headers never name upper-layer types.
+2. RT-path invariant: no locks, no heap allocation, no string building, no I/O, no user callbacks on scheduler/port hot paths.
+3. Never invoke user callbacks while holding a lock — snapshot, release, dispatch.
+4. No new responsibilities in `AxonVexSystem` — use the collaborator classes (UnitRegistry, EventBus, HealthMonitor, ...).
+5. No declared-but-unimplemented public API — implement + test in the same PR or don't declare.
+6. Types holding mutexes are non-movable (delete move ops). Ownership via `unique_ptr` or a documented stable-reference contract.
+7. Composer foundations (SystemSpec, UnitFactory, unit introspection metadata, `loadFromSpec()`, gateway `spec/*` API) are core features with tests — every new ProcessingUnit type registers with the factory and describes its ports/parameters.
+8. "Lock-free" requires a TSan-clean stress test + memory-ordering comment.
+
+## Style
+- `.clang-format` is law; run on touched files.
+- Files `camelCase.cpp/.hpp`; classes `PascalCase`; methods/vars `camelCase`; members `trailing_underscore_`; namespaces `axonvex::<lib>`.
+- Implementation stays out of headers unless template. Comments state constraints, not narration.
+- `docs/STYLE_GUIDE.md` wins on conflict.
+
+## Workflow & docs-sync
+- Bugs: failing regression test first; fix root cause; cite plan defect ID (C1–C24) in the commit.
+- Features: test-first where feasible; tests + doc updates land in the same PR.
+- Pre-commit: build clean → ctest green → clang-format → `graphify update .` → docs synced → CHANGELOG entry.
+- README claims must map to code, a benchmark, or a tracked workstream — never inline performance numbers (link `docs/benchmarks.md`).
+- Follow plan phase order (`docs/v1_release_plan.md` §8); don't start Phase N with Phase N−1 exit criteria red.
+
+## Useful MCPs in Cursor for this project
+- **Context7** — version-correct docs for Boost.Beast, OpenSSL, rclcpp, MAVLink, Angular, CMake/Conan; use instead of memory for any external API signature.
+- **Playwright** — dashboard e2e journeys (Phase 9: login+MFA → charts → replay → e-stop).
+- **Postman** — gateway REST/WS API contract (`spec/validate|get|deploy`, auth): spec generation + collection tests.

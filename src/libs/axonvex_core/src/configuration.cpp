@@ -13,11 +13,11 @@
 
 #include <algorithm>
 #include <axonvex_core/configuration.hpp>
-#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <regex>
 #include <sstream>
+#include <tuple>
 
 extern char** environ; // Environment variables declaration
 
@@ -25,7 +25,7 @@ namespace axonvex::core {
 
 Configuration::Configuration(bool enable_monitoring, bool enable_validation)
     : validation_enabled_(enable_validation), next_callback_id_(1),
-      monitoring_enabled_(enable_monitoring), file_watching_enabled_(false) {}
+      monitoring_enabled_(enable_monitoring) {}
 
 Configuration::~Configuration() {
     clearCallbacks();
@@ -46,10 +46,6 @@ bool Configuration::loadFromFile(const std::string& filename, bool merge_with_ex
         file >> json_data;
 
         if (loadFromJson(json_data, merge_with_existing)) {
-            watched_file_ = filename;
-            if (std::filesystem::exists(filename)) {
-                last_write_time_ = std::filesystem::last_write_time(filename);
-            }
             stats_.total_loads.fetch_add(1, relaxed);
             return true;
         }
@@ -81,9 +77,8 @@ bool Configuration::loadFromEnvironment(const std::string& prefix, bool merge_wi
 
             while (start < dotted_key.size()) {
                 size_t dot = dotted_key.find('.', start);
-                std::string part =
-                    dot == std::string::npos ? dotted_key.substr(start)
-                                             : dotted_key.substr(start, dot - start);
+                std::string part = dot == std::string::npos ? dotted_key.substr(start)
+                                                            : dotted_key.substr(start, dot - start);
 
                 if (dot == std::string::npos) {
                     (*current)[part] = value;
@@ -137,7 +132,7 @@ bool Configuration::loadFromEnvironment(const std::string& prefix, bool merge_wi
 
 bool Configuration::saveToFile(const std::string& filename, bool pretty_print) const {
     try {
-        std::shared_lock<std::shared_mutex> lock(config_mutex_);
+        std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
         std::ofstream file(filename);
         if (!file.is_open()) {
@@ -157,7 +152,7 @@ bool Configuration::saveToFile(const std::string& filename, bool pretty_print) c
 
 std::string Configuration::toString(bool pretty_print) const {
     try {
-        std::shared_lock<std::shared_mutex> lock(config_mutex_);
+        std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
         if (pretty_print) {
             return config_data_.dump(4);
@@ -172,13 +167,13 @@ std::string Configuration::toString(bool pretty_print) const {
 //==============================================================================
 
 bool Configuration::has(const std::string& key) const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
     const auto* json_ptr = getJsonPointer(key);
     return json_ptr != nullptr;
 }
 
 bool Configuration::remove(const std::string& key) {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
+    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         auto keys = splitKey(key);
@@ -207,7 +202,7 @@ bool Configuration::remove(const std::string& key) {
 }
 
 std::vector<std::string> Configuration::getKeys(const std::string& pattern) const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     std::vector<std::string> result;
     std::function<void(const nlohmann::json&, const std::string&)> traverse =
@@ -268,7 +263,7 @@ bool Configuration::loadSchema(const std::string& schema_file) {
 }
 
 std::vector<ValidationError> Configuration::validate() const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
     return validateInternal(config_data_);
 }
 
@@ -327,144 +322,56 @@ void Configuration::clearCallbacks() {
 }
 
 bool Configuration::applyUpdates(const nlohmann::json& updates, bool validate) {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
-
-    try {
-        // Validate updates if requested
-        if (validate && validation_enabled_.load(relaxed)) {
-            auto errors = validateInternal(updates);
-            if (!errors.empty()) {
-                stats_.validation_failures.fetch_add(1, relaxed);
-                return false;
+    // C5: collect changes under the lock, notify after releasing it. The old
+    // code unlocked mid-merge while the recursive lambda held json references
+    // into config_data_; a concurrent writer or the callback itself could
+    // destroy the referenced nodes and the merge resumed through them (UAF).
+    std::vector<std::tuple<std::string, ConfigValue, ConfigValue>> changes;
+    {
+        std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
+        try {
+            // Validate updates if requested
+            if (validate && validation_enabled_.load(relaxed)) {
+                auto errors = validateInternal(updates);
+                if (!errors.empty()) {
+                    stats_.validation_failures.fetch_add(1, relaxed);
+                    return false;
+                }
             }
-        }
 
-        // Apply updates recursively
-        std::function<void(nlohmann::json&, const nlohmann::json&, const std::string&)> merge =
-            [&](nlohmann::json& target, const nlohmann::json& source, const std::string& prefix) {
-                for (auto it = source.begin(); it != source.end(); ++it) {
-                    std::string full_key = prefix.empty() ? it.key() : prefix + "." + it.key();
+            // Apply updates recursively
+            std::function<void(nlohmann::json&, const nlohmann::json&, const std::string&)> merge =
+                [&](nlohmann::json& target, const nlohmann::json& source,
+                    const std::string& prefix) {
+                    for (auto it = source.begin(); it != source.end(); ++it) {
+                        std::string full_key = prefix.empty() ? it.key() : prefix + "." + it.key();
 
-                    ConfigValue old_value;
-                    if (target.contains(it.key())) {
-                        old_value = target[it.key()];
-                    }
-
-                    if (it->is_object() && target.contains(it.key()) &&
-                        target[it.key()].is_object()) {
-                        merge(target[it.key()], *it, full_key);
-                    } else {
-                        target[it.key()] = *it;
-
-                        // Notify callbacks for this key
-                        if (monitoring_enabled_.load(relaxed)) {
-                            lock.unlock();
-                            notifyCallbacks(full_key, old_value, *it);
-                            lock.lock();
+                        if (it->is_object() && target.contains(it.key()) &&
+                            target[it.key()].is_object()) {
+                            merge(target[it.key()], *it, full_key);
+                        } else {
+                            ConfigValue old_value;
+                            if (target.contains(it.key())) {
+                                old_value = target[it.key()];
+                            }
+                            target[it.key()] = *it;
+                            if (monitoring_enabled_.load(relaxed)) {
+                                changes.emplace_back(full_key, std::move(old_value), *it);
+                            }
                         }
                     }
-                }
-            };
+                };
 
-        merge(config_data_, updates, "");
-        stats_.total_updates.fetch_add(1, relaxed);
-        stats_.runtime_updates.fetch_add(1, relaxed);
-
-        return true;
-    } catch (const std::exception&) { return false; }
-}
-
-void Configuration::enableFileWatching(bool enable) {
-    file_watching_enabled_.store(enable, relaxed);
-    if (enable && !watched_file_.empty()) {
-        updateFileWatcher();
-    }
-}
-
-//==============================================================================
-// Configuration Templates
-//==============================================================================
-
-bool Configuration::loadTemplate(const std::string& template_name) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
-
-    auto it = templates_.find(template_name);
-    if (it == templates_.end()) {
-        return false;
+            merge(config_data_, updates, "");
+            stats_.total_updates.fetch_add(1, relaxed);
+            stats_.runtime_updates.fetch_add(1, relaxed);
+        } catch (const std::exception&) { return false; }
     }
 
-    return loadFromJson(it->second.config, false);
-}
-
-bool Configuration::saveTemplate(const std::string& template_name, const std::string& description) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
-    std::shared_lock<std::shared_mutex> config_lock(config_mutex_);
-
-    ConfigurationTemplate template_obj(template_name, config_data_, description);
-    templates_[template_name] = template_obj;
-
+    for (const auto& change : changes) {
+        notifyCallbacks(std::get<0>(change), std::get<1>(change), std::get<2>(change));
+    }
     return true;
-}
-
-std::vector<std::string> Configuration::getAvailableTemplates() const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
-
-    std::vector<std::string> result;
-    for (const auto& pair : templates_) {
-        result.push_back(pair.first);
-    }
-    return result;
-}
-
-std::optional<ConfigurationTemplate> Configuration::getTemplate(
-    const std::string& template_name) const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(templates_mutex_));
-
-    auto it = templates_.find(template_name);
-    if (it != templates_.end()) {
-        return it->second;
-    }
-    return std::nullopt;
-}
-
-//==============================================================================
-// Versioning and Rollback
-//==============================================================================
-
-std::string Configuration::createSnapshot(const std::string& name) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(snapshots_mutex_));
-    std::shared_lock<std::shared_mutex> config_lock(config_mutex_);
-
-    std::string snapshot_id = name.empty() ? generateSnapshotId() : name;
-    snapshots_[snapshot_id] = config_data_;
-
-    return snapshot_id;
-}
-
-bool Configuration::rollbackToSnapshot(const std::string& snapshot_id) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(snapshots_mutex_));
-
-    auto it = snapshots_.find(snapshot_id);
-    if (it == snapshots_.end()) {
-        return false;
-    }
-
-    return loadFromJson(it->second, false);
-}
-
-std::vector<std::string> Configuration::getAvailableSnapshots() const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(snapshots_mutex_));
-
-    std::vector<std::string> result;
-    for (const auto& pair : snapshots_) {
-        result.push_back(pair.first);
-    }
-    return result;
-}
-
-void Configuration::removeSnapshot(const std::string& snapshot_id) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(snapshots_mutex_));
-    snapshots_.erase(snapshot_id);
 }
 
 //==============================================================================
@@ -479,16 +386,8 @@ void Configuration::resetStatistics() noexcept {
     stats_.reset();
 }
 
-size_t Configuration::getMemoryUsage() const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
-
-    // Approximate memory usage calculation
-    std::string json_str = config_data_.dump();
-    return json_str.size() + sizeof(Configuration);
-}
-
 size_t Configuration::getKeyCount() const {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     size_t count = 0;
     std::function<void(const nlohmann::json&)> traverse = [&](const nlohmann::json& obj) {
@@ -505,31 +404,14 @@ size_t Configuration::getKeyCount() const {
 }
 
 bool Configuration::isEmpty() const noexcept {
-    std::shared_lock<std::shared_mutex> lock(config_mutex_);
+    std::shared_lock<std::shared_timed_mutex> lock(config_mutex_);
     return config_data_.empty();
 }
 
 void Configuration::clear() {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
+    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
     config_data_.clear();
     stats_.total_updates.fetch_add(1, relaxed);
-}
-
-std::string Configuration::getPerformanceMetrics() const {
-    const auto& stats = getStatistics();
-
-    std::stringstream ss;
-    ss << "Configuration Performance Metrics:\n";
-    ss << "  Total loads: " << stats.getTotalLoads() << "\n";
-    ss << "  Total saves: " << stats.getTotalSaves() << "\n";
-    ss << "  Total updates: " << stats.getTotalUpdates() << "\n";
-    ss << "  Runtime updates: " << stats.getRuntimeUpdates() << "\n";
-    ss << "  Validation failures: " << stats.getValidationFailures() << "\n";
-    ss << "  Callback invocations: " << stats.getCallbackInvocations() << "\n";
-    ss << "  Memory usage: " << getMemoryUsage() << " bytes\n";
-    ss << "  Key count: " << getKeyCount() << "\n";
-
-    return ss.str();
 }
 
 //==============================================================================
@@ -537,7 +419,7 @@ std::string Configuration::getPerformanceMetrics() const {
 //==============================================================================
 
 bool Configuration::loadFromJson(const nlohmann::json& json_data, bool merge_with_existing) {
-    std::unique_lock<std::shared_mutex> lock(config_mutex_);
+    std::unique_lock<std::shared_timed_mutex> lock(config_mutex_);
 
     try {
         if (validation_enabled_.load(relaxed)) {
@@ -576,26 +458,28 @@ std::vector<ValidationError> Configuration::validateInternal(const nlohmann::jso
 
 void Configuration::notifyCallbacks(const std::string& key, const ConfigValue& old_value,
                                     const ConfigValue& new_value) {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(callbacks_mutex_));
-
-    for (const auto& pair : callbacks_) {
-        const std::string& pattern = pair.second.first;
-        const ConfigurationCallback& callback = pair.second.second;
-
-        if (matchesPattern(key, pattern)) {
-            try {
-                callback(key, old_value, new_value);
-                stats_.callback_invocations.fetch_add(1, relaxed);
-            } catch (const std::exception&) {
-                // Ignore callback exceptions
+    // C5: snapshot under the lock, invoke unlocked, so a callback may call
+    // registerCallback/unregisterCallback (both take callbacks_mutex_) without
+    // deadlocking. An unregister racing a notification may still see one
+    // in-flight invocation - inherent to snapshot-then-dispatch.
+    std::vector<ConfigurationCallback> matched;
+    {
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        for (const auto& pair : callbacks_) {
+            if (matchesPattern(key, pair.second.first)) {
+                matched.push_back(pair.second.second);
             }
         }
     }
-}
 
-std::vector<std::string> Configuration::expandKeyPattern(const std::string& pattern) const {
-    // Simple pattern expansion - in a full implementation, this would support complex patterns
-    return {pattern};
+    for (const auto& callback : matched) {
+        try {
+            callback(key, old_value, new_value);
+            stats_.callback_invocations.fetch_add(1, relaxed);
+        } catch (const std::exception&) {
+            // Ignore callback exceptions
+        }
+    }
 }
 
 bool Configuration::matchesPattern(const std::string& key, const std::string& pattern) const {
@@ -616,15 +500,6 @@ bool Configuration::matchesPattern(const std::string& key, const std::string& pa
     }
 
     return key == pattern;
-}
-
-std::string Configuration::generateSnapshotId() const {
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
-
-    std::stringstream ss;
-    ss << "snapshot_" << time_t;
-    return ss.str();
 }
 
 nlohmann::json* Configuration::getJsonPointer(const std::string& key, bool create_if_missing) {
@@ -677,26 +552,6 @@ std::vector<std::string> Configuration::splitKey(const std::string& key) const {
     }
 
     return result;
-}
-
-void Configuration::updateFileWatcher() {
-    if (!file_watching_enabled_.load(relaxed) || watched_file_.empty()) {
-        return;
-    }
-
-    try {
-        if (std::filesystem::exists(watched_file_)) {
-            auto current_write_time = std::filesystem::last_write_time(watched_file_);
-            if (current_write_time != last_write_time_) {
-                // File has been modified - reload it
-                loadFromFile(watched_file_, false);
-                last_write_time_ = current_write_time;
-            }
-        }
-    } catch (const std::exception&) {
-        // File watching failed - disable it
-        file_watching_enabled_.store(false, relaxed);
-    }
 }
 
 } // namespace axonvex::core

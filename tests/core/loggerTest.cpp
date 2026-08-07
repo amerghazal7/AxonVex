@@ -1,31 +1,46 @@
 #include <atomic>
+#include <axonvex_core/detail/filesystem_compat.hpp>
 #include <axonvex_core/logger.hpp>
 #include <chrono>
-#include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <sstream>
 #include <thread>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace axonvex::core;
+
+namespace {
+long testProcessId() {
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(getpid());
+#endif
+}
+} // namespace
 
 class LoggerTest : public ::testing::Test {
   protected:
     void SetUp() override {
         // Create a clean test environment
-        test_log_file_ = "test_log.txt";
-        if (std::filesystem::exists(test_log_file_)) {
-            std::filesystem::remove(test_log_file_);
+        test_log_file_ = "test_log_" + std::to_string(testProcessId()) + ".txt";
+        if (axonvex_fs::exists(test_log_file_)) {
+            axonvex_fs::remove(test_log_file_);
         }
     }
 
     void TearDown() override {
         // Clean up test files
-        if (std::filesystem::exists(test_log_file_)) {
-            std::filesystem::remove(test_log_file_);
+        if (axonvex_fs::exists(test_log_file_)) {
+            axonvex_fs::remove(test_log_file_);
         }
-        if (std::filesystem::exists(test_log_file_ + ".old")) {
-            std::filesystem::remove(test_log_file_ + ".old");
+        if (axonvex_fs::exists(test_log_file_ + ".old")) {
+            axonvex_fs::remove(test_log_file_ + ".old");
         }
     }
 
@@ -429,7 +444,7 @@ TEST_F(LoggerTest, FileOutput) {
     logger.stop();
 
     // Verify file exists and contains messages
-    EXPECT_TRUE(std::filesystem::exists(test_log_file_));
+    EXPECT_TRUE(axonvex_fs::exists(test_log_file_));
 
     std::ifstream file(test_log_file_);
     std::string line, content;
@@ -687,4 +702,78 @@ TEST_F(LoggerTest, DestructorCleanup) {
     auto messages = test_output->getMessages();
     EXPECT_EQ(messages.size(), 1);
     EXPECT_EQ(messages[0].message, "Test message");
+}
+
+// C14 regression: formatString returned the format string unchanged — every
+// logf/LOGF_* argument was silently dropped.
+TEST_F(LoggerTest, LogfSubstitutesPlaceholdersInOrder) {
+    Logger logger;
+    auto test_output = std::make_shared<TestOutput>();
+    logger.addOutput(test_output);
+    EXPECT_TRUE(logger.start());
+
+    logger.logf(LogLevel::Info, "Test", "value={} name={} ratio={}", 42, "abc", 1.5);
+
+    // Logger::stop() drains the queue fully before returning (see
+    // GracefulShutdown above), so no sleep/poll is needed after flush().
+    logger.flush();
+    logger.stop();
+
+    auto messages = test_output->getMessages();
+    ASSERT_FALSE(messages.empty());
+    const std::string msg = messages.back().message;
+    EXPECT_NE(msg.find("value=42 name=abc ratio=1.5"), std::string::npos);
+}
+
+TEST_F(LoggerTest, LogfLeavesUnmatchedPlaceholdersLiteral) {
+    Logger logger;
+    auto test_output = std::make_shared<TestOutput>();
+    logger.addOutput(test_output);
+    EXPECT_TRUE(logger.start());
+
+    logger.logf(LogLevel::Info, "Test", "a={} b={}", 1);
+
+    logger.flush();
+    logger.stop();
+
+    auto messages = test_output->getMessages();
+    ASSERT_FALSE(messages.empty());
+    const std::string msg = messages.back().message;
+    EXPECT_NE(msg.find("a=1 b={}"), std::string::npos);
+}
+
+TEST_F(LoggerTest, LogfIgnoresExtraArguments) {
+    Logger logger;
+    auto test_output = std::make_shared<TestOutput>();
+    logger.addOutput(test_output);
+    EXPECT_TRUE(logger.start());
+
+    logger.logf(LogLevel::Info, "Test", "only={}", 7, 8, 9);
+
+    logger.flush();
+    logger.stop();
+
+    auto messages = test_output->getMessages();
+    ASSERT_FALSE(messages.empty());
+    const std::string msg = messages.back().message;
+    EXPECT_NE(msg.find("only=7"), std::string::npos);
+}
+
+// C14: LOGF_CRITICAL was a malformed double-expansion that failed to compile
+// at any use site. This test IS the regression: it does not compile pre-fix.
+TEST_F(LoggerTest, LogfCriticalMacroCompilesAndLogsOnce) {
+    Logger logger;
+    auto test_output = std::make_shared<TestOutput>();
+    logger.addOutput(test_output);
+    EXPECT_TRUE(logger.start());
+
+    LOGF_CRITICAL(logger, "Test", "code={}", 5);
+
+    logger.flush();
+    logger.stop();
+
+    auto messages = test_output->getMessages();
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_EQ(messages[0].level, LogLevel::Critical);
+    EXPECT_NE(messages[0].message.find("code=5"), std::string::npos);
 }
