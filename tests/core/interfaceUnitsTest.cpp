@@ -1,5 +1,5 @@
-#include <axonvex_core/interfaceUnits.hpp>
 #include <atomic>
+#include <axonvex_core/interfaceUnits.hpp>
 #include <gtest/gtest.h>
 #include <string>
 
@@ -24,7 +24,9 @@ TEST(SubscriberUnitTest, PushDataWritesToOutputPort) {
         void processAsync() override {}
         void reset() override {}
         void initialize() override {}
-        std::string getTypeDescription() override { return "Consumer"; }
+        std::string getTypeDescription() override {
+            return "Consumer";
+        }
         InputPort<double>* in;
     };
 

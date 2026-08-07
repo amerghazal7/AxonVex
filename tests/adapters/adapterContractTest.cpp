@@ -1,5 +1,5 @@
-#include <axonvex_adapters/adapterInterface.hpp>
 #include <atomic>
+#include <axonvex_adapters/adapterInterface.hpp>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>

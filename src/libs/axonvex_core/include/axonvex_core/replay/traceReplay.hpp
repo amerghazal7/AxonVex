@@ -34,7 +34,9 @@ class TraceRecorder {
     size_t size() const;
 
     bool saveToFile(const Path& path) const;
-    const std::vector<TraceRecordEntry>& entries() const { return entries_; }
+    const std::vector<TraceRecordEntry>& entries() const {
+        return entries_;
+    }
 
   private:
     mutable std::mutex mutex_;
@@ -53,7 +55,9 @@ class TraceReplayer {
   public:
     bool loadFromFile(const Path& path);
     void replay(const std::function<void(const TraceRecordEntry&)>& callback) const;
-    const std::vector<TraceRecordEntry>& entries() const { return entries_; }
+    const std::vector<TraceRecordEntry>& entries() const {
+        return entries_;
+    }
 
     static bool sequencesMatch(const TraceRecorder& recorded, const TraceReplayer& loaded);
 

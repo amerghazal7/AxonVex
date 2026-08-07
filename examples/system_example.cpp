@@ -30,8 +30,8 @@
 #undef LOG_INFO
 #undef LOG_WARNING
 #undef LOG_ERROR
-#define LOG_INFO(msg)  std::cout << "[INFO]  " << (msg) << std::endl
-#define LOG_WARN(msg)  std::cout << "[WARN]  " << (msg) << std::endl
+#define LOG_INFO(msg) std::cout << "[INFO]  " << (msg) << std::endl
+#define LOG_WARN(msg) std::cout << "[WARN]  " << (msg) << std::endl
 #define LOG_ERROR(msg) std::cerr << "[ERROR] " << (msg) << std::endl
 
 using namespace axonvex::core;
@@ -45,7 +45,9 @@ class DemoSystem : public AxonVexSystem {
     using AxonVexSystem::AxonVexSystem;
 
   protected:
-    bool initializeBlocksLayout() override { return true; }
+    bool initializeBlocksLayout() override {
+        return true;
+    }
 };
 
 // =================================================================
@@ -105,7 +107,9 @@ class DataGenerator : public ProcessingUnit {
         setState(ExecutionState::STOPPED);
     }
 
-    std::string getTypeDescription() override { return "DataGenerator"; }
+    std::string getTypeDescription() override {
+        return "DataGenerator";
+    }
 };
 
 /**
@@ -171,7 +175,9 @@ class DataProcessor : public ProcessingUnit {
         setState(ExecutionState::STOPPED);
     }
 
-    std::string getTypeDescription() override { return "DataProcessor"; }
+    std::string getTypeDescription() override {
+        return "DataProcessor";
+    }
 };
 
 /**
@@ -232,7 +238,9 @@ class SystemMonitor : public ProcessingUnit {
         setState(ExecutionState::STOPPED);
     }
 
-    std::string getTypeDescription() override { return "SystemMonitor"; }
+    std::string getTypeDescription() override {
+        return "SystemMonitor";
+    }
 };
 
 // =================================================================

@@ -5,24 +5,24 @@
 
 namespace axonvex::safety {
 
-enum class SafetyLevel {
-    NOMINAL = 0,
-    ADVISORY,
-    CAUTION,
-    WARNING,
-    CRITICAL,
-    EMERGENCY
-};
+enum class SafetyLevel { NOMINAL = 0, ADVISORY, CAUTION, WARNING, CRITICAL, EMERGENCY };
 
 inline const char* to_string(SafetyLevel level) {
     switch (level) {
-        case SafetyLevel::NOMINAL:   return "NOMINAL";
-        case SafetyLevel::ADVISORY:  return "ADVISORY";
-        case SafetyLevel::CAUTION:   return "CAUTION";
-        case SafetyLevel::WARNING:   return "WARNING";
-        case SafetyLevel::CRITICAL:  return "CRITICAL";
-        case SafetyLevel::EMERGENCY: return "EMERGENCY";
-        default:                     return "UNKNOWN";
+        case SafetyLevel::NOMINAL:
+            return "NOMINAL";
+        case SafetyLevel::ADVISORY:
+            return "ADVISORY";
+        case SafetyLevel::CAUTION:
+            return "CAUTION";
+        case SafetyLevel::WARNING:
+            return "WARNING";
+        case SafetyLevel::CRITICAL:
+            return "CRITICAL";
+        case SafetyLevel::EMERGENCY:
+            return "EMERGENCY";
+        default:
+            return "UNKNOWN";
     }
 }
 
@@ -57,10 +57,16 @@ class SafetyPolicy {
 
     virtual PolicyResult evaluate() = 0;
 
-    const std::string& getName() const { return name_; }
+    const std::string& getName() const {
+        return name_;
+    }
 
-    void setEnabled(bool enabled) { enabled_ = enabled; }
-    bool isEnabled() const { return enabled_; }
+    void setEnabled(bool enabled) {
+        enabled_ = enabled;
+    }
+    bool isEnabled() const {
+        return enabled_;
+    }
 
   private:
     std::string name_;
