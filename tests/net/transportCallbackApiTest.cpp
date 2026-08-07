@@ -153,4 +153,53 @@ TEST(TransportCallbackApiTest, UdpSendBeforeStartRefusesLoudly) {
     EXPECT_GT(err.count.load(), before) << "the refusal must be reported, not swallowed";
 }
 
+// Recursion hazard introduced by the loud send-refusal (item 5/6): send() on
+// a dead/unopened connection now calls reportError(), so a handler that
+// reacts to the report by calling send() again re-enters reportError() from
+// inside the still-running dispatch. Unbounded, that is
+// reportError -> handler -> send -> reportError forever -> stack overflow;
+// the old silent `return false` broke the cycle by construction. The handler
+// here retries send() exactly once (its own once-guard, not the fix under
+// test), which is enough to observe the fix: with the recursion guard, that
+// nested reportError() call is suppressed and the handler fires exactly
+// once; without it, the nested call re-enters the handler and it fires
+// twice. (An always-retrying handler would be the "real" unbounded case, but
+// that intentionally crashes the process via stack overflow and has no place
+// in a CI-run suite — see the standalone repro in the task evidence instead.)
+TEST(TransportCallbackApiTest, TcpSendRefusalHandlerRetryDoesNotReenterDispatch) {
+    const bool finished = finishesWithin(
+        []() {
+            axonvex::interfaces::tcp::TcpClient client("127.0.0.1", 65534);
+            ReactingErrorHandler err;
+            err.reaction = [&client]() {
+                (void)client.send({9, 9, 9}); // dead connection; retries the refusal
+            };
+            client.registerErrorHandler("default", &err);
+            EXPECT_FALSE(client.send({1, 2, 3}));
+            EXPECT_EQ(err.count.load(), 1)
+                << "the nested send()'s report must be suppressed by the recursion guard";
+        },
+        std::chrono::milliseconds(8000));
+    ASSERT_TRUE(finished) << "send-refusal handler retry was not bounded";
+}
+
+// UDP shape of the same hazard: send() with no destination configured calls
+// reportError(); a handler retrying send() must not re-enter the dispatch.
+TEST(TransportCallbackApiTest, UdpSendRefusalHandlerRetryDoesNotReenterDispatch) {
+    const bool finished = finishesWithin(
+        []() {
+            axonvex::interfaces::udp::UdpSocket sock("127.0.0.1", 0);
+            ReactingErrorHandler err;
+            err.reaction = [&sock]() {
+                (void)sock.send({9, 9, 9}); // still no destination configured
+            };
+            sock.registerErrorHandler("default", &err);
+            EXPECT_FALSE(sock.send({1, 2, 3}));
+            EXPECT_EQ(err.count.load(), 1)
+                << "the nested send()'s report must be suppressed by the recursion guard";
+        },
+        std::chrono::milliseconds(8000));
+    ASSERT_TRUE(finished) << "send-refusal handler retry was not bounded";
+}
+
 #endif // AXONVEX_PLATFORM_LINUX

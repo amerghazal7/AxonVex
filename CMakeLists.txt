@@ -161,6 +161,7 @@ if(BUILD_TESTING)
             tests/interfaces/protocolInterfacesContractTest.cpp
             tests/net/tcpConnectionLifecycleTest.cpp
             tests/net/transportCallbackApiTest.cpp
+            tests/net/udpConnectionLifecycleTest.cpp
             tests/core/interfaceUnitsTest.cpp
             tests/core/missionTest.cpp
             tests/core/traceReplayTest.cpp

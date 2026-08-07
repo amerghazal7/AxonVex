@@ -93,6 +93,16 @@ class UdpSocket : public axonvex::interfaces::ProtocolInterface {
     std::string bindAddress_;
     uint16_t port_;
     std::atomic<bool> running_{false};
+    /// Liveness of the current socket, distinct from running_ on purpose:
+    /// running_ is the caller's intent (set by start(), cleared by stop()),
+    /// connectionAlive_ is the receive path's actual state — cleared by
+    /// recvLoop on a hard recvfrom error and by the worker itself on the way
+    /// out (covers the ordinary stop()/self-stop path too). Mirrors
+    /// TcpClient::connectionAlive_: start() keys a restart off this flag and
+    /// reaps the dead worker (join before reassigning worker_) instead of
+    /// either reporting success over a dead receive path or move-assigning a
+    /// new std::thread onto a still-joinable one (std::terminate).
+    std::atomic<bool> connectionAlive_{false};
     std::thread worker_;
     /// Serialises start()/stop() so only one caller ever tears the thread down.
     mutable std::mutex lifecycleMutex_;

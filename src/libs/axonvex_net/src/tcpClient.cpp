@@ -567,6 +567,28 @@ void TcpClient::dispatchMessage(const std::vector<uint8_t>& data) {
 }
 
 void TcpClient::reportError(const std::string& msg) {
+    // Recursion ceiling: send()'s loud refusal on a dead connection reports
+    // through here, so a handler that reacts by calling send() again
+    // re-enters reportError() from inside this very dispatch — unbounded,
+    // that is reportError -> handler -> send -> reportError forever, i.e. a
+    // stack overflow (the old silent `return false` broke the cycle by
+    // construction). Per-thread, not per-object: while a TCP error report is
+    // dispatching on this thread, a nested TCP error report on the same
+    // thread is dropped instead of re-entering the handlers. The nested
+    // send()/etc. call still runs and still returns its own failure to its
+    // caller — only the re-dispatch is skipped.
+    static thread_local bool inDispatch = false;
+    if (inDispatch) {
+        return;
+    }
+    inDispatch = true;
+    struct DispatchGuard {
+        bool& flag;
+        ~DispatchGuard() {
+            flag = false;
+        }
+    } guard{inDispatch};
+
     std::vector<ErrorHandler*> targets;
     {
         std::lock_guard<std::mutex> lock(cbMutex_);
