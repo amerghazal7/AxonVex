@@ -66,6 +66,16 @@ project("${PROJECT_NAME}"
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Narrow, vendor-forced exception to "C++14 strictly" (CLAUDE.md), scoped to
+# Apple only: Xcode's libc++ dropped <experimental/filesystem>, and its
+# <filesystem> fallback (see axonvex_core/detail/filesystem_compat.hpp) needs
+# the -std= dialect itself at C++17 to define anything, not just the header
+# to be present. Every other platform keeps CMAKE_CXX_STANDARD 14 above; must
+# stay after project() for the same reason 14 does (comment above).
+if(APPLE)
+    set(CMAKE_CXX_STANDARD 17)
+endif()
+
 # Default install prefix to the project-local dev directory, but only when
 # the caller didn't ask for one: unconditional FORCE here previously stomped
 # any `-DCMAKE_INSTALL_PREFIX=...` a downstream packager (conan, a system
@@ -345,6 +355,19 @@ if(BUILD_TESTING)
     gtest_discover_tests(test_core
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         DISCOVERY_TIMEOUT 30
+    )
+
+    # Regression check for filesystem_compat.hpp's Apple branch selection
+    # (host-independent: forces __APPLE__ itself, no Mac needed). Plain
+    # cmake -P rather than a GTest case, since it's about preprocessor
+    # branch selection under -D/-std combinations, not runtime behavior.
+    add_test(NAME filesystem_compat_apple_dialect_regression
+        COMMAND ${CMAKE_COMMAND}
+            -DAXONVEX_CXX=${CMAKE_CXX_COMPILER}
+            -DAXONVEX_CORE_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src/libs/axonvex_core/include
+            -DAXONVEX_STUB_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/tests/core/fixtures/appleExperimentalStub
+            -DAXONVEX_PROBE_SRC=${CMAKE_CURRENT_SOURCE_DIR}/tests/core/fixtures/appleExperimentalStub/probe.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/filesystemCompatAppleDialectCheck.cmake
     )
 
     # ROS2 adapter smoke test (C20): only when axonvex_ros2 itself
