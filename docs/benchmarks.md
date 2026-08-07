@@ -60,7 +60,7 @@ framework's RT characteristic; it is the difference between measuring
 ### What a maintainer must run
 
 ```bash
-# Either via Conan (adds benchmark/1.8.3, see conanfile.txt) ...
+# Either via Conan (adds benchmark/1.8.3, see conanfile.py) ...
 conan install . --output-folder=build --build=missing
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=Release -DAXONVEX_BUILD_BENCHMARKS=ON
