@@ -24,7 +24,9 @@ class AdapterInterface;
 #include <axonvex_core/path.hpp>
 #include <axonvex_core/precisionTimer.hpp>
 #include <axonvex_core/processingUnit.hpp>
+#include <axonvex_core/systemPortRegistry.hpp>
 #include <axonvex_core/timingController.hpp>
+#include <axonvex_core/unitRegistry.hpp>
 #include <axonvex_core/utils/containers/memoryPool.hpp>
 #include <axonvex_core/utils/containers/threadSafeQueue.hpp>
 #include <chrono>
@@ -243,8 +245,21 @@ class AxonVexSystem {
      * entire lifetime on a thread outside the system's own workers; call
      * emergencyShutdown() from a callback if the system must stop itself,
      * and destroy the object afterward from an external thread.
+     *
+     * @note virtual: AxonVexSystem is already polymorphic (initializeBlocksLayout()
+     * is pure virtual, so this class has a vtable regardless), and
+     * loadSystemFromSpec() (systemSpec.hpp) hands back ownership of a
+     * SpecSystem through exactly this type -- std::unique_ptr<AxonVexSystem>.
+     * A non-virtual destructor there is undefined behavior on delete and, in
+     * practice on this ABI, skips every derived member's destructor: an
+     * ASan LeakSanitizer run on the SpecSystem instantiation slice caught
+     * this concretely (SystemSpec's owned vectors/maps in SpecSystem::spec_
+     * leaking because ~SpecSystem() was never reached). Fixed here rather
+     * than worked around at that one call site because any future
+     * AxonVexSystem subclass stored in a unique_ptr<AxonVexSystem> would hit
+     * the exact same UB.
      */
-    ~AxonVexSystem();
+    virtual ~AxonVexSystem();
 
     // Non-copyable, non-movable (due to atomic members)
     AxonVexSystem(const AxonVexSystem&) = delete;
@@ -735,11 +750,10 @@ class AxonVexSystem {
     std::unique_ptr<Configuration> configuration_;
     std::unique_ptr<Logger> logger_;
 
-    // Processing unit management
-    mutable std::mutex unitsMutex_;
-    std::unordered_map<uint32_t, std::unique_ptr<ProcessingUnit>> processingUnits_;
-    std::unordered_map<ProcessingUnit*, uint32_t> unitToIdMap_;
-    std::atomic<uint32_t> nextUnitId_{1};
+    // Processing unit management (Phase 2 decomposition step 2: extracted to
+    // UnitRegistry -- see unitRegistry.hpp for the ownership + id-lookup
+    // contract; orchestration (scheduling, events, rollback) stays here).
+    UnitRegistry unitRegistry_;
 
     // Adapter injection
     std::unordered_map<std::string, axonvex::adapters::AdapterInterface*> adapters_;
@@ -747,29 +761,11 @@ class AxonVexSystem {
     // Safety manager injection
     SafetyHook* safetyHook_{nullptr};
 
-    // System port management
-    mutable std::mutex systemPortsMutex_;
-    std::unordered_map<std::string, BasePort*> systemInputPorts_;
-    std::unordered_map<std::string, BasePort*> systemOutputPorts_;
-
-    /**
-     * C9: acquires this system's and the target's systemPortsMutex_ without a
-     * lock-order deadlock (std::lock), and locks only once when target == this
-     * (locking a non-recursive mutex twice is UB). Second lock is empty in the
-     * self case.
-     */
-    std::pair<std::unique_lock<std::mutex>, std::unique_lock<std::mutex>> lockSystemPortsWith(
-        AxonVexSystem* targetSystem) {
-        std::unique_lock<std::mutex> lock1(systemPortsMutex_, std::defer_lock);
-        std::unique_lock<std::mutex> lock2;
-        if (targetSystem == this) {
-            lock1.lock();
-        } else {
-            lock2 = std::unique_lock<std::mutex>(targetSystem->systemPortsMutex_, std::defer_lock);
-            std::lock(lock1, lock2);
-        }
-        return std::make_pair(std::move(lock1), std::move(lock2));
-    }
+    // System port management (Phase 2 decomposition step 1: extracted to
+    // SystemPortRegistry — see systemPortRegistry.hpp for the C9 lockWith()
+    // protocol this class's connectToSystem<T>/disconnectFromSystem<T>
+    // templates rely on).
+    SystemPortRegistry systemPorts_;
 
     // Statistics and monitoring
     mutable SystemStatistics statistics_;
@@ -902,11 +898,11 @@ bool AxonVexSystem::connectToSystem(const std::string& outputPortName, AxonVexSy
         return false;
     }
 
-    auto portLocks = lockSystemPortsWith(targetSystem);
+    auto portLocks = systemPorts_.lockWith(targetSystem->systemPorts_);
 
     // Find source output port
-    auto outputIt = systemOutputPorts_.find(outputPortName);
-    if (outputIt == systemOutputPorts_.end()) {
+    auto outputIt = systemPorts_.outputs_.find(outputPortName);
+    if (outputIt == systemPorts_.outputs_.end()) {
         if (logger_) {
             logger_->warning("System", "System output port not found: " + outputPortName);
         }
@@ -914,8 +910,8 @@ bool AxonVexSystem::connectToSystem(const std::string& outputPortName, AxonVexSy
     }
 
     // Find target input port
-    auto inputIt = targetSystem->systemInputPorts_.find(inputPortName);
-    if (inputIt == targetSystem->systemInputPorts_.end()) {
+    auto inputIt = targetSystem->systemPorts_.inputs_.find(inputPortName);
+    if (inputIt == targetSystem->systemPorts_.inputs_.end()) {
         if (logger_) {
             logger_->warning("System", "Target system input port not found: " + inputPortName);
         }
@@ -961,17 +957,17 @@ bool AxonVexSystem::disconnectFromSystem(const std::string& outputPortName,
         return false;
     }
 
-    auto portLocks = lockSystemPortsWith(targetSystem);
+    auto portLocks = systemPorts_.lockWith(targetSystem->systemPorts_);
 
     // Find source output port
-    auto outputIt = systemOutputPorts_.find(outputPortName);
-    if (outputIt == systemOutputPorts_.end()) {
+    auto outputIt = systemPorts_.outputs_.find(outputPortName);
+    if (outputIt == systemPorts_.outputs_.end()) {
         return false;
     }
 
     // Find target input port
-    auto inputIt = targetSystem->systemInputPorts_.find(inputPortName);
-    if (inputIt == targetSystem->systemInputPorts_.end()) {
+    auto inputIt = targetSystem->systemPorts_.inputs_.find(inputPortName);
+    if (inputIt == targetSystem->systemPorts_.inputs_.end()) {
         return false;
     }
 

@@ -203,7 +203,7 @@ class PluginManager {
             std::string fname = entry->d_name;
             if (fname.size() > 3 && fname.rfind(".so") == fname.size() - 3) {
                 std::string full = directory + "/" + fname;
-                struct stat st{};
+                struct stat st {};
                 if (stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
                     if (loadPlugin(full)) {
                         any = true;

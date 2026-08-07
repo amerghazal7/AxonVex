@@ -1,8 +1,7 @@
-#include <axonvex_core/utils/containers/threadSafeQueue.hpp>
-#include <gtest/gtest.h>
-
 #include <atomic>
+#include <axonvex_core/utils/containers/threadSafeQueue.hpp>
 #include <chrono>
+#include <gtest/gtest.h>
 #include <thread>
 #include <vector>
 
@@ -27,8 +26,8 @@ TEST(SoakScalabilityTest, ThreadSafeQueueHighVolumeWithinTimeBudget) {
         EXPECT_EQ(*v, i);
     }
 
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::steady_clock::now() - start);
+    auto elapsed =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start);
     EXPECT_LT(elapsed.count(), kMaxSeconds);
 }
 

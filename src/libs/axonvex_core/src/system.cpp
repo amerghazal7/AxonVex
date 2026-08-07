@@ -158,7 +158,8 @@ std::string SystemHealth::getStatusString() const {
 // AXONVEX SYSTEM IMPLEMENTATION
 // =================================================================
 
-AxonVexSystem::AxonVexSystem(const SystemConfiguration& config) : systemConfig_(config) {
+AxonVexSystem::AxonVexSystem(const SystemConfiguration& config)
+    : systemConfig_(config), unitRegistry_(systemConfig_.maxProcessingUnits) {
 
     // Validate configuration
     try {
@@ -271,7 +272,10 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             if (logger_) {
                 logger_->error("System", "Block layout initialization failed");
             }
-            logStateTransition(SystemState::INITIALIZING, SystemState::ERROR);
+            // Must actually transition (not just log) -- isHealthy() reads
+            // currentState_, and a failed spec/blocks-layout deploy must not
+            // leave the system reporting itself healthy while INITIALIZING.
+            transitionState(SystemState::ERROR);
             cleanupComponents();
             return false;
         }
@@ -552,12 +556,11 @@ void AxonVexSystem::emergencyShutdown() {
         if (timingController_) {
             timingController_->stop();
         }
-        // Clear all processing units
-        {
-            std::lock_guard<std::mutex> lock(unitsMutex_);
-            processingUnits_.clear();
-            unitToIdMap_.clear();
-        }
+        // Clear all processing units. clear() releases unitRegistry_'s
+        // internal lock before returning; the discarded unique_ptrs are
+        // destroyed here, already outside that lock (C18-shape fix carried
+        // from the UnitRegistry extraction).
+        unitRegistry_.clear();
         if (logger_) {
             logger_->critical("System", "Emergency shutdown completed");
             logger_->flush();
@@ -650,13 +653,11 @@ void AxonVexSystem::reset() {
     statistics_.reset();
     currentRecoveryAttempts_.store(0);
 
-    // Clear all containers
-    {
-        std::lock_guard<std::mutex> lock(unitsMutex_);
-        processingUnits_.clear();
-        unitToIdMap_.clear();
-        nextUnitId_.store(1);
-    }
+    // Clear all containers. Unlike emergencyShutdown()'s clear, reset() also
+    // restarts the id counter at 1 (today's exact behavior, carried via the
+    // two separate registry calls).
+    unitRegistry_.clear();
+    unitRegistry_.resetIds();
 
     {
         std::lock_guard<std::mutex> lock(callbacksMutex_);
@@ -771,40 +772,34 @@ uint32_t AxonVexSystem::registerProcessingUnit(std::unique_ptr<ProcessingUnit> u
         throw std::invalid_argument("Processing unit cannot be null");
     }
 
-    std::lock_guard<std::mutex> lock(unitsMutex_);
+    // addAndRun() keeps "insert" and "use the pointer" atomic against a
+    // concurrent emergencyShutdown()/reset() -> UnitRegistry::clear(): the
+    // scheduling call below runs while unitRegistry_ still holds its lock,
+    // so clear() cannot free unitPtr out from under it (ASan-confirmed
+    // heap-use-after-free pre-fix: ProcessingUnit::getName() below used to
+    // run unlocked after add() returned, racing clear()). unitName is
+    // captured under that same lock so the event/log statements after
+    // addAndRun returns use a copy, never the (by-then possibly freed)
+    // pointer.
+    std::string unitName;
+    uint32_t unitId = unitRegistry_.addAndRun(
+        std::move(unit), [this, &constraints, &unitName](uint32_t /*id*/, ProcessingUnit* unitPtr) {
+            unitName = unitPtr->getName();
 
-    // Check if we've reached the limit
-    if (processingUnits_.size() >= systemConfig_.maxProcessingUnits) {
-        throw std::runtime_error("Maximum number of processing units exceeded");
-    }
+            if (timingController_ && isRunning()) {
+                TimingConstraints finalConstraints = constraints;
+                if (finalConstraints.period.count() == 0) {
+                    // Use default constraints based on system tick rate
+                    finalConstraints.period = systemConfig_.systemTickRate;
+                    finalConstraints.deadline = finalConstraints.period;
+                    finalConstraints.wcet = finalConstraints.period / 10;
+                }
 
-    // Generate unique ID
-    uint32_t unitId = nextUnitId_.fetch_add(1);
-
-    // Store the unit
-    ProcessingUnit* unitPtr = unit.get();
-    processingUnits_[unitId] = std::move(unit);
-    unitToIdMap_[unitPtr] = unitId;
-
-    // Register with timing controller if running
-    if (timingController_ && isRunning()) {
-        try {
-            TimingConstraints finalConstraints = constraints;
-            if (finalConstraints.period.count() == 0) {
-                // Use default constraints based on system tick rate
-                finalConstraints.period = systemConfig_.systemTickRate;
-                finalConstraints.deadline = finalConstraints.period;
-                finalConstraints.wcet = finalConstraints.period / 10;
+                // Throwing here rolls the unit back inside addAndRun (still
+                // under the lock) before the exception reaches our caller.
+                timingController_->scheduleProcessingUnit(unitPtr, finalConstraints);
             }
-
-            timingController_->scheduleProcessingUnit(unitPtr, finalConstraints);
-        } catch (const std::exception& e) {
-            // Remove the unit if scheduling failed
-            processingUnits_.erase(unitId);
-            unitToIdMap_.erase(unitPtr);
-            throw;
-        }
-    }
+        });
 
     // Update statistics
     statistics_.totalProcessingUnits.fetch_add(1);
@@ -815,15 +810,15 @@ uint32_t AxonVexSystem::registerProcessingUnit(std::unique_ptr<ProcessingUnit> u
     event.type = SystemEvent::Type::PROCESSING_UNIT_ADDED;
     event.oldState = currentState_.load();
     event.newState = currentState_.load();
-    event.description = "Processing unit registered: " + unitPtr->getName();
+    event.description = "Processing unit registered: " + unitName;
     event.timestamp = std::chrono::steady_clock::now();
     event.metadata["unit_id"] = std::to_string(unitId);
-    event.metadata["unit_name"] = unitPtr->getName();
+    event.metadata["unit_name"] = unitName;
 
     publishEvent(event);
 
     if (logger_) {
-        logger_->info("System", "Registered processing unit: " + unitPtr->getName() +
+        logger_->info("System", "Registered processing unit: " + unitName +
                                     " (ID: " + std::to_string(unitId) + ")");
     }
 
@@ -831,26 +826,11 @@ uint32_t AxonVexSystem::registerProcessingUnit(std::unique_ptr<ProcessingUnit> u
 }
 
 ProcessingUnit* AxonVexSystem::getProcessingUnit(uint32_t unitId) const {
-    std::lock_guard<std::mutex> lock(unitsMutex_);
-
-    auto it = processingUnits_.find(unitId);
-    if (it != processingUnits_.end()) {
-        return it->second.get();
-    }
-    return nullptr;
+    return unitRegistry_.find(unitId);
 }
 
 std::vector<ProcessingUnit*> AxonVexSystem::getAllProcessingUnits() const {
-    std::lock_guard<std::mutex> lock(unitsMutex_);
-
-    std::vector<ProcessingUnit*> units;
-    units.reserve(processingUnits_.size());
-
-    for (const auto& pair : processingUnits_) {
-        units.push_back(pair.second.get());
-    }
-
-    return units;
+    return unitRegistry_.all();
 }
 
 size_t AxonVexSystem::getProcessingUnitCount() const noexcept {
@@ -871,15 +851,11 @@ bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName, Pro
     }
 
     // Verify the unit is registered in this system
-    {
-        std::lock_guard<std::mutex> lock(unitsMutex_);
-        auto it = unitToIdMap_.find(unit);
-        if (it == unitToIdMap_.end()) {
-            if (logger_) {
-                logger_->warning("System", "ProcessingUnit not registered in this system");
-            }
-            return false;
+    if (!unitRegistry_.idOf(unit).has_value()) {
+        if (logger_) {
+            logger_->warning("System", "ProcessingUnit not registered in this system");
         }
+        return false;
     }
 
     // Get the port from the ProcessingUnit (check input ports)
@@ -907,18 +883,13 @@ bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName, Pro
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    // Check if system port name already exists
-    if (systemInputPorts_.find(systemPortName) != systemInputPorts_.end()) {
+    // Check if system port name already exists / assign the port
+    if (!systemPorts_.assignInput(systemPortName, port)) {
         if (logger_) {
             logger_->warning("System", "System input port '" + systemPortName + "' already exists");
         }
         return false;
     }
-
-    // Assign the port
-    systemInputPorts_[systemPortName] = port;
 
     if (logger_) {
         logger_->info("System", "Assigned system input port '" + systemPortName + "' from " +
@@ -951,15 +922,11 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName, Pr
     }
 
     // Verify the unit is registered in this system
-    {
-        std::lock_guard<std::mutex> lock(unitsMutex_);
-        auto it = unitToIdMap_.find(unit);
-        if (it == unitToIdMap_.end()) {
-            if (logger_) {
-                logger_->warning("System", "ProcessingUnit not registered in this system");
-            }
-            return false;
+    if (!unitRegistry_.idOf(unit).has_value()) {
+        if (logger_) {
+            logger_->warning("System", "ProcessingUnit not registered in this system");
         }
+        return false;
     }
 
     // Get the port from the ProcessingUnit (check output ports)
@@ -987,19 +954,14 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName, Pr
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    // Check if system port name already exists
-    if (systemOutputPorts_.find(systemPortName) != systemOutputPorts_.end()) {
+    // Check if system port name already exists / assign the port
+    if (!systemPorts_.assignOutput(systemPortName, port)) {
         if (logger_) {
             logger_->warning("System",
                              "System output port '" + systemPortName + "' already exists");
         }
         return false;
     }
-
-    // Assign the port
-    systemOutputPorts_[systemPortName] = port;
 
     if (logger_) {
         logger_->info("System", "Assigned system output port '" + systemPortName + "' from " +
@@ -1023,14 +985,9 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName, Pr
 }
 
 bool AxonVexSystem::removeSystemInputPort(const std::string& systemPortName) {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    auto it = systemInputPorts_.find(systemPortName);
-    if (it == systemInputPorts_.end()) {
+    if (!systemPorts_.removeInput(systemPortName)) {
         return false;
     }
-
-    systemInputPorts_.erase(it);
 
     if (logger_) {
         logger_->info("System", "Removed system input port: " + systemPortName);
@@ -1040,14 +997,9 @@ bool AxonVexSystem::removeSystemInputPort(const std::string& systemPortName) {
 }
 
 bool AxonVexSystem::removeSystemOutputPort(const std::string& systemPortName) {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    auto it = systemOutputPorts_.find(systemPortName);
-    if (it == systemOutputPorts_.end()) {
+    if (!systemPorts_.removeOutput(systemPortName)) {
         return false;
     }
-
-    systemOutputPorts_.erase(it);
 
     if (logger_) {
         logger_->info("System", "Removed system output port: " + systemPortName);
@@ -1057,83 +1009,56 @@ bool AxonVexSystem::removeSystemOutputPort(const std::string& systemPortName) {
 }
 
 BasePort* AxonVexSystem::getSystemInputPort(const std::string& portName) const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    auto it = systemInputPorts_.find(portName);
-    if (it != systemInputPorts_.end()) {
-        return it->second;
-    }
-    return nullptr;
+    return systemPorts_.input(portName);
 }
 
 BasePort* AxonVexSystem::getSystemOutputPort(const std::string& portName) const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    auto it = systemOutputPorts_.find(portName);
-    if (it != systemOutputPorts_.end()) {
-        return it->second;
-    }
-    return nullptr;
+    return systemPorts_.output(portName);
 }
 
 std::vector<std::string> AxonVexSystem::getSystemInputPortNames() const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    std::vector<std::string> names;
-    names.reserve(systemInputPorts_.size());
-
-    for (const auto& pair : systemInputPorts_) {
-        names.push_back(pair.first);
-    }
-
-    return names;
+    return systemPorts_.inputNames();
 }
 
 std::vector<std::string> AxonVexSystem::getSystemOutputPortNames() const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
-    std::vector<std::string> names;
-    names.reserve(systemOutputPorts_.size());
-
-    for (const auto& pair : systemOutputPorts_) {
-        names.push_back(pair.first);
-    }
-
-    return names;
+    return systemPorts_.outputNames();
 }
 
 bool AxonVexSystem::hasSystemInputPort(const std::string& portName) const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-    return systemInputPorts_.find(portName) != systemInputPorts_.end();
+    return systemPorts_.hasInput(portName);
 }
 
 bool AxonVexSystem::hasSystemOutputPort(const std::string& portName) const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-    return systemOutputPorts_.find(portName) != systemOutputPorts_.end();
+    return systemPorts_.hasOutput(portName);
 }
 
 std::string AxonVexSystem::getSystemPortInfo() const {
-    std::lock_guard<std::mutex> lock(systemPortsMutex_);
-
     std::ostringstream oss;
     oss << "System Port Information for '" << systemConfig_.systemName << "':\n";
 
-    oss << "Input Ports (" << systemInputPorts_.size() << "):\n";
-    for (const auto& pair : systemInputPorts_) {
-        oss << "  - " << pair.first;
-        if (pair.second) {
-            oss << " (Type: " << pair.second->getDataTypeName()
-                << ", Owner: " << pair.second->getOwner()->getName() << ")";
+    // describeInputs()/describeOutputs() read name + type + owner under one
+    // SystemPortRegistry::mutex_ hold, so there is no window for a
+    // concurrent unregisterProcessingUnit() to free the port between lookup
+    // and dereference. The old inputNames()+input()+deref two-step (each
+    // step its own lock/unlock) had exactly that window — a
+    // heap-use-after-free; regression test:
+    // AxonVexSystemTest.GetSystemPortInfoDoesNotRaceUnregisterProcessingUnit.
+    auto inputDescriptions = systemPorts_.describeInputs();
+    oss << "Input Ports (" << inputDescriptions.size() << "):\n";
+    for (const auto& desc : inputDescriptions) {
+        oss << "  - " << desc.name;
+        if (!desc.dataTypeName.empty() || !desc.ownerName.empty()) {
+            oss << " (Type: " << desc.dataTypeName << ", Owner: " << desc.ownerName << ")";
         }
         oss << "\n";
     }
 
-    oss << "Output Ports (" << systemOutputPorts_.size() << "):\n";
-    for (const auto& pair : systemOutputPorts_) {
-        oss << "  - " << pair.first;
-        if (pair.second) {
-            oss << " (Type: " << pair.second->getDataTypeName()
-                << ", Owner: " << pair.second->getOwner()->getName() << ")";
+    auto outputDescriptions = systemPorts_.describeOutputs();
+    oss << "Output Ports (" << outputDescriptions.size() << "):\n";
+    for (const auto& desc : outputDescriptions) {
+        oss << "  - " << desc.name;
+        if (!desc.dataTypeName.empty() || !desc.ownerName.empty()) {
+            oss << " (Type: " << desc.dataTypeName << ", Owner: " << desc.ownerName << ")";
         }
         oss << "\n";
     }
@@ -1281,28 +1206,29 @@ bool AxonVexSystem::startComponents() {
             timingController_->start();
         }
 
-        // Schedule all registered processing units
-        {
-            std::lock_guard<std::mutex> lock(unitsMutex_);
-            for (const auto& pair : processingUnits_) {
-                ProcessingUnit* unit = pair.second.get();
+        // forEach() holds unitRegistry_'s lock for the WHOLE loop, so a
+        // concurrent emergencyShutdown()/reset() -> clear() cannot free a
+        // unit out from under scheduleProcessingUnit() mid-iteration —
+        // restores the atomicity the old unitsMutex_-held span gave
+        // pre-extraction (a snapshot-then-unlocked-iterate here is the same
+        // ASan-confirmed heap-use-after-free shape as registerProcessingUnit,
+        // just via all() instead of add()).
+        unitRegistry_.forEach([this](ProcessingUnit* unit) {
+            // Create default constraints
+            TimingConstraints constraints;
+            constraints.period = systemConfig_.systemTickRate;
+            constraints.deadline = constraints.period;
+            constraints.wcet = constraints.period / 10;
 
-                // Create default constraints
-                TimingConstraints constraints;
-                constraints.period = systemConfig_.systemTickRate;
-                constraints.deadline = constraints.period;
-                constraints.wcet = constraints.period / 10;
-
-                try {
-                    timingController_->scheduleProcessingUnit(unit, constraints);
-                } catch (const std::exception& e) {
-                    if (logger_) {
-                        logger_->warning("System", "Failed to schedule processing unit " +
-                                                       unit->getName() + ": " + e.what());
-                    }
+            try {
+                timingController_->scheduleProcessingUnit(unit, constraints);
+            } catch (const std::exception& e) {
+                if (logger_) {
+                    logger_->warning("System", "Failed to schedule processing unit " +
+                                                   unit->getName() + ": " + e.what());
                 }
             }
-        }
+        });
 
         return true;
 
@@ -1766,15 +1692,9 @@ size_t AxonVexSystem::getMemoryUsage() const noexcept {
     // Simple memory usage estimation
     size_t usage = sizeof(*this);
 
-    {
-        std::lock_guard<std::mutex> lock(unitsMutex_);
-        usage += processingUnits_.size() * 1024; // Rough estimate per ProcessingUnit
-    }
+    usage += unitRegistry_.count() * 1024; // Rough estimate per ProcessingUnit
 
-    {
-        std::lock_guard<std::mutex> lock(systemPortsMutex_);
-        usage += (systemInputPorts_.size() + systemOutputPorts_.size()) * 64;
-    }
+    usage += (systemPorts_.inputCount() + systemPorts_.outputCount()) * 64;
 
     statistics_.memoryUsageBytes.store(usage);
     statistics_.peakMemoryUsageBytes.store(
@@ -1913,11 +1833,15 @@ std::string AxonVexSystem::getSystemReport() const {
 // Update the cleanup methods to handle system ports
 void AxonVexSystem::cleanupComponents() {
     // Clear system port assignments first
-    {
-        std::lock_guard<std::mutex> lock(systemPortsMutex_);
-        systemInputPorts_.clear();
-        systemOutputPorts_.clear();
-    }
+    systemPorts_.clear();
+
+    // Unconditional, same as emergencyShutdown()'s drainEventQueue() call:
+    // events can be queued before the event thread ever starts (e.g.
+    // registerProcessingUnit() during a failed initializeBlocksLayout()) and
+    // would otherwise leak (C25) when the next initialize() call's
+    // initializeComponents() replaces eventPool_/eventQueue_ without ever
+    // having destructed the SystemEvent objects still sitting in the old ones.
+    drainEventQueue();
 
     // Reset components
     timingController_.reset();
@@ -1931,66 +1855,55 @@ void AxonVexSystem::cleanupComponents() {
 
 // Update the unregisterProcessingUnit method to remove associated system ports
 bool AxonVexSystem::unregisterProcessingUnit(uint32_t unitId) {
-    ProcessingUnit* unitPtr = nullptr;
-    std::string unitName;
-
-    // First, remove any system ports associated with this unit
-    {
-        std::lock_guard<std::mutex> portsLock(systemPortsMutex_);
-        std::lock_guard<std::mutex> unitsLock(unitsMutex_);
-
-        auto it = processingUnits_.find(unitId);
-        if (it == processingUnits_.end()) {
-            return false;
-        }
-
-        unitPtr = it->second.get();
-        unitName = unitPtr->getName();
-
-        // Remove system input ports associated with this unit
-        auto inputIt = systemInputPorts_.begin();
-        while (inputIt != systemInputPorts_.end()) {
-            if (inputIt->second && inputIt->second->getOwner() == unitPtr) {
-                if (logger_) {
-                    logger_->info("System", "Removing system input port '" + inputIt->first +
-                                                "' due to ProcessingUnit removal");
-                }
-                inputIt = systemInputPorts_.erase(inputIt);
-            } else {
-                ++inputIt;
-            }
-        }
-
-        // Remove system output ports associated with this unit
-        auto outputIt = systemOutputPorts_.begin();
-        while (outputIt != systemOutputPorts_.end()) {
-            if (outputIt->second && outputIt->second->getOwner() == unitPtr) {
-                if (logger_) {
-                    logger_->info("System", "Removing system output port '" + outputIt->first +
-                                                "' due to ProcessingUnit removal");
-                }
-                outputIt = systemOutputPorts_.erase(outputIt);
-            } else {
-                ++outputIt;
-            }
-        }
-
-        // Remove from timing controller if running
-        if (timingController_) {
-            try {
-                timingController_->removeProcessingUnit(unitPtr);
-            } catch (const std::exception& e) {
-                if (logger_) {
-                    logger_->warning("System", "Failed to remove unit from timing controller: " +
-                                                   std::string(e.what()));
-                }
-            }
-        }
-
-        // Remove from containers
-        unitToIdMap_.erase(unitPtr);
-        processingUnits_.erase(it);
+    // unitRegistry_.remove() atomically finds-and-erases under its own lock:
+    // whichever concurrent caller of unregisterProcessingUnit(same id) gets
+    // the non-null unique_ptr back is the exclusive owner of the rest of
+    // this function (the other gets nullptr and returns false below) --
+    // same "cannot observe the unit as still-present twice" guarantee the
+    // pre-extraction code got from holding unitsMutex_ across the whole
+    // find-through-erase span, without needing to hold any lock here.
+    std::unique_ptr<ProcessingUnit> removed = unitRegistry_.remove(unitId);
+    if (!removed) {
+        return false;
     }
+
+    ProcessingUnit* unitPtr = removed.get();
+    std::string unitName = unitPtr->getName();
+
+    // Remove any system ports associated with this unit. systemPorts_ takes
+    // only its own internal mutex_ -- no lock-order concern versus
+    // assignSystemInputPort/OutputPort (which no longer hold any unit lock
+    // while touching systemPorts_ either).
+    SystemPortRegistry::RemovedPorts removedPorts = systemPorts_.removeAllForOwner(unitPtr);
+    for (const auto& name : removedPorts.inputs) {
+        if (logger_) {
+            logger_->info("System", "Removing system input port '" + name +
+                                        "' due to ProcessingUnit removal");
+        }
+    }
+    for (const auto& name : removedPorts.outputs) {
+        if (logger_) {
+            logger_->info("System", "Removing system output port '" + name +
+                                        "' due to ProcessingUnit removal");
+        }
+    }
+
+    // Remove from timing controller if running
+    if (timingController_) {
+        try {
+            timingController_->removeProcessingUnit(unitPtr);
+        } catch (const std::exception& e) {
+            if (logger_) {
+                logger_->warning("System", "Failed to remove unit from timing controller: " +
+                                               std::string(e.what()));
+            }
+        }
+    }
+
+    // Done with unitPtr; destroy the unit now (no lock held here at all --
+    // unitRegistry_.remove() already released its internal lock before
+    // returning ownership to us).
+    removed.reset();
 
     // Update statistics
     statistics_.activeProcessingUnits.fetch_sub(1);

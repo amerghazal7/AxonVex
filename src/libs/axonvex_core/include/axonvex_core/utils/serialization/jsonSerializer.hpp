@@ -9,7 +9,7 @@
 namespace axonvex::utils::serialization {
 
 class JSONSerializer {
-public:
+  public:
     using json = nlohmann::json;
 
     static std::string toString(const json& j, int indent = 2) {
@@ -36,30 +36,39 @@ public:
         axonvex_fs::create_directories(path.parent_path());
         std::ofstream ofs(path, std::ios::binary);
         if (!ofs) {
-            throw std::runtime_error("JSONSerializer: cannot open file for writing: " + path.string());
+            throw std::runtime_error("JSONSerializer: cannot open file for writing: " +
+                                     path.string());
         }
         ofs << j.dump(indent);
         if (!ofs.good()) {
-            throw std::runtime_error("JSONSerializer: failed to write JSON to file: " + path.string());
+            throw std::runtime_error("JSONSerializer: failed to write JSON to file: " +
+                                     path.string());
         }
     }
 
     static json fromFile(const axonvex_fs::path& path) {
         std::ifstream ifs(path, std::ios::binary);
         if (!ifs) {
-            throw std::runtime_error("JSONSerializer: cannot open file for reading: " + path.string());
+            throw std::runtime_error("JSONSerializer: cannot open file for reading: " +
+                                     path.string());
         }
-        std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        std::string content((std::istreambuf_iterator<char>(ifs)),
+                            std::istreambuf_iterator<char>());
         return fromString(content);
     }
 
     // Non-throwing variants
     static bool toFileNoThrow(const json& j, const axonvex_fs::path& path, int indent = 2) {
-        try { toFile(j, path, indent); return true; } catch (...) { return false; }
+        try {
+            toFile(j, path, indent);
+            return true;
+        } catch (...) { return false; }
     }
 
     static axonvex::optional<json> fromFileNoThrow(const axonvex_fs::path& path) {
-        try { return fromFile(path); } catch (...) { return axonvex::nullopt; }
+        try {
+            return fromFile(path);
+        } catch (...) { return axonvex::nullopt; }
     }
 
     template <typename T>
@@ -71,8 +80,11 @@ public:
     template <typename T>
     static axonvex::optional<T> deserializeFromFileNoThrow(const axonvex_fs::path& path) {
         auto j = fromFileNoThrow(path);
-        if (!j) return axonvex::nullopt;
-        try { return j.value().template get<T>(); } catch (...) { return axonvex::nullopt; }
+        if (!j)
+            return axonvex::nullopt;
+        try {
+            return j.value().template get<T>();
+        } catch (...) { return axonvex::nullopt; }
     }
 };
 

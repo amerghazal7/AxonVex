@@ -1,5 +1,5 @@
-#include <gtest/gtest.h>
 #include <axonvex_core/types/types.hpp>
+#include <gtest/gtest.h>
 
 using axonvex::types::geometry::Point2D;
 using axonvex::types::geometry::Point3D;

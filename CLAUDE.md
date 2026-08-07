@@ -11,7 +11,11 @@ AxonVex is a C++14 real-time framework: deterministic scheduling, typed processi
 ## Build & Test (canonical commands)
 
 ```bash
-conan install . --output-folder=build --build=missing            # deps (Conan 2)
+# -s build_type MUST match the CMAKE_BUILD_TYPE below. Conan's CMakeDeps gates every
+# target property behind $<CONFIG:...>, so a mismatch silently yields imported targets
+# carrying zero libraries — it links nothing and fails with thousands of undefined
+# references (C48). The configure step now detects and refuses this loudly.
+conan install . --output-folder=build --build=missing -s build_type=Debug   # deps (Conan 2)
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DBUILD_EXAMPLES=ON
 cmake --build build -j$(nproc)
