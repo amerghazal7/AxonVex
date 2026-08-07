@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 
 #ifdef __linux__
 #include <pthread.h>
@@ -139,6 +140,11 @@ bool RealTimeScheduler::updateTaskConstraints(uint32_t taskId,
 }
 
 void RealTimeScheduler::start() {
+    // C44: latch first, before any early return, so the setup-only window
+    // for setErrorCallback() closes the moment start() is invoked rather
+    // than only once a new thread is actually spawned below.
+    hasStarted_.store(true, std::memory_order_relaxed);
+
     if (running_.load()) {
         return; // Already running
     }
@@ -305,8 +311,24 @@ void RealTimeScheduler::setCustomScheduler(CustomSchedulerCallback callback) {
     customScheduler_ = callback;
 }
 
+void RealTimeScheduler::requireNotStarted(const char* what) const {
+    if (hasStarted_.load(std::memory_order_relaxed)) {
+        throw std::logic_error(
+            std::string(what) +
+            " must be called before the scheduler starts: executeTask() reads the error "
+            "callback unlocked on the scheduler thread, so late registration would race it "
+            "(C44)");
+    }
+}
+
 void RealTimeScheduler::setErrorCallback(ErrorCallback callback) {
-    std::lock_guard<std::mutex> lock(schedulerMutex_);
+    // C44: setup-only, no lock — mirrors ports.hpp's requireNoTrafficYet
+    // (C32). This does not close every window: a setErrorCallback() racing
+    // the very first start() on another thread can still slip past the
+    // check before hasStarted_ becomes visible, same caveat C32 documents.
+    // That is a caller-contract violation (register before starting, from
+    // one thread), not something a runtime check can fully repair.
+    requireNotStarted("setErrorCallback");
     errorCallback_ = callback;
 }
 
@@ -550,11 +572,11 @@ uint32_t RealTimeScheduler::scheduleRateMonotonic() {
 uint32_t RealTimeScheduler::scheduleRoundRobin() {
     std::lock_guard<std::mutex> lock(tasksMutex_);
 
-    static uint32_t lastSelectedTask = 0;
     auto now = std::chrono::steady_clock::now();
 
-    // Find next task after the last selected one
-    auto it = tasks_.find(lastSelectedTask);
+    // Find next task after the last selected one (C45: lastSelectedTask_ is
+    // a per-instance member, guarded by tasksMutex_ above)
+    auto it = tasks_.find(lastSelectedTask_);
     if (it != tasks_.end()) {
         ++it;
     } else {
@@ -569,7 +591,7 @@ uint32_t RealTimeScheduler::scheduleRoundRobin() {
 
         auto& task = it->second;
         if (task->active.load() && !task->executing.load() && now >= task->nextExecution) {
-            lastSelectedTask = it->first;
+            lastSelectedTask_ = it->first;
             return it->first;
         }
 
@@ -584,16 +606,30 @@ uint32_t RealTimeScheduler::scheduleCustom() {
         return schedulePriorityBased(); // Fallback
     }
 
-    std::lock_guard<std::mutex> lock(tasksMutex_);
-    std::vector<SchedulerTask> activeTasks;
-
-    for (const auto& pair : tasks_) {
-        if (pair.second->active.load()) {
-            activeTasks.emplace_back(*pair.second);
+    // C43: snapshot under tasksMutex_, then release before invoking the user
+    // callback (C12/C18 rule — never run user code under a lock). Each
+    // element is a deep copy (SchedulerTask's copy ctor copies the name and
+    // .load()s the atomics), so customSchedulerSnapshot_ stays valid and
+    // independent of tasks_ for the whole unlocked call below, even if the
+    // callback re-enters addTask/removeTask and mutates tasks_ concurrently.
+    {
+        std::lock_guard<std::mutex> lock(tasksMutex_);
+        customSchedulerSnapshot_.clear();
+        for (const auto& pair : tasks_) {
+            if (pair.second->active.load()) {
+                customSchedulerSnapshot_.emplace_back(*pair.second);
+            }
         }
     }
 
-    return customScheduler_(activeTasks);
+    // No lock held here: the callback may legally call back into this
+    // scheduler's public API. Its returned id is re-validated under
+    // tasksMutex_ by schedulerLoop() before use (find + active +
+    // !executing) — a stale id (removed, or since mutated by the callback
+    // itself) is simply skipped that cycle, the same handling every other
+    // scheduling algorithm's selection already gets, just with a much wider
+    // window now that user code runs in between.
+    return customScheduler_(customSchedulerSnapshot_);
 }
 
 void RealTimeScheduler::executeTask(SchedulerTask& task) {

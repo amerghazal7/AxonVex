@@ -180,11 +180,20 @@ struct SchedulerTask {
     }
 };
 
+// Test-only accessor (defined in timingControllerTest.cpp) granted
+// friendship below so the C45 regression test can drive
+// scheduleRoundRobin() directly and deterministically, with no scheduler
+// thread involved, instead of inferring its behavior from timing-sensitive
+// task-execution counts.
+class RoundRobinTestAccessor;
+
 // Real-time scheduler class
 class RealTimeScheduler {
   public:
     explicit RealTimeScheduler(SchedulingPolicy policy = SchedulingPolicy::PRIORITY_BASED);
     ~RealTimeScheduler();
+
+    friend class RoundRobinTestAccessor;
 
     // Task management
     uint32_t addTask(ProcessingUnit* unit, const TimingConstraints& constraints);
@@ -226,17 +235,30 @@ class RealTimeScheduler {
     TimingConstraints getTaskConstraints(uint32_t taskId) const;
     bool isTaskActive(uint32_t taskId) const;
 
-    // Callback for custom scheduling
+    // Callback for custom scheduling. Re-entrancy contract (C43): the
+    // callback runs with tasksMutex_ NOT held, so it may legally call back
+    // into addTask/removeTask/getStatistics/etc. The uint32_t it returns is
+    // re-validated under tasksMutex_ before use (find + active + !executing);
+    // a stale id (already removed, or mutated by the callback itself) is
+    // simply skipped that cycle, not a bug.
     using CustomSchedulerCallback = std::function<uint32_t(const std::vector<SchedulerTask>&)>;
     void setCustomScheduler(CustomSchedulerCallback callback);
 
-    // Error callback for processing unit failures
+    // Error callback for processing unit failures. Setup-only (C44): throws
+    // std::logic_error if called after the scheduler has ever started —
+    // executeTask()'s failure path reads errorCallback_ unlocked on the
+    // scheduler thread, so a late registration would race it (torn
+    // std::function read). Mirrors ports.hpp's requireNoTrafficYet (C32).
     using ErrorCallback = std::function<void(ProcessingUnit*, const std::string&)>;
     void setErrorCallback(ErrorCallback callback);
 
   private:
     // Scheduler thread function
     void schedulerLoop();
+
+    // C44: throws std::logic_error(what) if the scheduler has ever started —
+    // see hasStarted_.
+    void requireNotStarted(const char* what) const;
 
     // Scheduling algorithms
     uint32_t scheduleRoundRobin();
@@ -262,6 +284,12 @@ class RealTimeScheduler {
     std::atomic<bool> running_{false};
     std::atomic<bool> paused_{false};
     std::atomic<bool> realTimeMode_{false};
+    // C44: one-way latch, set true (never cleared) the first time start() is
+    // called. Deliberately monotonic rather than "currently running": after
+    // stop() sets running_ false, executeTask() can still be draining on the
+    // scheduler thread, so reopening the window on a stop/restart would
+    // reintroduce the torn read this latch exists to prevent.
+    std::atomic<bool> hasStarted_{false};
     std::chrono::microseconds timerResolution_{std::chrono::microseconds{1}};
 
     // Task management with MemoryPool
@@ -269,6 +297,12 @@ class RealTimeScheduler {
     std::unordered_map<uint32_t, SchedulerTask*> tasks_;
     mutable std::mutex tasksMutex_;
     std::atomic<uint32_t> nextTaskId_{1};
+    // C45: scheduleRoundRobin()'s rotation cursor. Was a function-local
+    // static — ONE variable shared by every RealTimeScheduler instance in
+    // the process, corrupting each other's rotation order and racing across
+    // instances' schedulerMutex_-independent threads. Now per-instance,
+    // guarded by tasksMutex_ (the lock scheduleRoundRobin already holds).
+    uint32_t lastSelectedTask_{0};
 
     // Scheduler thread
     std::unique_ptr<std::thread> schedulerThread_;
@@ -290,6 +324,20 @@ class RealTimeScheduler {
 
     // Custom scheduler
     CustomSchedulerCallback customScheduler_;
+    // C43: reusable snapshot buffer for scheduleCustom(), refilled (clear() +
+    // emplace_back) under tasksMutex_ every cycle, then handed to
+    // customScheduler_ OUTSIDE the lock. Touched only from the scheduler
+    // thread (scheduleCustom() is only ever called from schedulerLoop()), so
+    // it needs no mutex of its own beyond the one already guarding the fill.
+    // Retains its high-water-mark capacity across calls: once the task set
+    // and every task's name have stabilized, refilling reuses existing
+    // buffers (vector capacity + std::string capacity/SSO reuse) and
+    // allocates nothing. Ceiling: a task-set change (add/remove, or a name
+    // that outgrows its prior capacity) can still allocate on the next
+    // cycle — closing that fully would need a fixed-capacity, pool-backed
+    // buffer (mirroring taskPool_), which is more machinery than this
+    // opt-in, not-RT-invariant policy (plan §C43) currently needs.
+    std::vector<SchedulerTask> customSchedulerSnapshot_;
 
     // Error callback
     ErrorCallback errorCallback_;
