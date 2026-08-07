@@ -6,7 +6,10 @@ in this repository — the README links here, it never inlines a number.
 
 ## Status
 
-**No numbers are published in this document yet.** The harness now builds,
+**No reference-platform numbers are published yet.** One explicitly-labeled
+*untuned* baseline is recorded below (first optimized run ever possible in
+this project — see C49); it is a sanity check, not a citable figure. The
+harness now builds,
 links, and runs (Conan 2.31.2, default gcc-11/Release profile; a build-type
 propagation bug that previously made `AXONVEX_BUILD_BENCHMARKS=ON` fail at
 compile time with `benchmark/benchmark.h: No such file or directory` is
