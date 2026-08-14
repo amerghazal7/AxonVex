@@ -41,11 +41,27 @@ class SineGenerator final : public ProcessingUnit {
     double phase_{0.0};
 };
 
+// Test-only accessor (defined in builtinUnitsTest.cpp), granted friendship
+// below so the RT-path (no-heap-allocation) regression test can read
+// samples_'s capacity directly instead of a process-wide operator-new
+// override (C50: that override governed allocation for the entire
+// test_core binary, so a bug in it -- once, a missing nothrow overload --
+// took down every other test with it). std::vector::capacity() never
+// decreases on its own and increases exactly when a (re)allocation grows
+// the buffer, so "capacity unchanged since a captured baseline" is a
+// reliable, allocator-address-reuse-immune proxy for "no allocation
+// happened since then" -- unlike comparing data() pointers, which a
+// same-size free-then-malloc can satisfy by luck even after a real
+// allocation round-trip.
+class MovingAverageTestAccessor;
+
 /// axonvex.MovingAverage — one Sync input port ("in", double, required), one
 /// Sync output port ("out", double). Params: window (int, required, 1..4096).
 class MovingAverage final : public ProcessingUnit {
   public:
     MovingAverage(const std::string& name, const nlohmann::json& params);
+
+    friend class MovingAverageTestAccessor;
 
     void processSync() override;
     void processAsync() override {}
