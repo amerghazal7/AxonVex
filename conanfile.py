@@ -10,11 +10,14 @@ Verified with Conan 2.31.2 / gcc 11.4 (default profile, Release): both
 `conan install . --output-folder=<dir> --build=missing -s build_type=Release`
 and `conan create . --build=missing -s build_type=Release` succeed —
 including test_package's downstream_consumer, which builds and runs against
-the just-packaged axonvex (COMPONENTS core, ros2 present because this
-environment happens to have rclcpp). Not exercised here: other compilers/OS,
-`build_plugins=False`, and any build_type besides Release/Debug — a
-maintainer changing those should re-run both commands.
+the just-packaged axonvex (COMPONENTS core), both with rclcpp present (ros2
+component declared) and absent (ros2 component omitted entirely — see
+package_info()'s os.path.isdir() gate). Not exercised here: other
+compilers/OS, `build_plugins=False`, and any build_type besides
+Release/Debug — a maintainer changing those should re-run both commands.
 """
+import os
+
 from conan import ConanFile
 from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain
 from conan.tools.files import copy
@@ -41,7 +44,6 @@ class AxonVexConan(ConanFile):
         "src/*",
         "plugins/*",
         "examples/*",
-        "conanfile.txt",
     )
 
     def requirements(self):
@@ -135,7 +137,19 @@ class AxonVexConan(ConanFile):
         net.includedirs = ["axonvex_net/include"]
         net.requires = ["core", "interfaces"]
 
-        if self.options.build_plugins:
+        # build_plugins=True only *requests* the ros2 plugin; whether it
+        # actually got built and packaged is decided at CMake-configure time
+        # by plugins/axonvex_ros2/CMakeLists.txt's own `find_package(rclcpp
+        # QUIET)` guard, which returns before add_library()/install() when
+        # rclcpp is absent (e.g. ubuntu-latest CI, most dev machines). If we
+        # declared this component unconditionally on the option, a consumer's
+        # find_package(axonvex COMPONENTS core) would still hard-fail: conan's
+        # CMakeDeps generates target lookups for every *declared* component,
+        # not just the requested ones, so a declared-but-never-installed
+        # axonvex_ros2 aborts the whole find_package() with a FATAL_ERROR.
+        # Ground truth is what package() actually wrote to disk — check that.
+        ros2_dir = os.path.join(self.package_folder, "axonvex_ros2")
+        if self.options.build_plugins and os.path.isdir(ros2_dir):
             ros2 = self.cpp_info.components["ros2"]
             ros2.set_property("cmake_target_name", "axonvex::ros2")
             ros2.libs = ["axonvex_ros2"]
