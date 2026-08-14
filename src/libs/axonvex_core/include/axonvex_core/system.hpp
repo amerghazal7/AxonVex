@@ -22,11 +22,14 @@ class AdapterInterface;
 #include <axonvex_core/configuration.hpp>
 #include <axonvex_core/detail/workerThread.hpp>
 #include <axonvex_core/eventBus.hpp>
+#include <axonvex_core/healthMonitor.hpp>
 #include <axonvex_core/logger.hpp>
 #include <axonvex_core/path.hpp>
 #include <axonvex_core/precisionTimer.hpp>
 #include <axonvex_core/processingUnit.hpp>
+#include <axonvex_core/systemConfiguration.hpp>
 #include <axonvex_core/systemEvent.hpp>
+#include <axonvex_core/systemHealth.hpp>
 #include <axonvex_core/systemPortRegistry.hpp>
 #include <axonvex_core/timingController.hpp>
 #include <axonvex_core/unitRegistry.hpp>
@@ -43,48 +46,6 @@ class AdapterInterface;
 namespace axonvex::core {
 
 class SafetyHook; // core-owned safety hook interface (safetyHook.hpp)
-
-/**
- * @brief System configuration structure
- */
-struct SystemConfiguration {
-    // Core settings
-    std::string systemName{"AxonVex-System"};
-    std::string version{"1.0.0"};
-    LogLevel logLevel{LogLevel::Info};
-
-    // Timing settings
-    SchedulingPolicy defaultSchedulingPolicy{SchedulingPolicy::PRIORITY_BASED};
-    std::chrono::microseconds systemTickRate{std::chrono::microseconds(100)};
-    bool enableRealTimeScheduling{true};
-
-    // Resource limits
-    size_t maxProcessingUnits{1000};
-    size_t maxMemoryPoolSize{64 * 1024 * 1024}; // 64MB
-    size_t loggerQueueSize{16384};
-
-    // Monitoring settings
-    bool enablePerformanceMonitoring{true};
-    std::chrono::seconds statisticsUpdateInterval{1};
-    std::chrono::seconds healthCheckInterval{5};
-
-    // Recovery settings
-    bool enableAutoRecovery{true};
-    uint32_t maxRecoveryAttempts{3};
-    std::chrono::seconds recoveryTimeout{10};
-
-    // File paths
-    std::string configFilePath{"config/system.json"};
-    std::string logFilePath{"logs/axonvex_system.log"};
-    bool enableFileLogging{true};
-
-    // Event system configuration
-    size_t eventPoolSize{1024};
-    size_t eventQueueSize{256};
-
-    void validate() const;
-    std::string toString() const;
-};
 
 /**
  * @brief System performance statistics
@@ -112,35 +73,6 @@ struct SystemStatistics {
     std::string getReport() const;
     double getUptimeSeconds() const;
     double getSuccessRate() const;
-};
-
-/**
- * @brief System health information
- */
-struct SystemHealth {
-    enum class Status { HEALTHY, WARNING, CRITICAL, FAILURE };
-
-    Status overallStatus{Status::HEALTHY};
-    std::vector<std::string> warnings;
-    std::vector<std::string> errors;
-    std::chrono::steady_clock::time_point lastCheckTime;
-
-    // Component health
-    bool timingControllerHealthy{true};
-    bool configurationHealthy{true};
-    bool loggerHealthy{true};
-    bool memoryHealthy{true};
-
-    // Performance indicators
-    double cpuUtilization{0.0};
-    double memoryUtilization{0.0};
-    double averageExecutionTime{0.0};
-    double missedDeadlineRatio{0.0};
-
-    std::string getStatusString() const;
-    bool isHealthy() const {
-        return overallStatus == Status::HEALTHY;
-    }
 };
 
 /**
@@ -725,22 +657,6 @@ class AxonVexSystem {
     // Statistics and monitoring
     mutable SystemStatistics statistics_;
     mutable std::mutex statisticsMutex_;
-    // Phase 2 core decomposition, migration step 3 (see
-    // docs/superpowers/specs/2026-08-06-phase2-core-decomposition-design.md
-    // section 1.2): the thread-id publish/clear (C41), join-before-assign
-    // (C39), and self-join-refusal discipline that used to be a hand-
-    // written unique_ptr<thread> + atomic<thread::id> pair here now lives
-    // in detail::WorkerThread.
-    detail::WorkerThread monitoringWorker_;
-    std::atomic<bool> monitoringEnabled_{false};
-
-    // healthCheckCallbacks_ alone now -- eventCallbacks_/nextCallbackId_'s
-    // event half moved into eventBus_ below (Phase 2 decomposition step 4).
-    // Splitting the shared mutex/counter is safe: no code path locked both
-    // callback vectors at once (see eventBus.hpp's class doc).
-    std::vector<HealthCheckCallback> healthCheckCallbacks_;
-    mutable std::mutex callbacksMutex_;
-    std::atomic<uint32_t> nextCallbackId_{1};
 
     // Health and recovery
     std::atomic<bool> debugMode_{false};
@@ -752,24 +668,37 @@ class AxonVexSystem {
 
     /**
      * C41/C42: true iff called from eventBus_'s dispatch thread,
-     * monitoringWorker_, or RealTimeScheduler's own scheduler thread (via
-     * timingController_->isOnSchedulerThread()) — each WorkerThread answers
-     * from the id it publishes on entry and clears on exit (see
-     * detail::WorkerThread). Lifecycle calls that tear down or replace
-     * components those threads' own stacks are using (initialize(), stop(),
-     * reset()) must refuse rather than run on a worker thread.
+     * healthMonitor_'s monitor thread, or RealTimeScheduler's own scheduler
+     * thread (via timingController_->isOnSchedulerThread()) — each
+     * WorkerThread answers from the id it publishes on entry and clears on
+     * exit (see detail::WorkerThread). Lifecycle calls that tear down or
+     * replace components those threads' own stacks are using (initialize(),
+     * stop(), reset()) must refuse rather than run on a worker thread.
      */
     bool isOnWorkerThread() const noexcept;
 
     // Event system (Phase 2 decomposition step 4: extracted to EventBus --
     // see eventBus.hpp for the pool/queue/dispatch-thread/callback-registry
     // contract this class's registerEventCallback/unregisterEventCallback and
-    // every publish call site now delegate to). Declared last: its
-    // constructor captures `this` in callables reading currentState_/
-    // isShuttingDown_/statistics_/logger_ above, all already-declared
-    // members (declaration order, not the value at construction time,
-    // matters here -- see AxonVexSystem's constructor).
+    // every publish call site now delegate to). Declared before
+    // healthMonitor_ (below): healthMonitor_'s constructor takes a live
+    // `EventBus&` reference, so eventBus_ must already exist -- constructor
+    // init order follows declaration order, not the order arguments are
+    // written in AxonVexSystem's own constructor.
     EventBus eventBus_;
+
+    // Monitoring thread + health checks + statistics-refresh trigger (Phase
+    // 2 decomposition step 5: extracted to HealthMonitor -- see
+    // healthMonitor.hpp for the monitor-thread/callback-registry/
+    // performHealthCheck contract this class's performHealthCheck/getHealth/
+    // registerHealthCheckCallback now delegate to). Declared LAST, after
+    // eventBus_: (1) its constructor takes `EventBus&` -- eventBus_ must
+    // already be constructed; (2) C++ destroys members in reverse
+    // declaration order, so ~HealthMonitor() (which joins the monitor
+    // thread) runs before ~EventBus() -- the same ordering every lifecycle
+    // method below also enforces explicitly (stop the monitor before
+    // touching anything its injected providers read).
+    HealthMonitor healthMonitor_;
 
     // =================================================================
     // INTERNAL METHODS
@@ -784,10 +713,9 @@ class AxonVexSystem {
     bool resumeComponents();
     bool stopComponents(std::chrono::milliseconds timeout);
     void cleanupComponents();
-    // Monitoring and health
-    void monitoringLoop();
+    // Monitoring and health: façade-owned providers HealthMonitor cannot
+    // read itself (touches timingController_/statisticsMutex_ directly).
     void updateStatistics();
-    SystemHealth performInternalHealthCheck() const;
     // Event handling
     void handleProcessingUnitError(ProcessingUnit* unit, const std::string& error);
 

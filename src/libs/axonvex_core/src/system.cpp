@@ -167,7 +167,30 @@ AxonVexSystem::AxonVexSystem(const SystemConfiguration& config)
                 [this] {
                     return isShuttingDown_.load() || currentState_.load() >= SystemState::STOPPING;
                 },
-                [this] { statistics_.errorCount.fetch_add(1); }) {
+                [this] { statistics_.errorCount.fetch_add(1); }),
+      // Same shutdownRequested predicate handed to eventBus_ above (two
+      // separate std::function instances over the same lambda body -- not
+      // shared state, just the same read); LifecycleController owns the one
+      // real predicate once migration step 6 lands. Providers read
+      // façade members that are themselves replaced/reset across
+      // initialize()/cleanupComponents() -- see healthMonitor.hpp's
+      // constructor doc for why that is safe (teardown-ordering guarantee).
+      healthMonitor_(
+          systemConfig_,
+          [this] {
+              return isShuttingDown_.load() || currentState_.load() >= SystemState::STOPPING;
+          },
+          eventBus_, [this] { return logger_.get(); },
+          HealthMonitor::Providers{
+              [this] { return currentState_.load(); },
+              [this] { return timingController_ != nullptr; },
+              [this] { return configuration_ != nullptr; },
+              [this] { return logger_ != nullptr && logger_->isRunning(); },
+              [this] { return getMemoryUsage(); },
+              [this] { return statistics_.getSuccessRate(); },
+          },
+          [this](const std::string& desc) { attemptRecovery(desc); },
+          [this] { statistics_.errorCount.fetch_add(1); }, [this] { updateStatistics(); }) {
 
     // Validate configuration
     try {
@@ -196,7 +219,7 @@ AxonVexSystem::~AxonVexSystem() {
     // skipped via try_lock), wait for it to finish before members are
     // destroyed. This only synchronizes with mutex-owning teardowns: a
     // deferred self-join emergencyShutdown (running ON eventBus_'s dispatch
-    // thread or monitoringWorker_'s thread) releases the mutex via try_lock's early
+    // thread or healthMonitor_'s monitor thread) releases the mutex via try_lock's early
     // return while still unwinding user-code frames on that thread — the
     // joins below cover that window. Legal here (no self-join risk): a
     // worker thread cannot reach the destructor without going through
@@ -204,7 +227,7 @@ AxonVexSystem::~AxonVexSystem() {
     // isOnWorkerThread().
     { std::lock_guard<std::mutex> wait(shutdownMutex_); }
     eventBus_.join();
-    monitoringWorker_.join();
+    healthMonitor_.join();
 }
 
 // =================================================================
@@ -217,7 +240,7 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
     // the sanctioned from-any-thread path (it stops but never destroys).
     // Must be the first statement: everything below (including the C39
     // joins just after this) assumes it is not running on eventBus_'s
-    // dispatch thread or monitoringWorker_'s thread.
+    // dispatch thread or healthMonitor_'s monitor thread.
     if (isOnWorkerThread()) {
         if (logger_) {
             logger_->error("System", "initialize() called from a system worker thread -- refused. "
@@ -252,7 +275,7 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
     // below into a potential indefinite block. Join both handles first,
     // THEN initialize components, THEN clear/set flags, THEN start new
     // threads.
-    monitoringWorker_.join();
+    healthMonitor_.join();
     eventBus_.join();
 
     // Initialize core components first to ensure they're ready for use
@@ -293,8 +316,9 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
         // C38: initialize() is the single owner of clearing the shutdown
         // latch. stop()/emergencyShutdown() set it; nothing else may clear
         // it. This does NOT decide a race against a concurrent e-stop:
-        // initialize() overwrites isShuttingDown_, monitoringEnabled_, and
-        // (via eventBus_.start()) eventBus_'s own running_ flag
+        // initialize() overwrites isShuttingDown_, healthMonitor_'s enabled_
+        // flag (via start(), below), and (via eventBus_.start()) eventBus_'s
+        // own running_ flag
         // unconditionally regardless of who wins. What actually guarantees
         // the e-stop wins is transitionState(): emergencyShutdown() sets
         // currentState_ to FATAL_ERROR (legal from any state), which trips
@@ -310,8 +334,7 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
 
         // Start monitoring if enabled
         if (systemConfig_.enablePerformanceMonitoring) {
-            monitoringEnabled_.store(true);
-            monitoringWorker_.start([this] { monitoringLoop(); });
+            healthMonitor_.start();
         }
 
         // Start the event dispatch thread
@@ -476,7 +499,7 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
         // Flags are set before locking so a system thread that enters
         // emergencyShutdown (try_lock fails) still exits its loop promptly.
         eventBus_.requestStop();
-        monitoringEnabled_.store(false);
+        healthMonitor_.requestStop();
         // Held through component stop/cleanup as well: a hook-triggered
         // emergencyShutdown must not touch timingController_ while
         // cleanupComponents() resets it (it try_locks and skips instead)
@@ -485,7 +508,7 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
         // stop() already refused above if called on the dispatch thread.
         eventBus_.stopAndJoin();
         // Stop monitoring thread next
-        monitoringWorker_.join();
+        healthMonitor_.join();
         // Now stop all components
         if (!stopComponents(timeoutMs)) {
             // Release first: emergencyShutdown try_locks this mutex and must
@@ -524,7 +547,7 @@ void AxonVexSystem::emergencyShutdown() {
     transitionState(SystemState::FATAL_ERROR);
     isShuttingDown_.store(true);
     eventBus_.requestStop();
-    monitoringEnabled_.store(false);
+    healthMonitor_.requestStop();
 
     // Single-owner teardown: e-stop can fire from any thread via the SafetyHook
     // (C2), racing stop() or another e-stop on the thread handles. try_lock, not
@@ -549,7 +572,7 @@ void AxonVexSystem::emergencyShutdown() {
     // never-started case too. Idempotent if already drained.
     eventBus_.drain();
     // Stop monitoring thread next
-    monitoringWorker_.join();
+    healthMonitor_.join();
     // Force stop all components immediately
     try {
         if (timingController_) {
@@ -622,7 +645,7 @@ void AxonVexSystem::reset() {
     // would tear down its own components mid-callback. Refuse — same
     // contract as initialize()/stop(). Must be the first statement: nothing
     // below is safe to run on eventBus_'s dispatch thread or
-    // monitoringWorker_'s thread.
+    // healthMonitor_'s monitor thread.
     if (isOnWorkerThread()) {
         if (logger_) {
             logger_->error("System", "reset() called from a system worker thread -- refused. "
@@ -639,14 +662,14 @@ void AxonVexSystem::reset() {
     // threads are refused above, so nobody joining US can hold this mutex.
     // This only synchronizes with mutex-owning teardowns, not a deferred
     // self-join emergencyShutdown: that variant runs ON eventBus_'s
-    // dispatch thread or monitoringWorker_'s thread and releases the
+    // dispatch thread or healthMonitor_'s monitor thread and releases the
     // mutex via try_lock's early
     // return while still unwinding user-code frames on that thread. The
     // joins below close that window — legal here because worker threads
     // can't reach this point (refused above), so no self-join is possible.
     { std::lock_guard<std::mutex> wait(shutdownMutex_); }
     eventBus_.join();
-    monitoringWorker_.join();
+    healthMonitor_.join();
 
     // Reset to uninitialized state
     // C7: FATAL_ERROR → UNINITIALIZED is already in the transition table.
@@ -660,11 +683,7 @@ void AxonVexSystem::reset() {
     unitRegistry_.clear();
     unitRegistry_.resetIds();
 
-    {
-        std::lock_guard<std::mutex> lock(callbacksMutex_);
-        healthCheckCallbacks_.clear();
-        nextCallbackId_.store(1);
-    }
+    healthMonitor_.resetCallbacks();
     eventBus_.resetCallbacks();
 
     // Reset components
@@ -700,67 +719,11 @@ const SystemStatistics& AxonVexSystem::getStatistics() const noexcept {
 }
 
 SystemHealth AxonVexSystem::getHealth() const {
-    return performInternalHealthCheck();
+    return healthMonitor_.check();
 }
 
 void AxonVexSystem::performHealthCheck() {
-    systemTimer_.start(); // Start timing health check
-
-    SystemHealth health = performInternalHealthCheck();
-
-    // Snapshot under the lock, invoke outside it: user callbacks must never run
-    // while callbacksMutex_ is held (C18 — re-entrant callback API use deadlocks).
-    std::vector<HealthCheckCallback> callbacks;
-    {
-        std::lock_guard<std::mutex> lock(callbacksMutex_);
-        callbacks = healthCheckCallbacks_;
-    }
-
-    for (const auto& callback : callbacks) {
-        if (callback) {
-            try {
-                SystemHealth userHealth = callback();
-                // Merge user health with system health
-                if (userHealth.overallStatus > health.overallStatus) {
-                    health.overallStatus = userHealth.overallStatus;
-                }
-                health.warnings.insert(health.warnings.end(), userHealth.warnings.begin(),
-                                       userHealth.warnings.end());
-                health.errors.insert(health.errors.end(), userHealth.errors.begin(),
-                                     userHealth.errors.end());
-            } catch (...) { health.errors.push_back("Health check callback failed"); }
-        }
-    }
-
-    systemTimer_.stop(); // Stop timing health check
-
-    // Publish health check event
-    SystemEvent event;
-    event.type = SystemEvent::Type::HEALTH_CHECK;
-    event.oldState = currentState_.load();
-    event.newState = currentState_.load();
-    event.description = "Health check completed: " + health.getStatusString();
-    event.timestamp = std::chrono::steady_clock::now();
-    event.metadata["overall_status"] = health.getStatusString();
-    event.metadata["warning_count"] = std::to_string(health.warnings.size());
-    event.metadata["error_count"] = std::to_string(health.errors.size());
-    event.metadata["duration_ms"] =
-        std::to_string(systemTimer_.getElapsedMilliseconds()); // Add duration to metadata
-
-    eventBus_.publish(event);
-
-    // Take action based on health status
-    if (health.overallStatus == SystemHealth::Status::CRITICAL ||
-        health.overallStatus == SystemHealth::Status::FAILURE) {
-
-        if (systemConfig_.enableAutoRecovery) {
-            std::string errorDesc = "Health check failed: " + health.getStatusString();
-            for (const auto& error : health.errors) {
-                errorDesc += "\n- " + error;
-            }
-            attemptRecovery(errorDesc);
-        }
-    }
+    healthMonitor_.performHealthCheck();
 }
 
 // =================================================================
@@ -1240,101 +1203,6 @@ bool AxonVexSystem::startComponents() {
     }
 }
 
-void AxonVexSystem::monitoringLoop() {
-    // C41: the thread-id publish (first act) / clear (last, every exit
-    // path) that used to be a local WorkerThreadIdGuard here now happens
-    // automatically inside detail::WorkerThread::start() -- see
-    // monitoringWorker_'s declaration comment (Phase 2 decomposition step
-    // 3). isOnWorkerThread() reads it via monitoringWorker_.isOnThisThread().
-
-    auto lastUpdate = std::chrono::steady_clock::now();
-    // Loop-local timer: the old unlocked read of lastHealth_.lastCheckTime raced
-    // performHealthCheck() on other threads (C18).
-    auto lastHealthCheck = lastUpdate;
-
-    while (monitoringEnabled_.load() && !isShuttingDown_.load()) {
-        try {
-            // Guard against accessing resources during shutdown
-            if (currentState_.load() >= SystemState::STOPPING) {
-                break;
-            }
-
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastUpdate);
-
-            // Update statistics periodically
-            if (elapsed >= systemConfig_.statisticsUpdateInterval) {
-                updateStatistics();
-                lastUpdate = now;
-            }
-
-            // Perform health check periodically
-            auto healthElapsed =
-                std::chrono::duration_cast<std::chrono::seconds>(now - lastHealthCheck);
-
-            if (healthElapsed >= systemConfig_.healthCheckInterval) {
-                performHealthCheck();
-                lastHealthCheck = std::chrono::steady_clock::now();
-            }
-
-            // Sleep for a short interval
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        } catch (const std::exception& e) {
-            if (logger_) {
-                logger_->error("System", "Monitoring loop error: " + std::string(e.what()));
-            }
-            statistics_.errorCount.fetch_add(1);
-        }
-    }
-}
-
-SystemHealth AxonVexSystem::performInternalHealthCheck() const {
-    SystemHealth health;
-    health.lastCheckTime = std::chrono::steady_clock::now();
-
-    // Check system state
-    SystemState currentState = currentState_.load();
-    if (currentState == SystemState::ERROR || currentState == SystemState::FATAL_ERROR) {
-        health.overallStatus = SystemHealth::Status::FAILURE;
-        health.errors.push_back("System is in error state");
-    }
-
-    // Check component health
-    health.timingControllerHealthy = (timingController_ != nullptr);
-    health.configurationHealthy = (configuration_ != nullptr);
-    health.loggerHealthy = (logger_ != nullptr && logger_->isRunning());
-
-    // Check resource usage
-    size_t memUsage = getMemoryUsage();
-    size_t maxMem = systemConfig_.maxMemoryPoolSize;
-    health.memoryUtilization = static_cast<double>(memUsage) / static_cast<double>(maxMem);
-
-    if (health.memoryUtilization > 0.9) {
-        health.overallStatus = std::max(health.overallStatus, SystemHealth::Status::CRITICAL);
-        health.errors.push_back("Memory utilization critical: " +
-                                std::to_string(static_cast<int>(health.memoryUtilization * 100)) +
-                                "%");
-    } else if (health.memoryUtilization > 0.75) {
-        health.overallStatus = std::max(health.overallStatus, SystemHealth::Status::WARNING);
-        health.warnings.push_back("Memory utilization high: " +
-                                  std::to_string(static_cast<int>(health.memoryUtilization * 100)) +
-                                  "%");
-    }
-
-    // Check performance metrics
-    auto successRate = statistics_.getSuccessRate();
-    if (successRate < 0.9) {
-        health.overallStatus = std::max(health.overallStatus, SystemHealth::Status::WARNING);
-        health.warnings.push_back(
-            "Success rate low: " + std::to_string(static_cast<int>(successRate * 100)) + "%");
-    }
-
-    health.memoryHealthy = (health.memoryUtilization < 0.95);
-
-    return health;
-}
-
 std::string AxonVexSystem::stateToString(SystemState state) const {
     return to_string(state);
 }
@@ -1396,7 +1264,7 @@ bool AxonVexSystem::isOnWorkerThread() const noexcept {
     // executeTask(), which is running inside the very TimingController this
     // thread belongs to, so it cannot have been reset out from under its own
     // live call stack.
-    return eventBus_.isOnDispatchThread() || monitoringWorker_.isOnThisThread() ||
+    return eventBus_.isOnDispatchThread() || healthMonitor_.isOnMonitorThread() ||
            (timingController_ && timingController_->isOnSchedulerThread());
 }
 
@@ -1643,18 +1511,7 @@ void AxonVexSystem::unregisterEventCallback(uint32_t callbackId) {
 }
 
 uint32_t AxonVexSystem::registerHealthCheckCallback(HealthCheckCallback callback) {
-    if (!callback)
-        return 0;
-
-    std::lock_guard<std::mutex> lock(callbacksMutex_);
-    uint32_t callbackId = nextCallbackId_.fetch_add(1);
-
-    if (healthCheckCallbacks_.size() <= callbackId) {
-        healthCheckCallbacks_.resize(callbackId + 1);
-    }
-    healthCheckCallbacks_[callbackId] = callback;
-
-    return callbackId;
+    return healthMonitor_.registerHealthCallback(std::move(callback));
 }
 
 Logger& AxonVexSystem::getLogger() noexcept {
