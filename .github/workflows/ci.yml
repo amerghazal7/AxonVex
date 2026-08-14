@@ -389,4 +389,98 @@ jobs:
     - name: Run performance benchmarks
       run: |
         cd build
-        ./benchmarks/axonvex_benchmarks 
+        ./benchmarks/axonvex_benchmarks
+
+  packaging:
+    # Phase 3 exit criterion: "conan create and find_package work from a
+    # clean machine". This job must fail loudly on any packaging breakage —
+    # no continue-on-error, no quarantine list. Two independent consumption
+    # paths are exercised because they go through different CMake config
+    # generators:
+    #   1. `conan create .` — builds+packages axonvex and runs
+    #      test_package/ (conan's CMakeDeps-generated find_package, the path
+    #      a conan consumer takes).
+    #   2. a plain `cmake --install` + `find_package(axonvex)` against the
+    #      installed axonvexConfig.cmake directly — the path a non-conan
+    #      packager/consumer takes, and the one that would silently break if
+    #      cmake/AxonVexConfig.cmake.in or the per-component install()
+    #      layout ever drifted from what conan's package_info() assumes.
+    name: Packaging (conan create + find_package)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    # Pinned: see the build-and-test job's "Install Conan" step above for why.
+    - name: Install Conan
+      run: |
+        pip install "conan==2.31.2"
+        conan profile detect --force
+
+    - name: Cache Conan packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.conan2
+        key: ${{ runner.os }}-conan-${{ hashFiles('**/conanfile.py') }}
+        restore-keys: |
+          ${{ runner.os }}-conan-
+
+    # Builds axonvex from source, packages it, and automatically runs
+    # test_package/downstream_consumer.cpp against the just-packaged binary
+    # (conan test() step below). A failure anywhere in that chain — recipe,
+    # build, package_info() component layout, or the consumer build/run —
+    # fails this step non-zero.
+    - name: conan create (build + package + test_package consumer)
+      run: |
+        set -e
+        conan create . --build=missing -s build_type=Release
+
+    # Second path: a plain, non-conan packager doing `cmake --install` then
+    # `find_package(axonvex)`. Uses conan only to fetch axonvex's own
+    # dependencies (nlohmann_json/onetbb), not to consume axonvex itself —
+    # the point is to exercise cmake/AxonVexConfig.cmake.in and the
+    # per-component libdirs/includedirs directly, the same layout
+    # conanfile.py's package_info() comments describe by hand and could
+    # silently drift from.
+    - name: Plain cmake --install + find_package (non-conan consumer)
+      run: |
+        set -e
+        mkdir -p build-pkg
+        cd build-pkg
+        conan install .. --output-folder=. --build=missing -s build_type=Release
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release \
+                 -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
+        cmake --build . --parallel
+        cmake --install . --prefix "${{ github.workspace }}/scratch-install"
+        cd ..
+        cmake -B downstream-build -S test_package \
+              -DCMAKE_PREFIX_PATH="${{ github.workspace }}/scratch-install/lib/cmake/axonvex"
+        cmake --build downstream-build --parallel
+        ./downstream-build/downstream_consumer
+
+    # Symbol-visibility trap (see conanfile.py / src/libs/axonvex_net's
+    # CXX_VISIBILITY_PRESET comments): a wrongly-hidden symbol fails at
+    # dlopen time, not link time, so a green build above proves nothing
+    # about it. axonvex_core must stay fully default-visibility because
+    # PluginManager dlopens plugins that resolve axonvex_core symbols;
+    # axonvex_net is the one deliberately hidden target. This is a coarse
+    # symbol-count tripwire, not a substitute for the PluginManagerTest
+    # dlopen fixtures (normal/bad-ABI/no-symbols/throwing-init), which run
+    # under the main build-and-test job's ctest gate.
+    - name: Verify symbol visibility boundary
+      run: |
+        set -e
+        core_exports="$(nm -D build-pkg/src/libs/axonvex_core/libaxonvex_core.so | grep -c ' T \| W ')"
+        echo "axonvex_core exported symbols: $core_exports"
+        if [ "$core_exports" -lt 100 ]; then
+          echo "::error::axonvex_core exports only $core_exports symbols -- hidden visibility may have leaked onto core, which PluginManager's dlopen path needs default-visibility"
+          exit 1
+        fi
+        net_exports="$(nm -D build-pkg/src/libs/axonvex_net/libaxonvex_net.so | grep -c ' T \| W ')"
+        echo "axonvex_net exported symbols: $net_exports"
