@@ -10,6 +10,7 @@ add_library(axonvex_core SHARED
     src/errorHandler.cpp
     src/eventBus.cpp
     src/healthMonitor.cpp
+    src/lifecycleController.cpp
     src/logger.cpp
     src/path.cpp
     src/ports.cpp

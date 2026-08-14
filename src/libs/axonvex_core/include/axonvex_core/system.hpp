@@ -23,6 +23,7 @@ class AdapterInterface;
 #include <axonvex_core/detail/workerThread.hpp>
 #include <axonvex_core/eventBus.hpp>
 #include <axonvex_core/healthMonitor.hpp>
+#include <axonvex_core/lifecycleController.hpp>
 #include <axonvex_core/logger.hpp>
 #include <axonvex_core/path.hpp>
 #include <axonvex_core/precisionTimer.hpp>
@@ -629,8 +630,21 @@ class AxonVexSystem {
     // =================================================================
     // Core configuration and state
     SystemConfiguration systemConfig_;
-    mutable std::atomic<SystemState> currentState_{SystemState::UNINITIALIZED};
-    mutable std::mutex stateMutex_;
+
+    // Lifecycle FSM, shutdown latch, worker-thread refusal matrix, teardown
+    // ownership token (Phase 2 decomposition step 6, LAST -- see
+    // lifecycleController.hpp for the transition()/isOnWorkerThread()/
+    // acquireTeardown() contract this class's transitionState()/
+    // isOnWorkerThread() and every lifecycle method's latch/teardown-lock
+    // touches now delegate to). Declared early: its constructor callables
+    // capture `this` and read eventBus_/healthMonitor_/timingController_
+    // lazily (only when actually invoked, always well after this whole
+    // constructor has finished), so unlike healthMonitor_'s `EventBus&`
+    // reference member, no other collaborator needs to exist yet at THIS
+    // object's construction time -- declaration position here is a
+    // readability choice (spec's collaborator list order), not a
+    // correctness requirement.
+    LifecycleController lifecycleController_;
 
     // Core components
     std::unique_ptr<TimingController> timingController_;
@@ -661,21 +675,6 @@ class AxonVexSystem {
     // Health and recovery
     std::atomic<bool> debugMode_{false};
     std::atomic<uint32_t> currentRecoveryAttempts_{0};
-    std::atomic<bool> isShuttingDown_{false}; // New flag for graceful shutdown
-    // Serializes thread-handle teardown between stop() and emergencyShutdown(),
-    // which can now fire from any thread via the SafetyHook (C2)
-    std::mutex shutdownMutex_;
-
-    /**
-     * C41/C42: true iff called from eventBus_'s dispatch thread,
-     * healthMonitor_'s monitor thread, or RealTimeScheduler's own scheduler
-     * thread (via timingController_->isOnSchedulerThread()) — each
-     * WorkerThread answers from the id it publishes on entry and clears on
-     * exit (see detail::WorkerThread). Lifecycle calls that tear down or
-     * replace components those threads' own stacks are using (initialize(),
-     * stop(), reset()) must refuse rather than run on a worker thread.
-     */
-    bool isOnWorkerThread() const noexcept;
 
     // Event system (Phase 2 decomposition step 4: extracted to EventBus --
     // see eventBus.hpp for the pool/queue/dispatch-thread/callback-registry
@@ -703,9 +702,21 @@ class AxonVexSystem {
     // =================================================================
     // INTERNAL METHODS
     // =================================================================
-    // State management
+    // State management: thin wrappers delegating to lifecycleController_
+    // (Phase 2 decomposition step 6). notifyStateChange()/logStateTransition()
+    // still build/log/publish here -- lifecycleController_ invokes them as
+    // its injected onTransitioned hook, since it must not depend on
+    // eventBus_/logger_/statistics_ itself.
     bool transitionState(SystemState newState);
     void notifyStateChange(SystemState oldState, SystemState newState);
+    /**
+     * C41/C42: true iff called from eventBus_'s dispatch thread,
+     * healthMonitor_'s monitor thread, or RealTimeScheduler's own scheduler
+     * thread (via timingController_->isOnSchedulerThread()) -- delegates to
+     * lifecycleController_.isOnWorkerThread(), which aggregates the three
+     * injected predicates wired at construction (see lifecycleController.hpp).
+     */
+    bool isOnWorkerThread() const noexcept;
     // Component lifecycle
     bool initializeComponents();
     bool startComponents();
