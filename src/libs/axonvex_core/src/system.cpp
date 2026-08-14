@@ -4,10 +4,8 @@
  *
  * Usage documentation for core utilities:
  * - Use systemTimer_ for timing system-level operations (init, shutdown, health checks).
- * - Use ThreadSafeQueue (e.g., eventQueue_) for event/message passing or deferred actions.
- * - Use MemoryPool (e.g., eventPool_) for real-time safe allocation of system event objects.
- * These members are available in the AxonVexSystem base class for use in implementation and
- * extensions.
+ * - Event publishing/message passing and deferred actions go through eventBus_
+ *   (see eventBus.hpp) -- it owns the pool and queue internally.
  */
 
 #include <algorithm>
@@ -159,7 +157,17 @@ std::string SystemHealth::getStatusString() const {
 // =================================================================
 
 AxonVexSystem::AxonVexSystem(const SystemConfiguration& config)
-    : systemConfig_(config), unitRegistry_(systemConfig_.maxProcessingUnits) {
+    : systemConfig_(config), unitRegistry_(systemConfig_.maxProcessingUnits),
+      // C25/C38: isShuttingDown mirrors the latch publish() drops events
+      // against; shutdownRequested folds that same latch OR'd with the
+      // ≥STOPPING guard the dispatch loop used to check separately (see
+      // eventBus.hpp's class doc) -- LifecycleController owns both for real
+      // once migration step 6 lands.
+      eventBus_([this] { return logger_.get(); }, [this] { return isShuttingDown_.load(); },
+                [this] {
+                    return isShuttingDown_.load() || currentState_.load() >= SystemState::STOPPING;
+                },
+                [this] { statistics_.errorCount.fetch_add(1); }) {
 
     // Validate configuration
     try {
@@ -187,15 +195,15 @@ AxonVexSystem::~AxonVexSystem() {
     // If a concurrent emergencyShutdown owned the teardown (our call above
     // skipped via try_lock), wait for it to finish before members are
     // destroyed. This only synchronizes with mutex-owning teardowns: a
-    // deferred self-join emergencyShutdown (running ON eventWorker_'s/
-    // monitoringWorker_'s thread) releases the mutex via try_lock's early
+    // deferred self-join emergencyShutdown (running ON eventBus_'s dispatch
+    // thread or monitoringWorker_'s thread) releases the mutex via try_lock's early
     // return while still unwinding user-code frames on that thread — the
     // joins below cover that window. Legal here (no self-join risk): a
     // worker thread cannot reach the destructor without going through
     // initialize()/stop()/reset(), all of which refuse on
     // isOnWorkerThread().
     { std::lock_guard<std::mutex> wait(shutdownMutex_); }
-    eventWorker_.join();
+    eventBus_.join();
     monitoringWorker_.join();
 }
 
@@ -208,8 +216,8 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
     // using; refusal is the only honest behavior. emergencyShutdown() remains
     // the sanctioned from-any-thread path (it stops but never destroys).
     // Must be the first statement: everything below (including the C39
-    // joins just after this) assumes it is not running on eventWorker_'s/
-    // monitoringWorker_'s thread.
+    // joins just after this) assumes it is not running on eventBus_'s
+    // dispatch thread or monitoringWorker_'s thread.
     if (isOnWorkerThread()) {
         if (logger_) {
             logger_->error("System", "initialize() called from a system worker thread -- refused. "
@@ -219,18 +227,19 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
     }
 
     // C39: join and clear any stale thread handles BEFORE
-    // initializeComponents() below replaces logger_/eventPool_/eventQueue_/
-    // timingController_. A stale thread can still be running here — from
-    // emergencyShutdown's deferred self-join (it runs on the very thread it
-    // would otherwise join, so it skips the join and leaves the handle set,
-    // C33/C36) or from a throw between a previous initialize()'s thread
-    // start and its INITIALIZED transition (the catch path's
-    // cleanupComponents() never touches thread handles) — and that stale
-    // thread dereferences logger_/timingController_ inside
-    // emergencyShutdown()/monitoringLoop()/eventProcessingLoop(). Freeing
-    // those objects out from under it (by calling initializeComponents()
-    // first) is a use-after-free window that reset()'s sleep_for(100ms)
-    // only ever masked. This join must stay above initializeComponents().
+    // initializeComponents() below replaces logger_/timingController_ and
+    // eventBus_.reinitialize() replaces the event pool/queue. A stale thread
+    // can still be running here — from emergencyShutdown's deferred
+    // self-join (it runs on the very thread it would otherwise join, so it
+    // skips the join and leaves the handle set, C33/C36) or from a throw
+    // between a previous initialize()'s thread start and its INITIALIZED
+    // transition (the catch path's cleanupComponents() never touches thread
+    // handles) — and that stale thread dereferences logger_/timingController_
+    // inside emergencyShutdown()/monitoringLoop()/EventBus::dispatchLoop().
+    // Freeing those objects out from under it (by calling
+    // initializeComponents() first) is a use-after-free window that
+    // reset()'s sleep_for(100ms) only ever masked. This join must stay
+    // above initializeComponents().
     //
     // Ordering vs the C38 flag-clear further down is load-bearing, and the
     // argument holds even more cleanly here at the top: no flags have been
@@ -244,7 +253,7 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
     // THEN initialize components, THEN clear/set flags, THEN start new
     // threads.
     monitoringWorker_.join();
-    eventWorker_.join();
+    eventBus_.join();
 
     // Initialize core components first to ensure they're ready for use
     if (!initializeComponents()) {
@@ -284,18 +293,19 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
         // C38: initialize() is the single owner of clearing the shutdown
         // latch. stop()/emergencyShutdown() set it; nothing else may clear
         // it. This does NOT decide a race against a concurrent e-stop:
-        // initialize() overwrites isShuttingDown_, monitoringEnabled_ and
-        // eventProcessingRunning_ unconditionally regardless of who wins.
-        // What actually guarantees the e-stop wins is transitionState():
-        // emergencyShutdown() sets currentState_ to FATAL_ERROR (legal from
-        // any state), which trips the `currentState_.load() >=
-        // SystemState::STOPPING` guards in monitoringLoop()/
-        // eventProcessingLoop() even for threads this call is about to
-        // start, while this call's own transitionState(INITIALIZED) is
-        // refused (FATAL_ERROR only accepts a transition to UNINITIALIZED),
-        // so initialize() itself returns false. Those >= STOPPING guards
-        // are load-bearing for this invariant — do not remove or weaken
-        // them.
+        // initialize() overwrites isShuttingDown_, monitoringEnabled_, and
+        // (via eventBus_.start()) eventBus_'s own running_ flag
+        // unconditionally regardless of who wins. What actually guarantees
+        // the e-stop wins is transitionState(): emergencyShutdown() sets
+        // currentState_ to FATAL_ERROR (legal from any state), which trips
+        // the `currentState_.load() >= SystemState::STOPPING` half of
+        // monitoringLoop()'s guard and eventBus_'s shutdownRequested()
+        // predicate (passed at construction; see AxonVexSystem's
+        // constructor) even for threads this call is about to start, while
+        // this call's own transitionState(INITIALIZED) is refused
+        // (FATAL_ERROR only accepts a transition to UNINITIALIZED), so
+        // initialize() itself returns false. Those >= STOPPING guards are
+        // load-bearing for this invariant — do not remove or weaken them.
         isShuttingDown_.store(false);
 
         // Start monitoring if enabled
@@ -304,9 +314,8 @@ bool AxonVexSystem::initialize(const std::string& configPath) {
             monitoringWorker_.start([this] { monitoringLoop(); });
         }
 
-        // Start event processing thread
-        eventProcessingRunning_.store(true);
-        eventWorker_.start([this] { eventProcessingLoop(); });
+        // Start the event dispatch thread
+        eventBus_.start();
 
         // Transition to initialized state
         if (!transitionState(SystemState::INITIALIZED)) {
@@ -466,17 +475,15 @@ bool AxonVexSystem::stop(std::chrono::milliseconds timeoutMs) {
         // which may fire concurrently from any thread via the SafetyHook.
         // Flags are set before locking so a system thread that enters
         // emergencyShutdown (try_lock fails) still exits its loop promptly.
-        eventProcessingRunning_.store(false);
+        eventBus_.requestStop();
         monitoringEnabled_.store(false);
         // Held through component stop/cleanup as well: a hook-triggered
         // emergencyShutdown must not touch timingController_ while
         // cleanupComponents() resets it (it try_locks and skips instead)
         std::unique_lock<std::mutex> teardownLock(shutdownMutex_);
         // Stop event processing thread first. Not a self-join risk here --
-        // stop() already refused above if called on eventWorker_'s thread.
-        if (eventWorker_.join()) {
-            drainEventQueue();
-        }
+        // stop() already refused above if called on the dispatch thread.
+        eventBus_.stopAndJoin();
         // Stop monitoring thread next
         monitoringWorker_.join();
         // Now stop all components
@@ -516,7 +523,7 @@ void AxonVexSystem::emergencyShutdown() {
     // by publishEvent's shutdown guard.
     transitionState(SystemState::FATAL_ERROR);
     isShuttingDown_.store(true);
-    eventProcessingRunning_.store(false);
+    eventBus_.requestStop();
     monitoringEnabled_.store(false);
 
     // Single-owner teardown: e-stop can fire from any thread via the SafetyHook
@@ -530,15 +537,17 @@ void AxonVexSystem::emergencyShutdown() {
     }
 
     // Stop event processing thread first. Self-join guard (now inside
-    // eventWorker_.join() itself): the emergency callback may run on a
-    // system thread; that call refuses and returns false rather than
-    // joining/resetting — the destructor's second pass joins from the
+    // eventBus_'s dispatch-thread join itself): the emergency callback may
+    // run on a system thread; that call refuses and returns false rather
+    // than joining/resetting — the destructor's second pass joins from the
     // owner thread instead.
-    eventWorker_.join();
+    eventBus_.stopAndJoin();
     // Unconditional: events can be queued before the event thread ever starts
     // (e.g. registerProcessingUnit during a failed initializeBlocksLayout) and
-    // would otherwise leak when the pool is torn down (C25)
-    drainEventQueue();
+    // would otherwise leak when the pool is torn down (C25). stopAndJoin()
+    // above only drains if it actually reaped a thread; this covers the
+    // never-started case too. Idempotent if already drained.
+    eventBus_.drain();
     // Stop monitoring thread next
     monitoringWorker_.join();
     // Force stop all components immediately
@@ -612,7 +621,8 @@ void AxonVexSystem::reset() {
     // worker thread's own call stack may be using; a worker calling this
     // would tear down its own components mid-callback. Refuse — same
     // contract as initialize()/stop(). Must be the first statement: nothing
-    // below is safe to run on eventWorker_'s/monitoringWorker_'s thread.
+    // below is safe to run on eventBus_'s dispatch thread or
+    // monitoringWorker_'s thread.
     if (isOnWorkerThread()) {
         if (logger_) {
             logger_->error("System", "reset() called from a system worker thread -- refused. "
@@ -628,13 +638,14 @@ void AxonVexSystem::reset() {
     // case) instead of guessing with a sleep. Safe from deadlock: worker
     // threads are refused above, so nobody joining US can hold this mutex.
     // This only synchronizes with mutex-owning teardowns, not a deferred
-    // self-join emergencyShutdown: that variant runs ON eventWorker_'s/
-    // monitoringWorker_'s thread and releases the mutex via try_lock's early
+    // self-join emergencyShutdown: that variant runs ON eventBus_'s
+    // dispatch thread or monitoringWorker_'s thread and releases the
+    // mutex via try_lock's early
     // return while still unwinding user-code frames on that thread. The
     // joins below close that window — legal here because worker threads
     // can't reach this point (refused above), so no self-join is possible.
     { std::lock_guard<std::mutex> wait(shutdownMutex_); }
-    eventWorker_.join();
+    eventBus_.join();
     monitoringWorker_.join();
 
     // Reset to uninitialized state
@@ -651,10 +662,10 @@ void AxonVexSystem::reset() {
 
     {
         std::lock_guard<std::mutex> lock(callbacksMutex_);
-        eventCallbacks_.clear();
         healthCheckCallbacks_.clear();
         nextCallbackId_.store(1);
     }
+    eventBus_.resetCallbacks();
 
     // Reset components
     timingController_.reset();
@@ -736,7 +747,7 @@ void AxonVexSystem::performHealthCheck() {
     event.metadata["duration_ms"] =
         std::to_string(systemTimer_.getElapsedMilliseconds()); // Add duration to metadata
 
-    publishEvent(event);
+    eventBus_.publish(event);
 
     // Take action based on health status
     if (health.overallStatus == SystemHealth::Status::CRITICAL ||
@@ -805,7 +816,7 @@ uint32_t AxonVexSystem::registerProcessingUnit(std::unique_ptr<ProcessingUnit> u
     event.metadata["unit_id"] = std::to_string(unitId);
     event.metadata["unit_name"] = unitName;
 
-    publishEvent(event);
+    eventBus_.publish(event);
 
     if (logger_) {
         logger_->info("System", "Registered processing unit: " + unitName +
@@ -897,7 +908,7 @@ bool AxonVexSystem::assignSystemInputPort(const std::string& systemPortName, Pro
     event.metadata["unit_name"] = unit->getName();
     event.metadata["unit_port_id"] = std::to_string(unitPortId);
 
-    publishEvent(event);
+    eventBus_.publish(event);
 
     return true;
 }
@@ -969,7 +980,7 @@ bool AxonVexSystem::assignSystemOutputPort(const std::string& systemPortName, Pr
     event.metadata["unit_name"] = unit->getName();
     event.metadata["unit_port_id"] = std::to_string(unitPortId);
 
-    publishEvent(event);
+    eventBus_.publish(event);
 
     return true;
 }
@@ -1161,9 +1172,8 @@ bool AxonVexSystem::initializeComponents() {
 
         logger_->start();
 
-        // Initialize event queue and pool
-        eventPool_ = std::make_unique<MemoryPool<SystemEvent>>(systemConfig_.eventPoolSize);
-        eventQueue_ = std::make_unique<ThreadSafeQueue<SystemEvent*>>(systemConfig_.eventQueueSize);
+        // Initialize the event pool and queue
+        eventBus_.reinitialize(systemConfig_.eventPoolSize, systemConfig_.eventQueueSize);
 
         // Initialize configuration if not already set
         if (!configuration_) {
@@ -1345,7 +1355,7 @@ void AxonVexSystem::notifyStateChange(SystemState oldState, SystemState newState
         "System state changed from " + stateToString(oldState) + " to " + stateToString(newState);
     event.timestamp = std::chrono::steady_clock::now();
 
-    publishEvent(event);
+    eventBus_.publish(event);
 }
 
 void AxonVexSystem::handleProcessingUnitError(ProcessingUnit* unit, const std::string& error) {
@@ -1365,26 +1375,11 @@ void AxonVexSystem::handleProcessingUnitError(ProcessingUnit* unit, const std::s
     event.metadata["unit_name"] = unit->getName();
     event.metadata["error_message"] = error;
 
-    publishEvent(event);
+    eventBus_.publish(event);
 
     // Attempt recovery if enabled
     if (systemConfig_.enableAutoRecovery) {
         attemptRecovery("ProcessingUnit error: " + error);
-    }
-}
-
-void AxonVexSystem::drainEventQueue() noexcept {
-    // C25: events still queued when the event thread exits would leak their
-    // strings; return them to the pool without dispatching.
-    if (!eventQueue_ || !eventPool_) {
-        return;
-    }
-    while (true) {
-        auto eventOpt = eventQueue_->tryDequeue(std::chrono::milliseconds(0));
-        if (!eventOpt.has_value()) {
-            break;
-        }
-        eventPool_->deallocateObject(eventOpt.value());
     }
 }
 
@@ -1401,85 +1396,8 @@ bool AxonVexSystem::isOnWorkerThread() const noexcept {
     // executeTask(), which is running inside the very TimingController this
     // thread belongs to, so it cannot have been reset out from under its own
     // live call stack.
-    return eventWorker_.isOnThisThread() || monitoringWorker_.isOnThisThread() ||
+    return eventBus_.isOnDispatchThread() || monitoringWorker_.isOnThisThread() ||
            (timingController_ && timingController_->isOnSchedulerThread());
-}
-
-void AxonVexSystem::publishEvent(const SystemEvent& event) {
-    // Components may not exist yet (e-stop on a never-initialized system).
-    if (!eventPool_ || !eventQueue_) {
-        return;
-    }
-    // C25: once shutdown begins the event thread stops draining the queue —
-    // allocating here would leak the event's strings. Drop shutdown-time events.
-    if (isShuttingDown_.load()) {
-        return;
-    }
-    // Allocate an event from the pool
-    SystemEvent* eventPtr = eventPool_->allocateObject(event);
-
-    if (eventPtr) {
-        // Enqueue the event for asynchronous processing
-        if (!eventQueue_->enqueue(eventPtr)) {
-            // Handle queue full case
-            eventPool_->deallocateObject(eventPtr); // Deallocate back to pool
-            if (logger_) {
-                logger_->warning("System", "Event queue overflow, event dropped.");
-            }
-            statistics_.errorCount.fetch_add(1);
-        }
-    } else {
-        // Handle pool exhaustion
-        if (logger_) {
-            logger_->warning("System", "Event pool exhausted, event dropped.");
-        }
-        statistics_.errorCount.fetch_add(1);
-    }
-}
-
-void AxonVexSystem::eventProcessingLoop() {
-    // C41: the thread-id publish (first act) / clear (last, every exit
-    // path) that used to be a local WorkerThreadIdGuard here now happens
-    // automatically inside detail::WorkerThread::start() -- see
-    // eventWorker_'s declaration comment (Phase 2 decomposition step 3).
-    // isOnWorkerThread() reads it via eventWorker_.isOnThisThread().
-
-    while (eventProcessingRunning_.load() && !isShuttingDown_.load()) {
-        // Guard against accessing resources during shutdown
-        if (currentState_.load() >= SystemState::STOPPING) {
-            break;
-        }
-
-        // Dequeue an event with a timeout to allow for graceful shutdown
-        auto eventOpt = eventQueue_->tryDequeue(std::chrono::milliseconds(100));
-
-        if (eventOpt.has_value()) {
-            SystemEvent* eventPtr = eventOpt.value();
-
-            // Process the event. Snapshot under the lock, invoke outside it —
-            // same C18 rule as performHealthCheck.
-            std::vector<EventCallback> callbacks;
-            {
-                std::lock_guard<std::mutex> lock(callbacksMutex_);
-                callbacks = eventCallbacks_;
-            }
-            for (const auto& callback : callbacks) {
-                if (callback) {
-                    try {
-                        callback(*eventPtr);
-                    } catch (const std::exception& e) {
-                        if (logger_) {
-                            logger_->warning("System",
-                                             "Event callback failed: " + std::string(e.what()));
-                        }
-                    }
-                }
-            }
-
-            // Deallocate the event back to the pool
-            eventPool_->deallocateObject(eventPtr);
-        }
-    }
 }
 
 // =================================================================
@@ -1717,26 +1635,11 @@ const Configuration& AxonVexSystem::getConfiguration() const noexcept {
 }
 
 uint32_t AxonVexSystem::registerEventCallback(EventCallback callback) {
-    if (!callback)
-        return 0;
-
-    std::lock_guard<std::mutex> lock(callbacksMutex_);
-    uint32_t callbackId = nextCallbackId_.fetch_add(1);
-
-    if (eventCallbacks_.size() <= callbackId) {
-        eventCallbacks_.resize(callbackId + 1);
-    }
-    eventCallbacks_[callbackId] = callback;
-
-    return callbackId;
+    return eventBus_.registerCallback(std::move(callback));
 }
 
 void AxonVexSystem::unregisterEventCallback(uint32_t callbackId) {
-    std::lock_guard<std::mutex> lock(callbacksMutex_);
-
-    if (callbackId < eventCallbacks_.size()) {
-        eventCallbacks_[callbackId] = nullptr;
-    }
+    eventBus_.unregisterCallback(callbackId);
 }
 
 uint32_t AxonVexSystem::registerHealthCheckCallback(HealthCheckCallback callback) {
@@ -1789,13 +1692,13 @@ void AxonVexSystem::cleanupComponents() {
     // Clear system port assignments first
     systemPorts_.clear();
 
-    // Unconditional, same as emergencyShutdown()'s drainEventQueue() call:
+    // Unconditional, same as emergencyShutdown()'s eventBus_.drain() call:
     // events can be queued before the event thread ever starts (e.g.
     // registerProcessingUnit() during a failed initializeBlocksLayout()) and
     // would otherwise leak (C25) when the next initialize() call's
-    // initializeComponents() replaces eventPool_/eventQueue_ without ever
-    // having destructed the SystemEvent objects still sitting in the old ones.
-    drainEventQueue();
+    // eventBus_.reinitialize() replaces the pool/queue without ever having
+    // destructed the SystemEvent objects still sitting in the old ones.
+    eventBus_.drain();
 
     // Reset components
     timingController_.reset();
@@ -1872,7 +1775,7 @@ bool AxonVexSystem::unregisterProcessingUnit(uint32_t unitId) {
     event.metadata["unit_id"] = std::to_string(unitId);
     event.metadata["unit_name"] = unitName;
 
-    publishEvent(event);
+    eventBus_.publish(event);
 
     if (logger_) {
         logger_->info("System", "Unregistered processing unit: " + unitName +
