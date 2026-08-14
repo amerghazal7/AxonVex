@@ -459,8 +459,22 @@ jobs:
         cmake --build . --parallel
         cmake --install . --prefix "${{ github.workspace }}/scratch-install"
         cd ..
+        # axonvexConfig.cmake's find_dependency(nlohmann_json)/find_dependency(TBB)
+        # need the conan generators dir (build-pkg, populated above by `conan
+        # install`) on the prefix path too -- axonvex's own install tree only
+        # carries axonvexConfig.cmake, not its dependencies' configs. Without
+        # this, a runner with no system nlohmann_json/TBB config (i.e. every
+        # runner that doesn't get them from somewhere else, such as a ROS 2
+        # install) hard-fails at find_dependency(); a runner that happens to
+        # have system copies would silently resolve against those instead of
+        # the exact versions axonvex was just built and linked against.
+        # Also set CMAKE_BUILD_TYPE=Release to match build-pkg: conan's
+        # CMakeDeps-generated nlohmann_json-config.cmake refuses to resolve
+        # (check_build_type_defined()) unless the consumer declares the same
+        # build_type it was generated for.
         cmake -B downstream-build -S test_package \
-              -DCMAKE_PREFIX_PATH="${{ github.workspace }}/scratch-install/lib/cmake/axonvex"
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_PREFIX_PATH="${{ github.workspace }}/scratch-install/lib/cmake/axonvex;${{ github.workspace }}/build-pkg"
         cmake --build downstream-build --parallel
         ./downstream-build/downstream_consumer
 
@@ -476,11 +490,15 @@ jobs:
     - name: Verify symbol visibility boundary
       run: |
         set -e
-        core_exports="$(nm -D build-pkg/src/libs/axonvex_core/libaxonvex_core.so | grep -c ' T \| W ')"
+        # grep -c exits 1 on a zero match, which would abort the script
+        # (set -e) before the diagnostic below prints -- append `|| true`
+        # so a genuine zero-export collapse still reaches the ::error:: line
+        # instead of just dying with a bare non-zero exit.
+        core_exports="$(nm -D build-pkg/src/libs/axonvex_core/libaxonvex_core.so | grep -c ' T \| W ' || true)"
         echo "axonvex_core exported symbols: $core_exports"
         if [ "$core_exports" -lt 100 ]; then
           echo "::error::axonvex_core exports only $core_exports symbols -- hidden visibility may have leaked onto core, which PluginManager's dlopen path needs default-visibility"
           exit 1
         fi
-        net_exports="$(nm -D build-pkg/src/libs/axonvex_net/libaxonvex_net.so | grep -c ' T \| W ')"
+        net_exports="$(nm -D build-pkg/src/libs/axonvex_net/libaxonvex_net.so | grep -c ' T \| W ' || true)"
         echo "axonvex_net exported symbols: $net_exports"
