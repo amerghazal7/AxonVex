@@ -286,6 +286,7 @@ if(BUILD_TESTING)
         tests/core/workerThreadTest.cpp
         tests/core/eventBusTest.cpp
         tests/core/healthMonitorTest.cpp
+        tests/core/lifecycleControllerTest.cpp
         tests/core/callbackTest.cpp
         tests/core/portsTest.cpp
         tests/core/processingUnitTest.cpp
