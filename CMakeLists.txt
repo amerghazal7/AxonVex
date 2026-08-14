@@ -284,6 +284,7 @@ if(BUILD_TESTING)
         tests/core/systemPortRegistryTest.cpp
         tests/core/unitRegistryTest.cpp
         tests/core/workerThreadTest.cpp
+        tests/core/eventBusTest.cpp
         tests/core/callbackTest.cpp
         tests/core/portsTest.cpp
         tests/core/processingUnitTest.cpp
