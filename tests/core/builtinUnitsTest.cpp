@@ -6,109 +6,33 @@
  *        MovingAverage::processSync() heap allocation").
  */
 
-#include <atomic>
 #include <axonvex_core/builtinUnits.hpp>
-#include <cstdlib>
 #include <gtest/gtest.h>
-#include <new>
 
-// ---------------------------------------------------------------------------
-// Global operator new/delete override, gated by an atomic flag, so a test
-// can prove a code region performs zero heap allocations. Delegates to
-// malloc/free exactly like the default implementation — the only added
-// behavior is an atomic increment while tracking is enabled, so this is
-// inert (and zero-cost when tracking is off) for every other test in this
-// binary. Deliberately at TU (external-linkage) scope, NOT in an unnamed
-// namespace: timingControllerTest.cpp's scheduler-hot-path allocation
-// regression test (same test_core binary, one process-wide operator new)
-// reuses this exact counter via `extern` rather than defining a second,
-// conflicting global operator new/delete override.
-//
-// C50: the process-wide reach of this override is intrinsic to any
-// operator-new-based allocation probe in standard C++ — there is no
-// TU-scoped or thread-scoped way to intercept `new`. A per-test injectable
-// allocator was considered instead, but timingControllerTest.cpp's sibling
-// regression measures allocations made by RealTimeScheduler's *internal*
-// containers on a real scheduler thread during timer-driven execution, not
-// just allocations made by one object under test — an injectable
-// allocator/counter would have to be threaded through scheduler internals
-// for a test-only concern, well past what either regression needs. The
-// actual bug was narrower: this override was missing the nothrow overload
-// (plus the array and array-nothrow forms), so any allocation ASan's own
-// runtime served through `operator new(nothrow)` — e.g. GTest's
-// `std::get_temporary_buffer` inside its `stable_sort`, invoked on every
-// process run regardless of --gtest_filter — got freed through this TU's
-// malloc-backed `operator delete` and tripped
-// "alloc-dealloc-mismatch (operator new vs free)" under ASan with
-// Conan-provided GTest (reproduced: 585/595 failing before this fix).
-// Fix: complete the C++14 overload set (ordinary/array x
-// throwing/nothrow, plus sized delete) so every allocation in the process
-// is malloc/free-paired consistently — functionally a no-op passthrough
-// identical to the platform default, whether or not tracking is enabled.
-std::atomic<bool> g_trackAllocs{false};
-std::atomic<long> g_allocCount{0};
+namespace axonvex::core::builtin {
 
-namespace {
-inline void countAlloc() {
-    if (g_trackAllocs.load(std::memory_order_relaxed)) {
-        g_allocCount.fetch_add(1, std::memory_order_relaxed);
+// C50: this used to be a process-wide `operator new`/`operator delete`
+// override (gated by an atomic flag) shared with timingControllerTest.cpp.
+// That gave one test file's allocation probe the entire test_core process
+// as blast radius -- a single missing overload (the nothrow form) took down
+// ~all 606 tests under ASan with Conan-provided GTest, invisible with
+// system GTest (see docs/v1_release_plan.md C50 for the full incident).
+// Replacement: samples_ is a std::vector sized once at construction and
+// never grown/shrunk by processSync() (plain index writes only -- see its
+// definition and the member's declaration comment), so its capacity() is
+// stable *if and only if* no allocation happened (capacity is monotonic --
+// see the accessor's declaration comment in builtinUnits.hpp for why this
+// beats comparing buffer pointers). Scoped to the one MovingAverage
+// instance the test constructs; it cannot observe or affect any other test
+// in the binary.
+class MovingAverageTestAccessor {
+  public:
+    static size_t samplesCapacity(const MovingAverage& ma) {
+        return ma.samples_.capacity();
     }
-}
-} // namespace
+};
 
-void* operator new(std::size_t size) {
-    countAlloc();
-    void* p = std::malloc(size);
-    if (!p) {
-        throw std::bad_alloc();
-    }
-    return p;
-}
-
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
-    countAlloc();
-    return std::malloc(size);
-}
-
-void* operator new[](std::size_t size) {
-    countAlloc();
-    void* p = std::malloc(size);
-    if (!p) {
-        throw std::bad_alloc();
-    }
-    return p;
-}
-
-void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
-    countAlloc();
-    return std::malloc(size);
-}
-
-void operator delete(void* p) noexcept {
-    std::free(p);
-}
-
-void operator delete(void* p, std::size_t) noexcept {
-    std::free(p);
-}
-
-void operator delete(void* p, const std::nothrow_t&) noexcept {
-    std::free(p);
-}
-
-void operator delete[](void* p) noexcept {
-    std::free(p);
-}
-
-void operator delete[](void* p, std::size_t) noexcept {
-    std::free(p);
-}
-
-void operator delete[](void* p, const std::nothrow_t&) noexcept {
-    std::free(p);
-}
-
-namespace axonvex::core::builtin::test {
+namespace test {
 namespace {
 
 /// Minimal sink used to capture what a unit under test writes to an output
@@ -167,9 +91,14 @@ TEST(MovingAverageTest, ResetClearsWindowState) {
 
 // The blocking review finding: processSync() must not heap-allocate on the
 // scheduler hot path (CLAUDE.md rule 2). Warm past construction/initialize()
-// (which are allowed to allocate once), then assert zero allocations across
-// a batch of steady-state ticks, including window-boundary crossings where a
-// deque-backed ring would have to grow/shrink a chunk.
+// (which are allowed to allocate once), then assert samples_'s capacity()
+// is unchanged across a batch of steady-state ticks, including
+// window-boundary crossings where a deque-backed ring would have had to
+// grow/shrink a chunk. capacity() only increases when a (re)allocation
+// grows the vector and never decreases on its own, so "unchanged" here is
+// exactly "processSync() performed zero heap operations against samples_"
+// -- see MovingAverageTestAccessor's comment for why this replaced a
+// process-wide operator-new override (C50).
 TEST(MovingAverageTest, ProcessSyncPerformsNoHeapAllocation) {
     MovingAverage ma("ma", nlohmann::json{{"window", 8}});
     ma.initialize();
@@ -181,16 +110,19 @@ TEST(MovingAverageTest, ProcessSyncPerformsNoHeapAllocation) {
         ma.processSync();
     }
 
-    g_allocCount.store(0, std::memory_order_relaxed);
-    g_trackAllocs.store(true, std::memory_order_relaxed);
+    size_t capacityAfterWarmup = MovingAverageTestAccessor::samplesCapacity(ma);
+    ASSERT_GT(capacityAfterWarmup, 0u);
+
     for (int i = 0; i < 100000; ++i) {
         in->writeData(static_cast<double>(i));
         ma.processSync();
     }
-    g_trackAllocs.store(false, std::memory_order_relaxed);
 
-    EXPECT_EQ(g_allocCount.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(MovingAverageTestAccessor::samplesCapacity(ma), capacityAfterWarmup)
+        << "MovingAverage::processSync() grew its sample buffer's capacity -- it heap-allocated "
+           "on the scheduler hot path";
 }
 
 } // namespace
-} // namespace axonvex::core::builtin::test
+} // namespace test
+} // namespace axonvex::core::builtin

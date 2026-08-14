@@ -13,23 +13,33 @@
 using namespace axonvex::core;
 using namespace std::chrono_literals;
 
-// Shared with builtinUnitsTest.cpp (same test_core binary): that TU defines
-// the process-wide operator new/delete override, gated by g_trackAllocs, that
-// counts heap allocations. Reused here (rather than a second, conflicting
-// override) to prove selectReadyTasksForCycle() performs zero heap
-// allocations per scheduler cycle in steady state (HIGH review fix).
-extern std::atomic<bool> g_trackAllocs;
-extern std::atomic<long> g_allocCount;
-
 namespace axonvex::core {
 // C45: grants direct, single-threaded access to the otherwise-private
 // scheduleRoundRobin() so the regression test below can drive it
 // deterministically (no scheduler thread, no timing dependence) instead of
 // inferring correctness from task-execution counts under real concurrency.
+//
+// C50: also exposes selectReadyTasksForCycle() and its two persistent
+// scratch buffers' capacities, replacing what used to be a process-wide
+// operator-new override shared with builtinUnitsTest.cpp (a bug in that
+// override -- a missing nothrow overload -- took down ~all 606 tests under
+// ASan, not just this one). readyCandidates_/readyTaskIds_ are clear()-only
+// members (see their declaration comment): once the ready-set size
+// stabilizes, capacity is unchanged iff no allocation happened. Reading two
+// specific members' capacity() cannot observe or affect any other test.
 class RoundRobinTestAccessor {
   public:
     static uint32_t call(RealTimeScheduler& scheduler) {
         return scheduler.scheduleRoundRobin();
+    }
+    static void selectReadyTasksForCycle(RealTimeScheduler& scheduler) {
+        scheduler.selectReadyTasksForCycle();
+    }
+    static size_t readyCandidatesCapacity(const RealTimeScheduler& scheduler) {
+        return scheduler.readyCandidates_.capacity();
+    }
+    static size_t readyTaskIdsCapacity(const RealTimeScheduler& scheduler) {
+        return scheduler.readyTaskIds_.capacity();
     }
 };
 } // namespace axonvex::core
@@ -583,68 +593,52 @@ TEST_F(TimingControllerTest, AllReadyTasksExecutePerCycle) {
 // became clear()-only persistent members (readyCandidates_/readyTaskIds_),
 // so steady-state cycles allocate nothing.
 //
-// Measured via the process-wide allocation counter defined in
-// builtinUnitsTest.cpp (see the `extern` declarations near the top of this
-// file): the task body samples the counter on every call, so the delta
-// between two consecutive calls captures everything the scheduler thread
-// allocated in between -- which necessarily includes one or more
-// selectReadyTasksForCycle() passes (period 1ms vs. a 200us timer
-// resolution means several idle cycles run between executions).
+// C50: this used to run a real scheduler thread for up to 5 seconds behind
+// a process-wide operator-new override shared with builtinUnitsTest.cpp (a
+// missing overload in that override took down ~all 606 tests under ASan --
+// see docs/v1_release_plan.md). Replacement needs no thread, no timer, no
+// sleep-based polling at all: selectReadyTasksForCycle() is called directly
+// through the existing RoundRobinTestAccessor friend (single-threaded,
+// deterministic, matching the pattern already used above by
+// ConcurrentInstancesRotateIndependently), and readyCandidates_/
+// readyTaskIds_ are clear()-only members, so their capacity() is unchanged
+// after warmup iff no allocation happened -- exactly the property this
+// test exists to prove.
 TEST_F(TimingControllerTest, SchedulerReadySetSelectionAllocatesNoHeapInSteadyState) {
-    class AllocationProbeUnit : public MockProcessingUnit {
-      public:
-        explicit AllocationProbeUnit(const std::string& name) : MockProcessingUnit(name) {}
-        void processSync() override {
-            // callCount_ is polled from the main thread below while this
-            // runs on the scheduler thread -- must be atomic (TSan-caught
-            // race on a plain uint32_t here, in an earlier version of this
-            // test). lastCount_ is scheduler-thread-only (read+written only
-            // from here), so it stays a plain long.
-            uint32_t n = callCount_.fetch_add(1, std::memory_order_relaxed) + 1;
-            long count = g_allocCount.load(std::memory_order_relaxed);
-            long delta = count - lastCount_;
-            lastCount_ = count;
-            // Skip the first 20 calls: capacity has not yet reached its
-            // high-water mark, so a one-time growth allocation there is
-            // expected and not a regression.
-            if (n > 20 && delta > maxDeltaAfterWarmup.load(std::memory_order_relaxed)) {
-                maxDeltaAfterWarmup.store(delta, std::memory_order_relaxed);
-            }
-        }
-        uint32_t getCallCount() const {
-            return callCount_.load(std::memory_order_relaxed);
-        }
-        std::atomic<long> maxDeltaAfterWarmup{0};
-
-      private:
-        std::atomic<uint32_t> callCount_{0};
-        long lastCount_{0};
-    };
-
-    AllocationProbeUnit probeUnit("AllocProbe");
-    probeUnit.initialize();
-
+    RealTimeScheduler scheduler(SchedulingPolicy::PRIORITY_BASED);
     TimingConstraints constraints;
-    constraints.period = std::chrono::milliseconds(1);
-    controller->scheduleProcessingUnit(&probeUnit, constraints);
-    controller->setTimerResolution(std::chrono::microseconds(200));
+    constraints.period = std::chrono::microseconds(0); // always ready
 
-    g_allocCount.store(0, std::memory_order_relaxed);
-    g_trackAllocs.store(true, std::memory_order_relaxed);
-    controller->start();
-
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (probeUnit.getCallCount() < 200 && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::vector<std::unique_ptr<MockProcessingUnit>> units;
+    for (int i = 0; i < 5; ++i) {
+        auto unit = std::unique_ptr<MockProcessingUnit>(
+            new MockProcessingUnit("ReadySetUnit" + std::to_string(i)));
+        unit->initialize();
+        scheduler.addTask(unit.get(), constraints);
+        units.push_back(std::move(unit));
     }
-    g_trackAllocs.store(false, std::memory_order_relaxed);
-    controller->stop();
 
-    ASSERT_GE(probeUnit.getCallCount(), 200u);
-    EXPECT_EQ(probeUnit.maxDeltaAfterWarmup.load(std::memory_order_relaxed), 0)
-        << "scheduler thread heap-allocated between two consecutive task "
-           "executions after warmup -- selectReadyTasksForCycle() is "
-           "allocating on the RT path";
+    // Warm-up: first few calls grow readyCandidates_/readyTaskIds_ from
+    // empty to the ready-set's steady-state size -- that growth is a
+    // one-time, expected allocation, not a regression.
+    for (int i = 0; i < 20; ++i) {
+        RoundRobinTestAccessor::selectReadyTasksForCycle(scheduler);
+    }
+
+    size_t candidatesCapacity = RoundRobinTestAccessor::readyCandidatesCapacity(scheduler);
+    size_t taskIdsCapacity = RoundRobinTestAccessor::readyTaskIdsCapacity(scheduler);
+    ASSERT_GT(candidatesCapacity, 0u);
+    ASSERT_GT(taskIdsCapacity, 0u);
+
+    for (int i = 0; i < 500; ++i) {
+        RoundRobinTestAccessor::selectReadyTasksForCycle(scheduler);
+        ASSERT_EQ(RoundRobinTestAccessor::readyCandidatesCapacity(scheduler), candidatesCapacity)
+            << "selectReadyTasksForCycle() reallocated readyCandidates_ at cycle " << i
+            << " -- it heap-allocated on the scheduler hot path";
+        ASSERT_EQ(RoundRobinTestAccessor::readyTaskIdsCapacity(scheduler), taskIdsCapacity)
+            << "selectReadyTasksForCycle() reallocated readyTaskIds_ at cycle " << i
+            << " -- it heap-allocated on the scheduler hot path";
+    }
 }
 
 // Regression test for C1: removing a task while it executes must not destroy
