@@ -8,6 +8,7 @@ add_library(axonvex_core SHARED
     src/builtinUnits.cpp
     src/configuration.cpp
     src/errorHandler.cpp
+    src/eventBus.cpp
     src/logger.cpp
     src/path.cpp
     src/ports.cpp

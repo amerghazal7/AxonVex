@@ -21,15 +21,15 @@ class AdapterInterface;
 #include <atomic>
 #include <axonvex_core/configuration.hpp>
 #include <axonvex_core/detail/workerThread.hpp>
+#include <axonvex_core/eventBus.hpp>
 #include <axonvex_core/logger.hpp>
 #include <axonvex_core/path.hpp>
 #include <axonvex_core/precisionTimer.hpp>
 #include <axonvex_core/processingUnit.hpp>
+#include <axonvex_core/systemEvent.hpp>
 #include <axonvex_core/systemPortRegistry.hpp>
 #include <axonvex_core/timingController.hpp>
 #include <axonvex_core/unitRegistry.hpp>
-#include <axonvex_core/utils/containers/memoryPool.hpp>
-#include <axonvex_core/utils/containers/threadSafeQueue.hpp>
 #include <chrono>
 #include <functional>
 #include <future>
@@ -42,29 +42,7 @@ class AdapterInterface;
 
 namespace axonvex::core {
 
-// Bring utils containers into core namespace for convenience
-using axonvex::utils::containers::MemoryPool;
-using axonvex::utils::containers::ThreadSafeQueue;
-
 class SafetyHook; // core-owned safety hook interface (safetyHook.hpp)
-
-/**
- * @brief System state enumeration
- */
-enum class SystemState {
-    UNINITIALIZED = 0, ///< System not yet initialized
-    INITIALIZING,      ///< System currently initializing
-    INITIALIZED,       ///< System initialized but not started
-    STARTING,          ///< System currently starting
-    RUNNING,           ///< System running normally
-    PAUSING,           ///< System currently pausing
-    PAUSED,            ///< System paused
-    RESUMING,          ///< System resuming from pause
-    STOPPING,          ///< System currently stopping
-    STOPPED,           ///< System stopped
-    ERROR,             ///< System in error state
-    FATAL_ERROR        ///< System in unrecoverable error state
-};
 
 /**
  * @brief System configuration structure
@@ -134,31 +112,6 @@ struct SystemStatistics {
     std::string getReport() const;
     double getUptimeSeconds() const;
     double getSuccessRate() const;
-};
-
-/**
- * @brief System event structure for callbacks
- */
-struct SystemEvent {
-    enum class Type {
-        STATE_CHANGE,
-        PROCESSING_UNIT_ADDED,
-        PROCESSING_UNIT_REMOVED,
-        PROCESSING_UNIT_ERROR,
-        PERFORMANCE_ALERT,
-        CONFIGURATION_CHANGED,
-        RECOVERY_STARTED,
-        RECOVERY_COMPLETED,
-        HEALTH_CHECK,
-        SHUTDOWN_REQUESTED
-    };
-
-    Type type;
-    SystemState oldState;
-    SystemState newState;
-    std::string description;
-    std::chrono::steady_clock::time_point timestamp;
-    std::unordered_map<std::string, std::string> metadata;
 };
 
 /**
@@ -239,7 +192,7 @@ class AxonVexSystem {
      * object unwinding) is released from inside a worker-thread callback —
      * a ProcessingUnit task, an event callback, a health-check callback —
      * ~AxonVexSystem runs ON that worker thread while destroying members
-     * the callback's own call stack (eventProcessingLoop(), the callback
+     * the callback's own call stack (EventBus::dispatchLoop(), the callback
      * itself) is still using: undefined behavior once control unwinds back
      * into it. detail::WorkerThread::join() self-refuses rather than
      * self-joining (so this specific call no longer throws/deadlocks the
@@ -286,7 +239,7 @@ class AxonVexSystem {
      *
      * @note C41: refused (returns false, logs an error) when called from the
      * event-processing or monitoring thread. That teardown/replace of
-     * logger_/eventPool_/eventQueue_/timingController_ would run out from
+     * logger_/eventBus_'s pool+queue/timingController_ would run out from
      * under the calling worker's own live stack. Use emergencyShutdown()
      * for in-callback shutdown; reinitialize from outside the worker
      * threads afterward.
@@ -735,14 +688,9 @@ class AxonVexSystem {
     // High-precision timer for system-level diagnostics (e.g., initialization, shutdown, health
     // checks)
     mutable PrecisionTimer systemTimer_{PrecisionTimer::DEFAULT_MAX_SAMPLES};
-    // Thread-safe queue for event publishing, system-level message passing, or deferred actions
-    // Example: ThreadSafeQueue<SystemEvent> eventQueue_;
-    // Memory pool for real-time safe allocation of system event objects
-    // Example: MemoryPool<SystemEvent> eventPool_;
-    // Usage hooks:
-    // - Use systemTimer_ for timing system operations
-    // - Use ThreadSafeQueue for event/message passing
-    // - Use MemoryPool for system event allocation
+    // Event publishing, system-level message passing, and deferred actions
+    // are eventBus_'s job (below) -- see eventBus.hpp for the pool/queue it
+    // owns internally.
   private:
     // =================================================================
     // INTERNAL STATE
@@ -786,12 +734,10 @@ class AxonVexSystem {
     detail::WorkerThread monitoringWorker_;
     std::atomic<bool> monitoringEnabled_{false};
 
-    // Event system
-    std::unique_ptr<ThreadSafeQueue<SystemEvent*>> eventQueue_;
-    std::unique_ptr<MemoryPool<SystemEvent>> eventPool_;
-    detail::WorkerThread eventWorker_;
-    std::atomic<bool> eventProcessingRunning_{false};
-    std::vector<EventCallback> eventCallbacks_;
+    // healthCheckCallbacks_ alone now -- eventCallbacks_/nextCallbackId_'s
+    // event half moved into eventBus_ below (Phase 2 decomposition step 4).
+    // Splitting the shared mutex/counter is safe: no code path locked both
+    // callback vectors at once (see eventBus.hpp's class doc).
     std::vector<HealthCheckCallback> healthCheckCallbacks_;
     mutable std::mutex callbacksMutex_;
     std::atomic<uint32_t> nextCallbackId_{1};
@@ -804,13 +750,9 @@ class AxonVexSystem {
     // which can now fire from any thread via the SafetyHook (C2)
     std::mutex shutdownMutex_;
 
-    // Returns undispatched queued events to the pool after the event thread
-    // has been joined (C25 leak fix)
-    void drainEventQueue() noexcept;
-
     /**
-     * C41/C42: true iff called from eventWorker_, monitoringWorker_, or
-     * RealTimeScheduler's own scheduler thread (via
+     * C41/C42: true iff called from eventBus_'s dispatch thread,
+     * monitoringWorker_, or RealTimeScheduler's own scheduler thread (via
      * timingController_->isOnSchedulerThread()) — each WorkerThread answers
      * from the id it publishes on entry and clears on exit (see
      * detail::WorkerThread). Lifecycle calls that tear down or replace
@@ -818,6 +760,16 @@ class AxonVexSystem {
      * reset()) must refuse rather than run on a worker thread.
      */
     bool isOnWorkerThread() const noexcept;
+
+    // Event system (Phase 2 decomposition step 4: extracted to EventBus --
+    // see eventBus.hpp for the pool/queue/dispatch-thread/callback-registry
+    // contract this class's registerEventCallback/unregisterEventCallback and
+    // every publish call site now delegate to). Declared last: its
+    // constructor captures `this` in callables reading currentState_/
+    // isShuttingDown_/statistics_/logger_ above, all already-declared
+    // members (declaration order, not the value at construction time,
+    // matters here -- see AxonVexSystem's constructor).
+    EventBus eventBus_;
 
     // =================================================================
     // INTERNAL METHODS
@@ -837,9 +789,7 @@ class AxonVexSystem {
     void updateStatistics();
     SystemHealth performInternalHealthCheck() const;
     // Event handling
-    void publishEvent(const SystemEvent& event);
     void handleProcessingUnitError(ProcessingUnit* unit, const std::string& error);
-    void eventProcessingLoop(); // New method for processing events
 
     // Recovery
     bool attemptRecovery(const std::string& errorDescription);
