@@ -122,10 +122,16 @@ TEST_F(PrecisionTimerTest, LapTiming) {
         EXPECT_GT(lap_time.count(), 50000); // At least 50μs
     }
 
-    // All lap times should be reasonable
+    // Lower bound is the correctness check: the timer must measure at least
+    // the ~100us of simulated work, or it is not measuring. The upper bound
+    // is only a unit-sanity guard (a us-vs-ns confusion is a 1000x error) and
+    // must tolerate preemption: the old <1ms bound failed on a shared CI
+    // runner when the OS descheduled the process for 1.6ms mid-lap, which no
+    // wall-clock assertion can forbid. 100ms keeps the unit-sanity property
+    // with generous preemption headroom.
     for (const auto& lap_time : lap_times) {
         EXPECT_GT(lap_time.count(), 50000);
-        EXPECT_LT(lap_time.count(), 1000000); // Less than 1ms
+        EXPECT_LT(lap_time.count(), 100000000); // unit sanity: well under 100ms
     }
 
     EXPECT_EQ(timer.getTotalMeasurements(), 5);
