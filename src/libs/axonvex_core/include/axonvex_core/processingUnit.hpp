@@ -5,7 +5,8 @@
  * @version 2.0.0
  * @date 2025
  *
- * @copyright Copyright (c) 2025 AxonVex Framework. All rights reserved.
+ * @copyright Copyright (c) 2025–2026 Amer Ghazal. Licensed under the Apache License, Version 2.0
+ * (see LICENSE).
  *
  * Advanced ProcessingUnit Block architecture with
  * integer-indexed ports, dual sync/async processing, and built-in

@@ -5,7 +5,8 @@
  * @version 1.0.0
  * @date 2025
  *
- * @copyright Copyright (c) 2025 AxonVex Framework. All rights reserved.
+ * @copyright Copyright (c) 2025–2026 Amer Ghazal. Licensed under the Apache License, Version 2.0
+ * (see LICENSE).
  *
  * This example demonstrates the basic usage of the PrecisionTimer class
  * including timing measurements and statistics collection.
