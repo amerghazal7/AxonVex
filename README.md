@@ -10,15 +10,14 @@
 
 ---
 
+## Provenance
+
+AxonVex is a personal open-source project by Amer Ghazal, developed on personal time.
+Status: alpha; the v1.0 plan lists what is shipped and what is not.
+
 ## Project Status
 
 AxonVex is in active development. The strongest capability today is the core runtime and its test harness. The full v1.0 vision — visualization platform, enterprise security, hardware watchdog, cross-platform support, published performance benchmarks — is scoped and sequenced in the [v1.0 Release Plan](docs/v1_release_plan.md); features below are marked accordingly.
-
-## Mission Statement
-
-AxonVex is a cutting-edge real-time framework designed to empower developers to master the complexity of modern systems with unparalleled speed and scalability. Inspired by the rapid signaling of neural axons and the challenge of solving intricate problems, AxonVex delivers precision orchestration, deterministic execution, and robust performance for real-time applications across industries. We enable seamless, scalable solutions where milliseconds matter and complexity is conquered effortlessly.
-
----
 
 ## Framework Overview
 
@@ -284,8 +283,4 @@ For questions, support, or collaboration opportunities:
 
 ---
 
-**Where milliseconds matter and complexity must be conquered effortlessly, AxonVex delivers the precision, scalability, and reliability your real-time systems demand.**
-
----
-
-*Copyright © 2026 AxonVex Framework. All rights reserved.*
+Copyright 2026 Amer Ghazal. Licensed under the Apache License, Version 2.0.
